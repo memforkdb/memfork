@@ -41,7 +41,8 @@ memfork doctor    # what is installed, and what is talking to it
 
 Clients then get fifteen tools — store, recall, search, fork, merge, discard,
 time travel, and handing work from one agent to another — over one store they
-share.
+share. With a single client that still pays: its next session resumes where the
+last one stopped.
 
 ## What is in memory and what is on disk
 

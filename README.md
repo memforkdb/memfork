@@ -25,10 +25,12 @@ That memory is shared. Claude Code, Codex, Cursor, Gemini and any other MCP clie
 
 It runs in your own process or as a small local server, keeps what it stores, never leaves your machine, and is Apache-2.0.
 
+You don't need five AI tools to benefit. With just one, your agent remembers across sessions and can undo its mistakes. With more, they share the work.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memfork-story-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/memfork-story-light.gif">
-  <img alt="Two AI agents share one memory: Claude Code records decisions, forks before a risky step, discards the failed attempt, and leaves a handoff. Codex resumes from it with one call." src="docs/assets/memfork-story-light.gif" width="100%">
+  <img alt="Claude Code leaves a handoff and a new Claude Code session resumes its own work from it the next day, then Codex, a tool from another vendor, resumes the same handoff." src="docs/assets/memfork-story-light.gif" width="100%">
 </picture>
 
 ## Install
@@ -251,6 +253,11 @@ existed are exactly where they were.
 the latest handoff, the most recent decisions and the open tasks. An agent
 calls it when it starts. `memfork_handoff` records where things stand, and an
 agent calls it before it stops or before you switch to another tool.
+
+The same routine works with a single tool. Call `memfork_handoff` before you
+stop, and `memfork_resume` when a new session of the same tool starts, including
+after a context reset or a usage limit. The new session picks up the decisions
+and next steps instead of starting over.
 
 A worked example, in a repository called `shop`:
 
