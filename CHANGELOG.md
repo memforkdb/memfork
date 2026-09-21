@@ -54,8 +54,11 @@ from it. Stores written by 0.1.x open unchanged.
 - `memfork branches` says how far each branch is ahead of or behind the default
   branch, where it forked and who wrote to it last; `memfork diff` marks and
   colours each change.
+- `memfork ls` and `memfork at` line values up in one column, padded to the
+  widest key, instead of separating them with a tab. `--json` is unchanged.
 - Tool descriptions teach one key convention, `<project>:<kind>:<id>`.
 - `memfork init --client` may be given more than once.
+- The README lists `cargo install memfork` beside `pip install memfork`.
 
 ### Fixed
 

@@ -142,6 +142,7 @@ removing the old one:
 ```sh
 curl -fsSL https://github.com/memforkdb/memfork/releases/latest/download/install.sh | sh
 pip install memfork
+cargo install memfork
 memfork --version
 memfork doctor
 ```

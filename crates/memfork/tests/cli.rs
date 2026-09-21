@@ -300,3 +300,30 @@ fn the_same_script_gives_the_same_commit_ids_every_run() {
     let script = "put a 1\nput b 2\nfork side\nput c 3 --branch side\nmerge side\nlog\n";
     assert_eq!(run_json(script), run_json(script));
 }
+
+#[test]
+fn listed_values_line_up_whatever_the_key_length() {
+    // Tabs put `project:codename` and `project:owner` on different tab
+    // stops; padding to the widest key keeps every value in one column.
+    let text =
+        run("put project:codename \"Blue Heron\"\nput project:owner ada\nput a 1\nls\nat 3\n");
+    let listed: Vec<&str> = text.lines().filter(|l| !l.starts_with("put ")).collect();
+    assert_eq!(listed.len(), 6, "{text}");
+    for line in &listed {
+        assert!(!line.contains('\t'), "a tab in {line:?}");
+    }
+    for rows in listed.chunks(3) {
+        let columns: Vec<usize> = rows
+            .iter()
+            .map(|l| l.len() - l.split_once("  ").map_or("", |(_, v)| v.trim_start()).len())
+            .collect();
+        assert!(columns.windows(2).all(|w| w[0] == w[1]), "{rows:?}");
+    }
+    assert!(text.contains("project:codename  Blue Heron"), "{text}");
+    assert!(text.contains("project:owner     ada"), "{text}");
+
+    // The JSON is unchanged: keys and values as fields, no padding.
+    let doc = run_json("put project:owner ada\nls\n");
+    assert_eq!(doc[1]["keys"][0]["key"], "project:owner");
+    assert_eq!(doc[1]["keys"][0]["value"], "ada");
+}

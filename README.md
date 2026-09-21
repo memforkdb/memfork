@@ -45,16 +45,19 @@ curl -fsSL https://github.com/memforkdb/memfork/releases/latest/download/install
 irm https://github.com/memforkdb/memfork/releases/latest/download/install.ps1 | iex
 ```
 
-**With Python**
+**With Python or Rust**
 
 ```sh
 pip install memfork      # or: uv tool install memfork
+cargo install memfork    # builds from source; needs Rust 1.89 or newer
 ```
 
-One file goes into a directory you own — `~/.memfork/bin` or
+The install scripts put one file into a directory you own — `~/.memfork/bin` or
 `%LOCALAPPDATA%\Programs\memfork\bin` — and nothing asks for administrator.
-The installer checks the download against a published checksum, tells you how
-to uninstall, and if you are upgrading it stops the old version first.
+They check the download against a published checksum, tell you how to
+uninstall, and if you are upgrading they stop the old version first. `pip` and
+`cargo` put the same `memfork` command wherever they put commands; run
+`memfork stop` before upgrading through either.
 
 ## Connect it to your tools
 
@@ -180,13 +183,13 @@ And to see the history behind it:
 
 ```text
 $ memfork log --graph
-* 7c0e2f4b9a1d  seq 6  [main]  merge  merge try-refunds into main (fail)
+* 7c0e2f4b9a1d  seq 6  [main]  merge    merge try-refunds into main (fail)
 |-\
 |-+-x discarded try-a-rewrite (2 commits)
-* | 3fa1d0c6b2e7  seq 5  put shop:decision:tax  by Codex CLI
+* | 3fa1d0c6b2e7  seq 5                 put shop:decision:tax  by Codex CLI
 | * 91b7e3a0c4d2  seq 5  [try-refunds]  put shop:task:refunds  by Claude Code
 |-/
-* 5d2c19e7f0a3  seq 4  fork point  put shop:decision:payments  by Claude Code
+* 5d2c19e7f0a3  seq 4  fork point       put shop:decision:payments  by Claude Code
 ```
 
 **Upgrading:** the installer stops it for you. If you are replacing the binary
@@ -329,7 +332,7 @@ Said plainly, because finding out later is worse.
 
 ```toml
 [dependencies]
-memfork-core = "0.1"
+memfork-core = "0.2"
 ```
 
 ```rust

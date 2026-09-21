@@ -143,10 +143,7 @@ pub fn execute_as(
 
         Command::Ls { prefix, limit } => {
             let entries = db.list(branch, prefix, *limit)?;
-            let text = entries
-                .iter()
-                .map(|(k, e)| format!("{k}\t{}", String::from_utf8_lossy(&e.value)))
-                .collect();
+            let text = key_value_lines(&entries);
             let json = json!({
                 "op": "ls",
                 "branch": branch,
@@ -348,10 +345,7 @@ pub fn execute_as(
                 },
                 None => {
                     let entries = view.list(prefix.as_deref().unwrap_or(""), None);
-                    let text = entries
-                        .iter()
-                        .map(|(k, e)| format!("{k}\t{}", String::from_utf8_lossy(&e.value)))
-                        .collect();
+                    let text = key_value_lines(&entries);
                     let json = json!({
                         "op": "at",
                         "branch": branch,
@@ -410,6 +404,30 @@ pub fn execute_as(
             command.name()
         ))),
     }
+}
+
+/// One line per key, the values starting in one column: each key padded to
+/// the widest, then two spaces. A tab would leave rows out of line whenever
+/// two keys fall either side of a tab stop.
+fn key_value_lines<E: std::ops::Deref<Target = memfork_core::Entry>>(
+    entries: &[(String, E)],
+) -> Vec<String> {
+    let width = entries
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    entries
+        .iter()
+        .map(|(k, e)| {
+            let pad = width - k.chars().count();
+            format!(
+                "{k}{}  {}",
+                " ".repeat(pad),
+                String::from_utf8_lossy(&e.value)
+            )
+        })
+        .collect()
 }
 
 /// What an operation was done to, for the activity feed: the key, if any, and
