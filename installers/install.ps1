@@ -87,17 +87,60 @@
         return "https://github.com/$Repo/releases/download/$Version/$Name"
     }
 
-    function Save-File([string]$Url, [string]$Path) {
+    # A progress bar is for a person watching a console: never into a pipe or
+    # a log, never in CI, and not when NO_COLOR asks for plain output.
+    # MEMFORK_PROGRESS=1 forces it, which is how the installer tests reach it.
+    function Test-ShowProgress {
+        if ($env:MEMFORK_PROGRESS -eq '1') { return $true }
+        if ($env:CI -or $env:NO_COLOR) { return $false }
+        if (-not [Environment]::UserInteractive) { return $false }
+        if ([Console]::IsOutputRedirected) { return $false }
+        return $Host.Name -eq 'ConsoleHost'
+    }
+
+    function Save-File([string]$Url, [string]$Path, [string]$Showing) {
         try {
             # 5.1 may not offer TLS 1.2 by default. Added to what the session
             # already allows rather than replacing it, because that setting is
             # process-wide and outlives this script.
             [Net.ServicePointManager]::SecurityProtocol =
                 [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-            # And 5.1's progress bar makes downloads crawl. This preference is
-            # scoped to the block, so it needs no restoring.
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $Url -OutFile $Path -UseBasicParsing
+            if ($Showing -and (Test-ShowProgress)) {
+                # Streamed by hand rather than through Invoke-WebRequest,
+                # whose own progress bar makes 5.1 downloads crawl: this one
+                # redraws once per whole percent.
+                $response = [System.Net.HttpWebRequest]::Create($Url).GetResponse()
+                $total = $response.ContentLength
+                $in = $response.GetResponseStream()
+                $out = [System.IO.File]::Create($Path)
+                try {
+                    $buffer = New-Object byte[] 65536
+                    $done = 0
+                    $shown = -1
+                    while (($read = $in.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $out.Write($buffer, 0, $read)
+                        $done += $read
+                        if ($total -gt 0) {
+                            $percent = [int][Math]::Floor(100 * $done / $total)
+                            if ($percent -ne $shown) {
+                                $size = '{0:N1} MB' -f ($total / 1MB)
+                                Write-Progress -Activity $Showing -Status "$percent% of $size" -PercentComplete $percent
+                                $shown = $percent
+                            }
+                        }
+                    }
+                } finally {
+                    $out.Dispose()
+                    $in.Dispose()
+                    $response.Dispose()
+                    Write-Progress -Activity $Showing -Completed
+                }
+            } else {
+                # 5.1's own progress bar makes downloads crawl. This
+                # preference is scoped to the block, so it needs no restoring.
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -Uri $Url -OutFile $Path -UseBasicParsing
+            }
         } catch {
             Stop-WithMessage "could not download $Url ($($_.Exception.Message))"
         }
@@ -262,7 +305,7 @@
         Write-Step "Downloading MemFork for $target..."
         $archivePath = Join-Path $temp $archive
         $sumPath = "$archivePath.sha256"
-        Save-File (Get-DownloadUrl $archive) $archivePath
+        Save-File (Get-DownloadUrl $archive) $archivePath "Downloading MemFork for $target"
         Save-File (Get-DownloadUrl "$archive.sha256") $sumPath
         Test-Checksum $archivePath $sumPath
 

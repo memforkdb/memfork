@@ -1,13 +1,14 @@
 //! Command-line surface over the engine (DESIGN §5).
 
 use clap::{Args, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 
-/// Git for agent state, in process.
+/// Git for agent memory, shared by every AI tool on your machine.
 #[derive(Debug, Parser)]
 #[command(
     name = "memfork",
     version,
-    about = "Git for agent state, in process: fork, merge, discard and rewind an agent's memory.",
+    about = "Git for agent memory, shared by every AI tool on your machine: fork, merge, rewind, and hand work from one agent to another.",
     long_about = None,
     propagate_version = true
 )]
@@ -28,26 +29,44 @@ pub struct GlobalArgs {
     #[arg(long, short, global = true, default_value = "main")]
     pub branch: String,
 
-    /// Print machine-readable JSON instead of text.
+    /// Print machine-readable JSON instead of text. Never coloured.
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// When to use colour: `auto` for a terminal that wants it, `always` even
+    /// when piped, in CI or with NO_COLOR set, `never`. `--json` and
+    /// `memfork mcp` are never coloured.
+    #[arg(long, global = true, value_name = "WHEN", default_value = "auto",
+          value_parser = ["auto", "always", "never"])]
+    pub color: String,
+
+    /// Keep nothing and share nothing: work on a fresh in-memory database, with
+    /// no daemon and no data directory. Without it, `put`, `get` and the other
+    /// operations work on the shared store through the daemon, starting it if
+    /// need be.
+    #[arg(long, global = true)]
+    pub ephemeral: bool,
+
+    /// Where the data is kept. Defaults to a per-user directory, or to
+    /// `./.memfork` if that directory already exists.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub data_dir: Option<String>,
 }
 
 /// Where a persistent command keeps its data, and how carefully.
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, Serialize, Deserialize)]
 pub struct PersistArgs {
     /// Keep nothing: run entirely in memory and forget it all on exit.
     ///
     /// The opposite of the library default. `memfork-core` is in-memory
     /// unless a caller asks for durability; the binary persists unless told
     /// not to, because an agent's memory that empties on restart is not
-    /// memory.
-    #[arg(long)]
+    /// memory. Filled from the global `--ephemeral`.
+    #[arg(skip)]
     pub ephemeral: bool,
 
-    /// Where to keep the data. Defaults to a per-user directory, or to
-    /// `./.memfork` if that directory already exists.
-    #[arg(long, value_name = "PATH")]
+    /// Where to keep the data. Filled from the global `--data-dir`.
+    #[arg(skip)]
     pub data_dir: Option<String>,
 
     /// When to flush the log to disk.
@@ -106,7 +125,7 @@ pub struct ScriptGlobalArgs {
 ///
 /// The doc comment on each variant is also its `--help` text, so it is written
 /// for the person reading the terminal.
-#[derive(Debug, Clone, Subcommand)]
+#[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
 pub enum Command {
     /// Write a key.
     Put {
@@ -203,6 +222,10 @@ pub enum Command {
         /// Stop after this many commits.
         #[arg(long)]
         limit: Option<usize>,
+        /// Draw every branch as a tree: forks, merges and discarded
+        /// attempts, newest first.
+        #[arg(long)]
+        graph: bool,
     },
 
     /// Read a branch as it was after a past commit.
@@ -338,6 +361,11 @@ pub enum Command {
         /// without being told.
         #[arg(long, default_value_t = 0)]
         port: u16,
+        /// Forget a client session after this many seconds without a
+        /// request. For tests; the default suits everything else.
+        #[arg(long, hide = true, value_name = "SECONDS",
+              default_value_t = crate::serve::DEFAULT_SESSION_SECONDS)]
+        session_timeout: u64,
     },
 
     /// Stop the daemon for a data directory, gracefully.
@@ -345,10 +373,17 @@ pub enum Command {
     /// It flushes, releases the directory and removes its endpoint file. Use
     /// this before upgrading, so the new version starts its own daemon rather
     /// than refusing to talk to the old one.
-    Stop {
-        /// Which data directory's daemon. Defaults to the usual one.
-        #[arg(long, value_name = "PATH")]
-        data_dir: Option<String>,
+    Stop,
+
+    /// Show what the daemon is doing as it happens: which client did what,
+    /// to which key or branch, including handoffs and resumes.
+    ///
+    /// Runs until interrupted, waiting for a daemon if none is running.
+    /// `--json` prints one JSON object per line.
+    Watch {
+        /// Stop after this many events.
+        #[arg(long, value_name = "N")]
+        count: Option<usize>,
     },
 }
 
@@ -366,7 +401,8 @@ impl Command {
                 | Command::Tools { .. }
                 | Command::Call { .. }
                 | Command::Serve { .. }
-                | Command::Stop { .. }
+                | Command::Stop
+                | Command::Watch { .. }
                 | Command::Init { .. }
                 | Command::Doctor
         )
@@ -395,7 +431,8 @@ impl Command {
             Command::Init { .. } => "init",
             Command::Doctor => "doctor",
             Command::CrashWriter { .. } => "crash-writer",
-            Command::Stop { .. } => "stop",
+            Command::Stop => "stop",
+            Command::Watch { .. } => "watch",
         }
     }
 }

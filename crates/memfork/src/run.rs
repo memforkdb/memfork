@@ -6,7 +6,10 @@
 //! [`from_env`] through the extension module — the same code, the same
 //! behaviour, no second implementation to keep in step.
 
-use crate::{clients, daemon, doctor, init, launch, mcp, persist, proxy, serve, tools};
+use crate::style::{Channel, ColorChoice, Spinner, Style};
+use crate::{
+    client, clients, daemon, doctor, init, launch, mcp, persist, proxy, render, serve, tools,
+};
 
 use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
@@ -16,7 +19,7 @@ use clap::Parser;
 use memfork_core::Db;
 use serde_json::json;
 
-use crate::cli::{split_line, Cli, Command, PersistArgs, ScriptLine};
+use crate::cli::{split_line, Cli, Command, GlobalArgs, PersistArgs, ScriptLine};
 use crate::exec::{execute, ExecError, Outcome};
 
 /// Run the command line given to this process.
@@ -58,26 +61,59 @@ pub fn run(cli: Cli) -> ExitCode {
     // lock held here would deadlock the server on its first response — the
     // client would see a connection that opens and then never answers. Every
     // other subcommand locks stdout for the duration of its own output.
+    let choice = ColorChoice::parse(&cli.global.color).unwrap_or_default();
+    let channel = if cli.global.json {
+        Channel::Json
+    } else {
+        Channel::Human
+    };
+    let recorded = match &cli.command {
+        Command::Mcp { .. } | Command::Serve { .. } | Command::CrashWriter { .. } => {
+            Channel::Protocol
+        }
+        _ => channel,
+    };
+    crate::style::set_preferences(choice, recorded);
+    let persist = |p: &PersistArgs| PersistArgs {
+        ephemeral: cli.global.ephemeral,
+        data_dir: cli.global.data_dir.clone(),
+        ..p.clone()
+    };
     let result = match &cli.command {
-        Command::Mcp { persist, namespace } => run_mcp(persist, namespace.as_deref()),
+        Command::Mcp {
+            persist: p,
+            namespace,
+        } => run_mcp(&persist(p), namespace.as_deref()),
         // Beside `mcp` rather than inside the block below, for the same
         // reason: it holds a data directory for a long time and writes
         // nothing to stdout, so it has no business holding stdout's lock.
         Command::CrashWriter {
-            persist,
+            persist: p,
             progress,
             limit,
-        } => run_crash_writer(persist, progress, *limit),
-        Command::Serve { persist, port } => run_serve(persist, *port),
-        Command::Stop { data_dir } => run_stop(data_dir.as_deref()),
+        } => run_crash_writer(&persist(p), progress, *limit),
+        Command::Serve {
+            persist: p,
+            port,
+            session_timeout,
+        } => run_serve(&persist(p), *port, *session_timeout),
+        Command::Stop => run_stop(cli.global.data_dir.as_deref()),
         command => {
             let mut stdout = std::io::stdout().lock();
+            let style = Style::for_stdout(choice, channel);
             match command {
-                Command::Run { script } => {
-                    run_script(&mut stdout, script, &cli.global.branch, cli.global.json)
-                }
+                Command::Run { script } => run_script(
+                    &mut stdout,
+                    script,
+                    &cli.global.branch,
+                    cli.global.json,
+                    &style,
+                ),
+                Command::Watch { count } => run_watch(&mut stdout, &cli.global, *count, &style),
                 Command::Tools { format } => run_tools(&mut stdout, format),
-                Command::Call { tool, arguments } => run_call(&mut stdout, tool, arguments),
+                Command::Call { tool, arguments } => {
+                    run_call(&mut stdout, tool, arguments, &cli.global, choice)
+                }
                 Command::Init {
                     dry_run,
                     client,
@@ -102,12 +138,16 @@ pub fn run(cli: Cli) -> ExitCode {
                     ..
                 } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
                 Command::Doctor => run_doctor(&mut stdout, cli.global.json),
-                command => {
+                // One operation. In memory, alone, with --ephemeral; on the
+                // shared store through the daemon otherwise.
+                command if cli.global.ephemeral => {
                     let db = Db::new();
                     execute(&db, &cli.global.branch, command).and_then(|outcome| {
-                        emit(&mut stdout, &outcome, cli.global.json).map_err(io_err)
+                        emit(&mut stdout, command, &outcome, cli.global.json, &style)
+                            .map_err(io_err)
                     })
                 }
+                command => run_op(&mut stdout, command, &cli.global, choice, &style),
             }
         }
     };
@@ -130,14 +170,210 @@ fn io_err(e: std::io::Error) -> ExecError {
     ExecError::Usage(format!("cannot write output: {e}"))
 }
 
-fn emit(out: &mut impl Write, outcome: &Outcome, as_json: bool) -> std::io::Result<()> {
+fn emit(
+    out: &mut impl Write,
+    command: &Command,
+    outcome: &Outcome,
+    as_json: bool,
+    style: &Style,
+) -> std::io::Result<()> {
     if as_json {
         writeln!(out, "{}", outcome.json)
     } else {
-        for line in &outcome.text {
+        for line in render::lines(command, outcome, style) {
             writeln!(out, "{line}")?;
         }
         Ok(())
+    }
+}
+
+/// The data directory the global `--data-dir` names, or the usual one.
+fn data_dir(global: &GlobalArgs) -> Result<std::path::PathBuf, ExecError> {
+    match &global.data_dir {
+        Some(path) => Ok(std::path::PathBuf::from(path)),
+        None => persist::datadir::here()
+            .map(|d| d.path)
+            .map_err(|e| ExecError::Usage(e.to_string())),
+    }
+}
+
+/// The daemon for `dir`, starting it — which replays the log, so it can take a
+/// moment — if none is running.
+fn daemon_for(dir: &std::path::Path, choice: ColorChoice) -> Result<persist::Endpoint, ExecError> {
+    if let Some(running) = daemon::usable(dir).map_err(|e| ExecError::Usage(e.to_string()))? {
+        return Ok(running);
+    }
+    let _spinner = Spinner::start(
+        choice,
+        Channel::Human,
+        "starting the MemFork daemon and reading the store",
+    );
+    daemon::ensure(dir, &launch::resolve(), serve::DEFAULT_IDLE_SECONDS)
+        .map_err(|e| ExecError::Usage(e.to_string()))
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, ExecError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| ExecError::Usage(format!("cannot start the async runtime: {e}")))
+}
+
+/// One operation on the shared store, carried out by the daemon.
+fn run_op(
+    out: &mut impl Write,
+    command: &Command,
+    global: &GlobalArgs,
+    choice: ColorChoice,
+    style: &Style,
+) -> Result<(), ExecError> {
+    let dir = data_dir(global)?;
+    let endpoint = daemon_for(&dir, choice)?;
+    let daemon = client::Daemon::new(&endpoint).map_err(ExecError::Usage)?;
+    let namespace = session_namespace(None).ok().map(|n| n.name);
+    let request = json!({
+        "branch": global.branch,
+        "command": command,
+        "namespace": namespace,
+    });
+    let (status, answer) = runtime()?
+        .block_on(daemon.post(serve::CLI_PATH, &request))
+        .map_err(ExecError::Usage)?;
+    if status != 200 {
+        return Err(ExecError::Usage(
+            answer["error"]
+                .as_str()
+                .unwrap_or("the daemon refused the operation")
+                .to_owned(),
+        ));
+    }
+    let outcome = Outcome {
+        text: answer["text"]
+            .as_array()
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(|l| l.as_str())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        json: answer["json"].clone(),
+    };
+    emit(out, command, &outcome, global.json, style).map_err(io_err)
+}
+
+/// `memfork watch`: the daemon's activity, as it happens.
+fn run_watch(
+    out: &mut impl Write,
+    global: &GlobalArgs,
+    count: Option<usize>,
+    style: &Style,
+) -> Result<(), ExecError> {
+    let dir = data_dir(global)?;
+    let rt = runtime()?;
+    let mut seen = 0usize;
+    let mut said_waiting = false;
+    loop {
+        let endpoint = match daemon::usable(&dir).map_err(|e| ExecError::Usage(e.to_string()))? {
+            Some(endpoint) => endpoint,
+            None => {
+                if !said_waiting {
+                    eprintln!(
+                        "memfork: no daemon is running for {}; waiting for one to start \
+                         (a client's first tool call starts it)",
+                        dir.display()
+                    );
+                    said_waiting = true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+        };
+        said_waiting = false;
+        let daemon = client::Daemon::new(&endpoint).map_err(ExecError::Usage)?;
+        let mut failed: Option<std::io::Error> = None;
+        let streamed = rt.block_on(daemon.stream_lines(serve::EVENTS_PATH, |line| {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                return true;
+            };
+            let hello = value["kind"] == "hello";
+            let written = if global.json {
+                writeln!(out, "{line}")
+            } else if hello {
+                watch_header(out, &value, &dir, style)
+            } else {
+                match serde_json::from_value::<crate::events::Event>(value) {
+                    Ok(event) => writeln!(out, "{}", render::event(&event, style)),
+                    Err(_) => Ok(()),
+                }
+            };
+            if let Err(e) = written.and_then(|()| out.flush()) {
+                failed = Some(e);
+                return false;
+            }
+            if !hello {
+                seen += 1;
+            }
+            count.is_none_or(|n| seen < n)
+        }));
+        if let Some(e) = failed {
+            // The reader went away, as `watch | head` does. Nothing to report.
+            return if e.kind() == std::io::ErrorKind::BrokenPipe {
+                Ok(())
+            } else {
+                Err(io_err(e))
+            };
+        }
+        if count.is_some_and(|n| seen >= n) {
+            return Ok(());
+        }
+        if let Err(why) = streamed {
+            eprintln!("memfork: lost the daemon ({why}); waiting for it to come back");
+        } else {
+            eprintln!("memfork: the daemon stopped; waiting for another to start");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+fn watch_header(
+    out: &mut impl Write,
+    hello: &serde_json::Value,
+    dir: &std::path::Path,
+    style: &Style,
+) -> std::io::Result<()> {
+    use crate::style::Glyph;
+    writeln!(
+        out,
+        "{} {} {}",
+        style.accent(style.glyph(Glyph::Connected)),
+        style.strong(crate::style::palette::PRIMARY, "daemon connected"),
+        style.dim(&format!(
+            "127.0.0.1:{}, version {}, store {}",
+            hello["port"],
+            hello["version"].as_str().unwrap_or("?"),
+            dir.display()
+        ))
+    )?;
+    let clients: Vec<String> = hello["clients"]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .map(|c| {
+                    format!(
+                        "{} ({})",
+                        c["client"].as_str().unwrap_or("?"),
+                        c["namespace"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if clients.is_empty() {
+        writeln!(out, "  {}", style.dim("no clients connected yet"))
+    } else {
+        writeln!(out, "  clients connected: {}", clients.join(", "))
     }
 }
 
@@ -150,6 +386,7 @@ fn run_script(
     script: &str,
     default_branch: &str,
     as_json: bool,
+    style: &Style,
 ) -> Result<(), ExecError> {
     let source = read_script(script)?;
     let db = Db::new();
@@ -182,7 +419,7 @@ fn run_script(
         if as_json {
             results.push(outcome.json);
         } else {
-            for l in &outcome.text {
+            for l in render::lines(&parsed.command, &outcome, style) {
                 writeln!(out, "{l}").map_err(io_err)?;
             }
         }
@@ -302,10 +539,12 @@ fn resolve_dir(args: &PersistArgs) -> Result<std::path::PathBuf, ExecError> {
 }
 
 /// Run the shared daemon.
-fn run_serve(args: &PersistArgs, port: u16) -> Result<(), ExecError> {
+fn run_serve(args: &PersistArgs, port: u16, session_seconds: u64) -> Result<(), ExecError> {
     if args.ephemeral {
         return Err(ExecError::Usage(
-            "`memfork serve --ephemeral` would be a daemon with nothing to share.              Drop --ephemeral, or use `memfork mcp --ephemeral` for a private,              in-memory session."
+            "`memfork serve --ephemeral` would be a daemon with nothing to share. \
+             Drop --ephemeral, or use `memfork mcp --ephemeral` for a private, \
+             in-memory session."
                 .to_owned(),
         ));
     }
@@ -328,6 +567,7 @@ fn run_serve(args: &PersistArgs, port: u16) -> Result<(), ExecError> {
             serve::ServeOptions {
                 port,
                 idle_seconds: args.idle_timeout,
+                session_seconds,
             },
         ))
         .map_err(ExecError::Usage)?;
@@ -470,7 +710,13 @@ fn run_tools(out: &mut impl Write, format: &str) -> Result<(), ExecError> {
 /// Single-shot, like every other one-off subcommand: the database is created
 /// for this call and discarded after it. `memfork run` is what puts several
 /// operations against one in-memory database.
-fn run_call(out: &mut impl Write, tool: &str, arguments: &str) -> Result<(), ExecError> {
+fn run_call(
+    out: &mut impl Write,
+    tool: &str,
+    arguments: &str,
+    global: &GlobalArgs,
+    choice: ColorChoice,
+) -> Result<(), ExecError> {
     let parsed: serde_json::Value = serde_json::from_str(arguments)
         .map_err(|e| ExecError::Usage(format!("`arguments` is not valid JSON: {e}")))?;
     let args = match parsed {
@@ -481,10 +727,15 @@ fn run_call(out: &mut impl Write, tool: &str, arguments: &str) -> Result<(), Exe
             )))
         }
     };
-    let session = tools::dispatch::Session::in_namespace(Db::new(), session_namespace(None)?.name);
-    let result = session
-        .call(tool, &args)
-        .map_err(|e| ExecError::Usage(e.to_string()))?;
+    let namespace = session_namespace(None)?.name;
+    let result = if global.ephemeral {
+        let session = tools::dispatch::Session::in_namespace(Db::new(), namespace);
+        session
+            .call(tool, &args)
+            .map_err(|e| ExecError::Usage(e.to_string()))?
+    } else {
+        call_through_daemon(tool, args, namespace, global, choice)?
+    };
     let text = serde_json::to_string_pretty(&result)
         .map_err(|e| ExecError::Usage(format!("cannot render the result: {e}")))?;
     // Always JSON: a tool result is JSON by definition, so `--json` adds nothing.
@@ -492,6 +743,45 @@ fn run_call(out: &mut impl Write, tool: &str, arguments: &str) -> Result<(), Exe
 }
 
 /// Register the MCP server with the clients installed here.
+/// One tool call on the shared store, as an MCP session of its own, recorded
+/// as coming from the command line.
+fn call_through_daemon(
+    tool: &str,
+    args: serde_json::Map<String, serde_json::Value>,
+    namespace: String,
+    global: &GlobalArgs,
+    choice: ColorChoice,
+) -> Result<serde_json::Value, ExecError> {
+    let dir = data_dir(global)?;
+    let endpoint = daemon_for(&dir, choice)?;
+    let hello = proxy::Hello {
+        namespace,
+        client: Some(serve::CLI_WRITER.to_owned()),
+    };
+    let params = rmcp::model::CallToolRequestParams::new(tool.to_owned()).with_arguments(args);
+    runtime()?.block_on(async {
+        let upstream = proxy::Upstream::connect(&endpoint, &hello)
+            .await
+            .map_err(|e| ExecError::Usage(e.to_string()))?;
+        let answer = upstream.call_tool(&params).await;
+        upstream.close().await;
+        let raw = answer.map_err(|e| ExecError::Usage(e.to_string()))?;
+        let content = raw
+            .get("structuredContent")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if raw.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Err(ExecError::Usage(
+                content["error"]
+                    .as_str()
+                    .unwrap_or("the tool reported an error")
+                    .to_owned(),
+            ));
+        }
+        Ok(content)
+    })
+}
+
 /// What `memfork init --project` was asked to do.
 struct ProjectInit<'a> {
     dry_run: bool,

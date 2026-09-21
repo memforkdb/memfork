@@ -25,7 +25,7 @@ fn tools(format: &str) -> Json {
 /// Run one tool call and return the result.
 fn call(tool: &str, args: Json) -> Json {
     let out = memfork()
-        .args(["call", tool, &args.to_string()])
+        .args(["--ephemeral", "call", tool, &args.to_string()])
         .assert()
         .success();
     serde_json::from_slice(&out.get_output().stdout).expect("valid JSON")
@@ -175,7 +175,12 @@ fn b4_every_tool_round_trips_through_call() {
 fn b4_discarding_the_default_branch_fails_loudly() {
     // The one tool whose only interesting single-shot behaviour is a refusal.
     memfork()
-        .args(["call", "memfork_discard", r#"{"name":"main"}"#])
+        .args([
+            "--ephemeral",
+            "call",
+            "memfork_discard",
+            r#"{"name":"main"}"#,
+        ])
         .assert()
         .failure()
         .stderr(predicates::str::contains("cannot be discarded"));
@@ -205,20 +210,20 @@ fn b4_call_reports_bad_arguments_rather_than_guessing() {
         ("memfork_nope", r#"{}"#, "no tool named"),
     ] {
         memfork()
-            .args(["call", tool, args])
+            .args(["--ephemeral", "call", tool, args])
             .assert()
             .failure()
             .stderr(predicates::str::contains(expected));
     }
 
     memfork()
-        .args(["call", "memfork_get", "not json"])
+        .args(["--ephemeral", "call", "memfork_get", "not json"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("not valid JSON"));
 
     memfork()
-        .args(["call", "memfork_get", "[1,2]"])
+        .args(["--ephemeral", "call", "memfork_get", "[1,2]"])
         .assert()
         .failure()
         .stderr(predicates::str::contains("must be a JSON object"));
@@ -227,7 +232,7 @@ fn b4_call_reports_bad_arguments_rather_than_guessing() {
 #[test]
 fn b4_call_with_no_arguments_defaults_to_an_empty_object() {
     let out = memfork()
-        .args(["call", "memfork_branches"])
+        .args(["--ephemeral", "call", "memfork_branches"])
         .assert()
         .success();
     let doc: Json = serde_json::from_slice(&out.get_output().stdout).expect("valid JSON");
@@ -250,7 +255,7 @@ fn b4_every_declared_tool_is_callable() {
     let doc = tools("anthropic");
     for tool in doc.as_array().expect("an array") {
         let name = tool["name"].as_str().expect("a name");
-        let output = memfork().args(["call", name, "{}"]).assert();
+        let output = memfork().args(["--ephemeral", "call", name, "{}"]).assert();
         let stderr = String::from_utf8_lossy(&output.get_output().stderr).into_owned();
         assert!(
             !stderr.contains("no tool named"),

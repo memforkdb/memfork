@@ -65,6 +65,10 @@ pub enum UpstreamError {
     /// The daemon answered, but not with something usable.
     #[error("the MemFork daemon answered unexpectedly: {0}")]
     Unusable(String),
+    /// The daemon no longer knows this session: it was idle past the
+    /// daemon's session timeout. A new session is the fix.
+    #[error("the MemFork daemon has forgotten this session")]
+    SessionGone,
     /// The daemon returned a JSON-RPC error.
     #[error("{message}")]
     Rpc {
@@ -79,7 +83,10 @@ impl UpstreamError {
     /// Whether this looks like the daemon having gone away, rather than a
     /// request it refused.
     pub fn is_disconnect(&self) -> bool {
-        matches!(self, UpstreamError::Unreachable { .. })
+        matches!(
+            self,
+            UpstreamError::Unreachable { .. } | UpstreamError::SessionGone
+        )
     }
 }
 
@@ -163,6 +170,32 @@ impl Upstream {
             .ok_or_else(|| UpstreamError::Unusable("no tools in the answer".to_owned()))?;
         serde_json::from_value(tools)
             .map_err(|e| UpstreamError::Unusable(format!("the tool list did not parse: {e}")))
+    }
+
+    /// End this session, so the daemon stops listing its client as
+    /// connected. Best effort: a daemon that has gone needs no telling.
+    pub async fn close(&self) {
+        let Some(session) = self.session.lock().await.clone() else {
+            return;
+        };
+        let Ok(request) = hyper::Request::builder()
+            .method(hyper::Method::DELETE)
+            .uri(&self.url)
+            .header(
+                hyper::header::AUTHORIZATION,
+                format!("Bearer {}", self.token),
+            )
+            .header("Mcp-Session-Id", session)
+            .header("MCP-Protocol-Version", PROTOCOL_VERSION)
+            .body(Full::new(Bytes::new()))
+        else {
+            return;
+        };
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.http.request(request),
+        )
+        .await;
     }
 
     /// Forward one tool call.
@@ -250,6 +283,11 @@ impl Upstream {
             .map_err(|e| unreachable(format!("the answer could not be read: {e}")))?;
         let text = String::from_utf8_lossy(&collected.to_bytes()).into_owned();
 
+        // A session the daemon has let go of. Only once there is one to lose:
+        // before the handshake a 404 means something else entirely.
+        if status == hyper::StatusCode::NOT_FOUND && self.session.lock().await.is_some() {
+            return Err(UpstreamError::SessionGone);
+        }
         if status == hyper::StatusCode::UNAUTHORIZED {
             return Err(UpstreamError::Unusable(
                 "the daemon rejected our token; it may have been restarted".to_owned(),
@@ -489,15 +527,22 @@ impl ServerHandler for Proxy {
 /// session and this process with it. A proxy that outlived its client would
 /// accumulate one per connection.
 pub async fn serve_stdio(proxy: Proxy) -> Result<(), String> {
+    let upstream = Arc::clone(&proxy.upstream);
     let service = proxy
         .serve(rmcp::transport::stdio())
         .await
         .map_err(|e| format!("cannot start the MCP proxy: {e}"))?;
-    service
+    let waited = service
         .waiting()
         .await
-        .map_err(|e| format!("the MCP proxy stopped with an error: {e}"))?;
-    Ok(())
+        .map_err(|e| format!("the MCP proxy stopped with an error: {e}"));
+    // The client has gone; say so to the daemon rather than leaving it to
+    // notice after its session timeout.
+    let connected = upstream.read().await.clone();
+    if let Some(connected) = connected {
+        connected.close().await;
+    }
+    waited.map(|_| ())
 }
 
 #[cfg(test)]
@@ -565,5 +610,7 @@ mod tests {
         }
         .is_disconnect());
         assert!(!UpstreamError::Unusable("odd".to_owned()).is_disconnect());
+        // A forgotten session is fixed the same way: by starting another.
+        assert!(UpstreamError::SessionGone.is_disconnect());
     }
 }

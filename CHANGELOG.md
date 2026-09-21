@@ -7,26 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-09-21
+
+Agent handoff becomes a first-class workflow, and you can see it happen. One
+agent can stop mid-task and leave a handoff; another, from any vendor, resumes
+from it. Stores written by 0.1.x open unchanged.
+
 ### Added
 
 - **Handing work between agents.** Two new tools: `memfork_resume` gives an
-  agent a short, bounded briefing on a project when it starts, and
-  `memfork_handoff` records where the work stands before it stops. Any client
-  can resume what any other handed off.
+  agent a short, bounded briefing on a project when it starts — the latest
+  handoff, recent decisions, open tasks — and `memfork_handoff` records where
+  the work stands before it stops. Any client can resume what any other handed
+  off.
 - **Project namespaces.** Each session works in a namespace taken from the
   repository it was started in, and is told it when it connects. Set it with
   `memfork mcp --namespace` or `MEMFORK_NAMESPACE`. Keys are still literal;
   nothing is prefixed for you.
 - **Who wrote what.** Every entry a client stores records the client's name,
-  and briefings show it. Stores from 0.1.x open unchanged.
+  and briefings, `branches` and `log --graph` show it.
 - **`memfork init --project`** writes one managed block into each client's own
-  instruction file in a repository, with `--client` (repeatable), `--all`,
-  `--remove` and `--dry-run`. Only the block is ever touched.
+  instruction file in a repository — resume when you start, record decisions,
+  hand off before you stop, fork before anything risky — with `--client`
+  (repeatable), `--all`, `--remove` and `--dry-run`. Only the block is ever
+  touched, and it never runs git.
+- **`memfork watch`** shows what every client is doing as it happens: time,
+  client, operation, key or branch, including handoffs and resumes. `--json`
+  prints one object per line.
+- **`memfork log --graph`** draws every branch as a tree, with forks, merges and
+  discarded attempts.
+- **Colour**, from one palette, with a word beside every state and ASCII
+  stand-ins for every glyph. `--color auto|always|never`; `--json` and
+  `memfork mcp` are never coloured.
+- **Download progress** in both installers, when a person is watching.
 
 ### Changed
 
+- **The command line works on the shared store.** `put`, `get`, `ls` and the
+  other operations, and `memfork call`, now act on the same store your MCP
+  clients use, through the local server, which they start if needed.
+  `--ephemeral` runs one against a fresh in-memory database, exactly as they
+  all did before. `--ephemeral` and `--data-dir` are now accepted before or
+  after any subcommand.
+- `memfork branches` says how far each branch is ahead of or behind the default
+  branch, where it forked and who wrote to it last; `memfork diff` marks and
+  colours each change.
 - Tool descriptions teach one key convention, `<project>:<kind>:<id>`.
 - `memfork init --client` may be given more than once.
+
+### Fixed
+
+- A client that had been quiet for longer than the server keeps a session got
+  an error on its next tool call. The session is now replaced and the call
+  goes through.
+- The README listed `list` and `delete`; the commands are `ls` and `del`.
 
 ## [0.1.1] - 2026-09-21
 
@@ -100,6 +136,7 @@ The first release.
 - File permissions on the daemon's endpoint file differ between Unix and
   Windows. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/memforkdb/memfork/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/memforkdb/memfork/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/memforkdb/memfork/releases/tag/v0.1.0

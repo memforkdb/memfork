@@ -90,6 +90,9 @@ pub struct BranchInfo {
     pub key_count: usize,
     /// Whether this is the database's default branch, which cannot be discarded.
     pub is_default: bool,
+    /// The commit the branch was created at: its fork point, or genesis for
+    /// the default branch.
+    pub forked_at: CommitId,
 }
 
 /// How a key differs between two commits (DESIGN §4.2).

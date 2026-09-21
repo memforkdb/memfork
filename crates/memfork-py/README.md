@@ -1,8 +1,10 @@
 # MemFork
 
-Git for agent state, in process: fork, merge, discard and rewind an agent's
-memory. Forking costs the same whatever memory holds, so an agent can branch
-before a risky step and throw the branch away if it goes wrong.
+Git for agent memory, shared by every AI tool on your machine. Fork, merge,
+discard and rewind what an agent remembers — forking costs the same whatever
+memory holds, so an agent can branch before a risky step and throw the branch
+away if it goes wrong — and hand work from one agent to another through a
+store every MCP client shares.
 
 ```sh
 pip install memfork

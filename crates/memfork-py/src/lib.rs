@@ -1,6 +1,6 @@
 //! The MemFork extension module: `import memfork`.
 //!
-//! Two things live in one wheel, because a Python user should not have to pick
+//! Two things ship in one wheel, because a Python user should not have to pick
 //! which MemFork they installed:
 //!
 //! - [`Database`], the engine in this process. Fork memory before a risky

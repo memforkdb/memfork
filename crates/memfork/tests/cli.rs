@@ -209,7 +209,7 @@ fn the_phase_two_subcommands_work() {
         .success()
         .stdout(predicate::str::contains("memfork_fork"));
     memfork()
-        .args(["call", "memfork_branches"])
+        .args(["--ephemeral", "call", "memfork_branches"])
         .assert()
         .success()
         .stdout(predicate::str::contains("main"));
@@ -242,7 +242,7 @@ fn a_script_can_be_read_from_a_file_with_spaces_and_non_ascii_in_its_path() {
 #[test]
 fn errors_are_reported_and_exit_non_zero() {
     memfork()
-        .args(["get", "k", "--branch", "no-such-branch"])
+        .args(["--ephemeral", "get", "k", "--branch", "no-such-branch"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no such branch"));
@@ -272,7 +272,7 @@ fn errors_are_reported_and_exit_non_zero() {
 #[test]
 fn json_errors_are_json() {
     let assert = memfork()
-        .args(["--json", "get", "k", "--branch", "nope"])
+        .args(["--ephemeral", "--json", "get", "k", "--branch", "nope"])
         .assert()
         .failure();
     let parsed: serde_json::Value =

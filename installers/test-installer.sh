@@ -228,6 +228,12 @@ grep -qi "checksum verified" "$work/install.log" ||
     { cat "$work/install.log"; fail "the installer never said it checked the download"; }
 ok "it says the checksum was verified"
 
+# Not a terminal, so no progress bar: a log gets words, not redraws.
+if grep -qE "100\.0%|#=#" "$work/install.log"; then
+    cat "$work/install.log"; fail "a progress bar was drawn into a log"
+fi
+ok "no progress bar when nobody is watching"
+
 # Removing the binary is half an uninstall: the PATH entry it added outlives
 # it, and a dangling entry is the sort of litter nobody traces back.
 grep -qiE "path" "$work/install.log" ||
@@ -362,6 +368,21 @@ PY
         { cat "$work/unblocked.log"; fail "the upgrade failed after the client let go"; }
     ok "once the client lets go, the upgrade goes through"
 fi
+
+# ---- download progress --------------------------------------------------------
+
+# The progress path downloads the same bytes by a different route (curl's bar;
+# a streamed download on Windows), so it has to install just as well.
+# MEMFORK_PROGRESS=1 forces it, since a test has no terminal to watch.
+MEMFORK_PROGRESS=1 run_installer "$work/progress.log" ||
+    { cat "$work/progress.log"; fail "the install failed with download progress on"; }
+grep -qi "checksum verified" "$work/progress.log" ||
+    { cat "$work/progress.log"; fail "the progress download was not checked"; }
+if [ "$kind" = tar ]; then
+    grep -q "100.0%" "$work/progress.log" ||
+        { cat "$work/progress.log"; fail "no progress bar was drawn when asked for"; }
+fi
+ok "with progress on, it downloads, checks and installs the same"
 
 # ---- a download that is not what it claims ---------------------------------
 

@@ -1,6 +1,6 @@
 [package]
 name = "memfork-py"
-description = "Python bindings for MemFork: branchable in-memory agent state."
+description = "Python bindings for MemFork: Git for agent memory, shared by every AI tool on your machine."
 # Never goes to crates.io. The Rust crates people depend on are `memfork-core`
 # and `memfork`; this one exists to be built into a wheel.
 publish = false

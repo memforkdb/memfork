@@ -328,6 +328,12 @@ fn fallback_note(client: &Client, scope: Scope, cli_present: bool) -> Option<Str
 /// wrote a client's configuration file itself, and never when the client's own
 /// command did the writing.
 pub fn apply(plan: &ClientPlan) -> Result<Option<String>, String> {
+    // The client's own command is a real wait; editing a file is not.
+    let _spinner = matches!(
+        plan.action,
+        Action::RunCommand { .. } | Action::ReplaceCommand { .. }
+    )
+    .then(|| crate::style::Spinner::quiet(&format!("registering MemFork with {}", plan.display)));
     match &plan.action {
         Action::RunCommand {
             binary,

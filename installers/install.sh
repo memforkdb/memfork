@@ -81,7 +81,19 @@ download_url() {
 
 fetch() {
     # --fail so a 404 is an error rather than a file containing a 404 page.
-    curl -fsSL "$1" -o "$2" || die "could not download $1"
+    if show_progress; then
+        curl -fL --progress-bar "$1" -o "$2" || die "could not download $1"
+    else
+        curl -fsSL "$1" -o "$2" || die "could not download $1"
+    fi
+}
+
+# A progress bar is for a person watching a terminal: never into a pipe or a
+# log, never in CI, and not when NO_COLOR asks for plain output.
+# MEMFORK_PROGRESS=1 forces it, which is how the installer tests reach it.
+show_progress() {
+    [ "${MEMFORK_PROGRESS:-}" = 1 ] && return 0
+    [ -t 2 ] && [ -z "${CI:-}" ] && [ -z "${NO_COLOR:-}" ]
 }
 
 # ---- checked, always --------------------------------------------------------

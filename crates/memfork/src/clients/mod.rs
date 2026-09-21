@@ -399,7 +399,14 @@ pub fn registration(
 ) -> (Registration, Checked) {
     if let Some((binary, resolved, args)) = client.status_command() {
         let printed = format!("{binary} {}", args.join(" "));
-        return match std::process::Command::new(&resolved).args(&args).output() {
+        // Asking a client can take seconds: some start the server to check it.
+        let spinner = crate::style::Spinner::quiet(&format!(
+            "asking {} whether MemFork is registered",
+            client.display
+        ));
+        let output = std::process::Command::new(&resolved).args(&args).output();
+        drop(spinner);
+        return match output {
             Ok(output) => {
                 let text = format!(
                     "{}{}",

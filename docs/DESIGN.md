@@ -283,7 +283,13 @@ Subcommands:
 - `memfork put|get|del|ls|search|fork|merge|discard|branches|log|at|diff` — thin CLI
   over the core for humans and scripts. **[v0.3]** `search` is included so the CLI
   can exercise §4.2's search; every command takes `--branch` (default `main`) and
-  `--json`.
+  `--json`. **[v0.10]** Each works on the shared store: the command is sent to
+  the daemon, which starts if it is not running, and carried out there by the
+  same code `--ephemeral` runs in memory, so the two cannot differ. Writes are
+  attributed to `memfork-cli`. `--ephemeral`, `--data-dir` and `--color` are
+  global. `memfork call` goes through the daemon the same way, as an MCP session
+  of its own. `memfork log --graph` draws every branch as a tree (§5.2).
+- **[v0.10]** `memfork watch` — the daemon's activity as it happens (§5.3).
 - **[v0.3]** `memfork run <script|->` — run a batch of the above subcommands against
   one in-memory database, one command per line, `#` starting a comment, shell-style
   quoting, and an optional per-line `--branch`. Until durability lands (§4.5) a
@@ -370,6 +376,60 @@ hang. If the retry fails the client gets an MCP error saying so.
 
 `--ephemeral` is entirely private: no daemon, no data directory, nothing shared
 and nothing kept.
+
+**[v0.10] A forgotten session is replaced, not reported.** The daemon forgets a
+client session after a period with no requests from it (thirty minutes). Before,
+a proxy kept presenting the forgotten session and its client got an error on
+its next call; now the daemon's "no such session" is treated like a daemon that
+went away, and the proxy opens a new session and retries. A proxy also ends its
+session when its client goes away, so the daemon's list of connected clients
+is accurate rather than a list of everything that ever connected.
+
+### 5.2 Colour, glyphs and motion
+**[v0.10]** The palette is defined once (`style.rs`): Deep Sea blues as the base
+— `#9EB3C2` for primary text, `#1C7293` for secondary text and lines — with
+`#065A82` and `#21295C` used only as backgrounds for badges and bars carrying
+light text, because as text they vanish on a dark terminal; one bright accent,
+`#3DDC97`, for forks and success; amber, `#E8A33D`, for discards and warnings. A
+test fails if either dark blue is ever used as a text colour.
+
+There is no colour or motion from `memfork mcp` (its stdout is a protocol) or
+under `--json` (its stdout is data), whatever `--color` says. Otherwise `auto`
+colours only a terminal, outside CI, without `NO_COLOR`, and not a dumb one;
+`--color always` beats all four, because a flag on the command line is the more
+specific instruction; `--color never` never colours. A spinner is drawn only on
+a terminal stderr, and only where there is real waiting: starting the daemon,
+which replays the log, and asking or registering with a client through its own
+command. Operations that take microseconds get none. When a spinner cannot be
+drawn, starting the daemon is still said in one plain line.
+
+Colour is never the only signal: every coloured state also has a word — `[main]`,
+`merge`, `fork point`, `discarded`, `ahead`, `behind`, `connected` — and every
+glyph has an ASCII stand-in, used on a legacy console, without a UTF-8 locale, or
+when stdout is not a terminal. No emoji.
+
+Output is drawn from the command's JSON result in the process attached to the
+terminal, never in the daemon, so it follows the terminal in front of the
+person.
+
+`log --graph` draws commits newest first in a topological order that breaks ties
+by sequence number and then id, so the same history always draws the same way.
+Discarding frees a branch's commits (§4.2), so the engine keeps a short record of
+the most recent discards — name, fork point, commits made — rebuilt from the log
+on replay and taking no part in any id; the graph draws each as a stub off its
+fork point.
+
+### 5.3 The activity feed
+**[v0.10]** The daemon publishes every tool call and every command-line
+operation as an event — time, client, project, operation, key or branch,
+success — and tracks each client session from its `initialize` until it ends.
+`memfork watch` reads them from `/events` on the daemon's loopback listener,
+with the same token, as one JSON object per line, starting with the daemon's
+version and the clients connected. The status word is "connected", everywhere,
+and a test keeps the other word out of the code and the docs. Watching does not
+count as activity for the daemon's idle timeout, and `watch` waits for a daemon
+rather than starting one. Wall-clock time appears in events and nowhere else in
+the daemon.
 
 ## 6. MCP tools
 All tools take an optional `branch` (default: the session's current branch).
@@ -697,9 +757,31 @@ about rather than by when they were written.
   and plain `memfork init` edits no project file.
 - **F7** the version appears in exactly the places `docs/RELEASING.md` lists.
 
+**Seeing what happens.**
+
+- **G1** separate commands share the store through the daemon, which the first
+  one starts; command-line writes are attributed to `memfork-cli`; a refusal
+  is an error; `--ephemeral` runs one command in memory, starting and writing
+  nothing; `memfork call` uses the shared store too.
+- **G2** `memfork watch` reports connections, disconnections and operations —
+  including handoff and resume, with their keys — from two MCP clients and the
+  command line, in order, as JSON lines; in words it says "connected"; it waits
+  for a daemon rather than starting one.
+- **G3** colour: none into a pipe, with `NO_COLOR`, or with `--color never`;
+  colour with `--color always` over a pipe, CI and `NO_COLOR`; none under
+  `--json` or from `memfork mcp` whatever is asked; no spinner when stderr is
+  not a terminal. The decision rules are also tested with a terminal
+  simulated.
+- **G4** `log --graph` draws forks, merges and discarded attempts, with words,
+  identically from the daemon and in memory; the discard record survives a
+  replay of the log.
+- **G5** a client idle past the daemon's session timeout keeps working.
+- **G6** the installers download, check and install the same with progress
+  on, and draw no progress bar into a log.
+
 **The repository itself.**
 
-The engineering rules live in `CONTRIBUTING.md`, addressed to any contributor,
+The engineering rules are kept in `CONTRIBUTING.md`, addressed to any contributor,
 and `AGENTS.md` points there rather than keeping rules of its own. Source
 comments state a rule rather than citing one by number, since a number means
 nothing to somebody reading the code, and they describe what the code does and
@@ -740,6 +822,21 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.10 — seeing it happen
+1. **The command line works on the shared store** (§5), through the daemon and
+   the same executor `--ephemeral` uses in memory.
+2. **`memfork watch`** (§5.3), from an activity feed the daemon publishes.
+3. **History as a tree, clearer branches, coloured diffs** (§5.2), drawn in the
+   terminal's own process; discards kept as a short record since their commits
+   are freed.
+4. **One palette and one set of rules** for colour and motion (§5.2), with
+   `--color always` beating the environment and never `--json` or `mcp`.
+5. **A forgotten session is replaced** (§5), fixing calls that failed after a
+   client had been quiet for longer than the daemon keeps a session; and a
+   proxy ends its session when its client goes.
+6. **Installer download progress**, only for a person watching (§8).
+7. **Acceptance tests G1–G6** (§9).
 
 ### v0.9 — handing work between agents
 1. **Projects have namespaces** (§6.3), worked out from the repository without

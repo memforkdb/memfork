@@ -61,18 +61,23 @@
 #![warn(missing_docs)]
 
 pub mod cli;
+pub mod client;
 pub mod clients;
 pub mod daemon;
 pub mod doctor;
+pub mod events;
 pub mod exec;
+pub mod history;
 pub mod init;
 pub mod launch;
 pub mod mcp;
 pub mod namespace;
 pub mod persist;
 pub mod proxy;
+pub mod render;
 pub mod run;
 pub mod serve;
+pub mod style;
 pub mod tools;
 
 /// The version of this crate.

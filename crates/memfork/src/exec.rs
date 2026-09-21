@@ -1,6 +1,8 @@
 //! Executing a parsed command against an engine, and rendering the result.
 
-use memfork_core::{Db, MergePolicy, Value};
+use std::collections::{BTreeMap, BTreeSet};
+
+use memfork_core::{CommitId, Db, MergePolicy, Op, Value, WRITTEN_BY};
 use serde_json::{json, Value as Json};
 
 use crate::cli::{parse_meta, parse_vector, Command};
@@ -55,6 +57,17 @@ fn short(id: memfork_core::CommitId) -> String {
 
 /// Run one command against `db` on `branch`.
 pub fn execute(db: &Db, branch: &str, command: &Command) -> Result<Outcome, ExecError> {
+    execute_as(db, branch, command, None)
+}
+
+/// [`execute`], recording `writer` against anything written — which is how
+/// the daemon records that a write came from the command line.
+pub fn execute_as(
+    db: &Db,
+    branch: &str,
+    command: &Command,
+    writer: Option<&str>,
+) -> Result<Outcome, ExecError> {
     match command {
         Command::Put {
             key,
@@ -76,7 +89,16 @@ pub fn execute(db: &Db, branch: &str, command: &Command) -> Result<Outcome, Exec
             }
             for pair in meta {
                 let (k, val) = parse_meta(pair).map_err(ExecError::Usage)?;
+                if k.starts_with("memfork.") {
+                    return Err(ExecError::Usage(format!(
+                        "`--meta {k}` is reserved: keys starting with `memfork.` are set \
+                         by MemFork itself"
+                    )));
+                }
                 v = v.with_meta(k, val);
+            }
+            if let Some(writer) = writer {
+                v = v.with_meta(WRITTEN_BY, writer);
             }
             let id = db.put(branch, key, v)?;
             Ok(Outcome::line(
@@ -222,6 +244,8 @@ pub fn execute(db: &Db, branch: &str, command: &Command) -> Result<Outcome, Exec
 
         Command::Branches => {
             let branches = db.branches();
+            let graph = Ancestry::of(db);
+            let default_head = branches.iter().find(|b| b.is_default).map(|b| b.head);
             let text = branches
                 .iter()
                 .map(|b| {
@@ -237,18 +261,37 @@ pub fn execute(db: &Db, branch: &str, command: &Command) -> Result<Outcome, Exec
                 .collect();
             let json = json!({
                 "op": "branches",
-                "branches": branches.iter().map(|b| json!({
-                    "name": b.name,
-                    "head": b.head.to_hex(),
-                    "seq": b.seq,
-                    "key_count": b.key_count,
-                    "is_default": b.is_default,
-                })).collect::<Vec<_>>(),
+                "branches": branches.iter().map(|b| {
+                    let (ahead, behind) = match default_head {
+                        Some(main) if !b.is_default => graph.ahead_behind(b.head, main),
+                        _ => (0, 0),
+                    };
+                    json!({
+                        "name": b.name,
+                        "head": b.head.to_hex(),
+                        "seq": b.seq,
+                        "key_count": b.key_count,
+                        "is_default": b.is_default,
+                        "forked_at": b.forked_at.to_hex(),
+                        "forked_at_seq": graph.seq(b.forked_at),
+                        "ahead": ahead,
+                        "behind": behind,
+                        "written_by": graph.writer(b.head),
+                    })
+                }).collect::<Vec<_>>(),
             });
             Ok(Outcome::new(text, json))
         }
 
-        Command::Log { limit } => {
+        Command::Log { limit, graph: true } => Ok(Outcome::new(
+            Vec::new(),
+            json!({ "op": "log", "graph": history(db, *limit) }),
+        )),
+
+        Command::Log {
+            limit,
+            graph: false,
+        } => {
             let entries = db.log(branch, *limit)?;
             let text = entries
                 .iter()
@@ -360,10 +403,158 @@ pub fn execute(db: &Db, branch: &str, command: &Command) -> Result<Outcome, Exec
         | Command::Call { .. }
         | Command::Init { .. }
         | Command::Serve { .. }
-        | Command::Stop { .. }
+        | Command::Stop
+        | Command::Watch { .. }
         | Command::Doctor => Err(ExecError::Usage(format!(
             "`memfork {}` is not an operation on a database",
             command.name()
         ))),
     }
+}
+
+/// What an operation was done to, for the activity feed: the key, if any, and
+/// the branch as a person would want to read it.
+pub fn target(command: &Command, branch: &str) -> (Option<String>, Option<String>) {
+    let on = Some(branch.to_owned());
+    match command {
+        Command::Put { key, .. } | Command::Get { key } | Command::Del { key } => {
+            (Some(key.clone()), on)
+        }
+        Command::Ls { prefix, .. } => ((!prefix.is_empty()).then(|| prefix.clone()), on),
+        Command::Search { prefix, .. } => (prefix.clone(), on),
+        Command::At { key, prefix, .. } => (key.clone().or_else(|| prefix.clone()), on),
+        Command::Fork { name, .. } | Command::Discard { name } => (None, Some(name.clone())),
+        Command::Merge { source, target, .. } => (
+            None,
+            Some(format!(
+                "{source} -> {}",
+                target.as_deref().unwrap_or(branch)
+            )),
+        ),
+        Command::Diff { a, b } => (None, Some(format!("{a} .. {b}"))),
+        _ => (None, on),
+    }
+}
+
+/// The commit graph, for questions about ancestry.
+struct Ancestry {
+    commits: BTreeMap<CommitId, std::sync::Arc<memfork_core::Commit>>,
+}
+
+impl Ancestry {
+    fn of(db: &Db) -> Self {
+        Ancestry {
+            commits: db.all_commits().into_iter().map(|c| (c.id, c)).collect(),
+        }
+    }
+
+    fn ancestors(&self, from: CommitId) -> BTreeSet<CommitId> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![from];
+        while let Some(id) = stack.pop() {
+            if seen.insert(id) {
+                if let Some(c) = self.commits.get(&id) {
+                    stack.extend(c.parents.iter().copied());
+                }
+            }
+        }
+        seen
+    }
+
+    /// Commits `branch` has that `base` lacks, and the other way round.
+    fn ahead_behind(&self, branch: CommitId, base: CommitId) -> (usize, usize) {
+        let mine = self.ancestors(branch);
+        let theirs = self.ancestors(base);
+        (
+            mine.difference(&theirs).count(),
+            theirs.difference(&mine).count(),
+        )
+    }
+
+    fn seq(&self, id: CommitId) -> Option<u64> {
+        self.commits.get(&id).map(|c| c.seq)
+    }
+
+    /// Who wrote a commit, as far as its puts say.
+    fn writer(&self, id: CommitId) -> Option<String> {
+        self.commits.get(&id).and_then(|c| writer_of(c))
+    }
+}
+
+fn writer_of(commit: &memfork_core::Commit) -> Option<String> {
+    commit.ops.iter().find_map(|op| match op {
+        Op::Put { value, .. } => value.meta.get(WRITTEN_BY).cloned(),
+        _ => None,
+    })
+}
+
+/// Everything `memfork log --graph` draws: every commit newest first, the
+/// branch heads, and the discarded branches the graph no longer holds.
+///
+/// "Newest first" is a topological order — a commit always comes before its
+/// parents — with ties broken by sequence number and then id, so the same
+/// history always draws the same way.
+pub fn history(db: &Db, limit: Option<usize>) -> Json {
+    let commits: BTreeMap<CommitId, std::sync::Arc<memfork_core::Commit>> =
+        db.all_commits().into_iter().map(|c| (c.id, c)).collect();
+    let mut children: BTreeMap<CommitId, usize> = commits.keys().map(|id| (*id, 0)).collect();
+    for c in commits.values() {
+        for p in &c.parents {
+            if let Some(n) = children.get_mut(p) {
+                *n += 1;
+            }
+        }
+    }
+    let forks: BTreeSet<CommitId> = children
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(id, _)| *id)
+        .collect();
+
+    let mut waiting = children.clone();
+    let mut ready: std::collections::BinaryHeap<(u64, std::cmp::Reverse<CommitId>)> = waiting
+        .iter()
+        .filter(|(_, n)| **n == 0)
+        .filter_map(|(id, _)| commits.get(id).map(|c| (c.seq, std::cmp::Reverse(*id))))
+        .collect();
+    let mut order = Vec::with_capacity(commits.len());
+    while let Some((_, std::cmp::Reverse(id))) = ready.pop() {
+        let Some(c) = commits.get(&id) else { continue };
+        order.push(std::sync::Arc::clone(c));
+        for p in &c.parents {
+            if let Some(n) = waiting.get_mut(p) {
+                *n -= 1;
+                if *n == 0 {
+                    if let Some(pc) = commits.get(p) {
+                        ready.push((pc.seq, std::cmp::Reverse(*p)));
+                    }
+                }
+            }
+        }
+    }
+    let total = order.len();
+    let shown = limit.unwrap_or(40).min(total);
+
+    json!({
+        "commits": order.iter().take(shown).map(|c| json!({
+            "commit": c.id.to_hex(),
+            "parents": c.parents.iter().map(|p| p.to_hex()).collect::<Vec<_>>(),
+            "seq": c.seq,
+            "message": c.message,
+            "changes": c.ops.len(),
+            "by": writer_of(c),
+            "fork_point": forks.contains(&c.id),
+        })).collect::<Vec<_>>(),
+        "omitted": total - shown,
+        "branches": db.branches().iter().map(|b| json!({
+            "name": b.name,
+            "head": b.head.to_hex(),
+            "is_default": b.is_default,
+        })).collect::<Vec<_>>(),
+        "discarded": db.discarded().iter().map(|d| json!({
+            "name": d.name,
+            "forked_at": d.forked_at.to_hex(),
+            "commits": d.commits,
+        })).collect::<Vec<_>>(),
+    })
 }

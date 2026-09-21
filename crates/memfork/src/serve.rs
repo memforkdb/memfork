@@ -26,6 +26,8 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::StreamableHttpService;
 use tokio_util::sync::CancellationToken;
 
+use crate::cli::Command;
+use crate::events::{Event, Events};
 use crate::mcp::MemforkServer;
 use crate::persist::{Endpoint, Store};
 use crate::tools::dispatch::Session;
@@ -35,6 +37,21 @@ pub const MCP_PATH: &str = "/mcp";
 
 /// The path `memfork stop` posts to.
 pub const SHUTDOWN_PATH: &str = "/shutdown";
+
+/// The path `memfork watch` reads the activity stream from.
+pub const EVENTS_PATH: &str = "/events";
+
+/// The path the command line posts its operations to.
+pub const CLI_PATH: &str = "/cli";
+
+/// The name the command line's writes are recorded under.
+pub const CLI_WRITER: &str = "memfork-cli";
+
+/// How long a client session may go without a request before the daemon
+/// forgets it. A proxy ends its session when its client goes away, so this
+/// only matters for one that was killed; and a proxy whose session was
+/// forgotten simply starts another.
+pub const DEFAULT_SESSION_SECONDS: u64 = 1800;
 
 /// How long the daemon waits with nothing to do before exiting.
 pub const DEFAULT_IDLE_SECONDS: u64 = 600;
@@ -46,6 +63,8 @@ pub struct ServeOptions {
     pub port: u16,
     /// Exit after this long with no requests. Zero means never.
     pub idle_seconds: u64,
+    /// Forget a client session after this long with no requests from it.
+    pub session_seconds: u64,
 }
 
 /// Why the daemon stopped.
@@ -120,13 +139,21 @@ pub async fn run(
 
     // Every HTTP session gets its own MCP session over the one database, so
     // two clients share the data and keep their own current branch.
+    let events = Arc::new(Events::default());
     let shared = db.clone();
+    let hub = Arc::clone(&events);
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config.keep_alive = Some(Duration::from_secs(options.session_seconds.max(1)));
     let service = StreamableHttpService::new(
         // Each session starts in the fallback namespace with no writer; its
         // `initialize` says which project and client it is (see
-        // `crate::mcp::adopt`).
-        move || Ok(MemforkServer::new(Arc::new(Session::new(shared.clone())))),
-        Arc::new(LocalSessionManager::default()),
+        // `crate::mcp::adopt`), and from then on it reports what it does.
+        move || {
+            Ok(MemforkServer::new(Arc::new(
+                Session::new(shared.clone()).reporting_to(Arc::clone(&hub)),
+            )))
+        },
+        Arc::new(sessions),
         // Our tools are request-and-response, so the server can answer in
         // plain JSON and the proxy needs no event-stream parsing. The default
         // allowed-hosts list is loopback only, which is left alone: it is a
@@ -178,12 +205,17 @@ pub async fn run(
                 let shutdown = shutdown.clone();
                 let clock = Arc::clone(&clock);
                 let token = token.clone();
+                let events = Arc::clone(&events);
+                let db = db.clone();
                 tokio::spawn(async move {
                     let guard = Guard {
                         inner: service,
                         token,
                         clock,
                         shutdown,
+                        events,
+                        db,
+                        port,
                     };
                     let io = hyper_util::rt::TokioIo::new(stream);
                     let _ = hyper::server::conn::http1::Builder::new()
@@ -214,6 +246,9 @@ struct Guard {
     token: String,
     clock: Arc<Clock>,
     shutdown: CancellationToken,
+    events: Arc<Events>,
+    db: memfork_core::Db,
+    port: u16,
 }
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
@@ -244,7 +279,11 @@ impl tower_service::Service<Request<Incoming>> for Guard {
     }
 
     fn call(&mut self, request: Request<Incoming>) -> Self::Future {
-        self.clock.touch();
+        // Watching is not using: a `memfork watch` left open must not keep
+        // an otherwise idle daemon alive.
+        if request.uri().path() != EVENTS_PATH {
+            self.clock.touch();
+        }
 
         let presented = request
             .headers()
@@ -277,6 +316,20 @@ impl tower_service::Service<Request<Incoming>> for Guard {
             return Box::pin(async { Ok(text(StatusCode::OK, "stopping\n")) });
         }
 
+        if request.uri().path() == EVENTS_PATH {
+            return Box::pin(std::future::ready(Ok(event_stream(
+                &self.events,
+                self.port,
+                self.shutdown.clone(),
+            ))));
+        }
+
+        if request.uri().path() == CLI_PATH {
+            let db = self.db.clone();
+            let events = Arc::clone(&self.events);
+            return Box::pin(async move { Ok(run_cli(request, db, events).await) });
+        }
+
         let mut inner = self.inner.clone();
         Box::pin(async move {
             match tower_service::Service::call(&mut inner, request).await {
@@ -284,6 +337,133 @@ impl tower_service::Service<Request<Incoming>> for Guard {
                 Err(never) => match never {},
             }
         })
+    }
+}
+
+fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxBody> {
+    let body = Full::new(Bytes::from(value.to_string()))
+        .map_err(|never| match never {})
+        .boxed();
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap_or_else(|_| Response::new(BoxBody::default()))
+}
+
+/// The activity stream: one JSON object per line, starting with who is
+/// connected, ending when the daemon stops.
+fn event_stream(events: &Events, port: u16, shutdown: CancellationToken) -> Response<BoxBody> {
+    let hello = crate::events::Hello {
+        kind: "hello".to_owned(),
+        version: crate::VERSION.to_owned(),
+        port,
+        clients: events.connected(),
+    };
+    let first = serde_json::to_string(&hello).unwrap_or_default();
+    let receiver = events.subscribe();
+    let stream = futures::stream::unfold(
+        (Some(first), receiver, shutdown),
+        |(first, mut receiver, shutdown)| async move {
+            if let Some(line) = first {
+                return Some((line, (None, receiver, shutdown)));
+            }
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return None,
+                    got = receiver.recv() => match got {
+                        Ok(event) => {
+                            let line = serde_json::to_string(&event).unwrap_or_default();
+                            return Some((line, (None, receiver, shutdown)));
+                        }
+                        // A watcher that fell behind misses what it missed,
+                        // and carries on.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    },
+                }
+            }
+        },
+    );
+    let frames = futures::StreamExt::map(stream, |line| {
+        Ok::<_, std::io::Error>(hyper::body::Frame::data(Bytes::from(line + "\n")))
+    });
+    let body = BodyExt::boxed(http_body_util::StreamBody::new(frames));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/x-ndjson")
+        .header("cache-control", "no-store")
+        .body(body)
+        .unwrap_or_else(|_| Response::new(BoxBody::default()))
+}
+
+/// One command-line operation, carried out on the shared store exactly as
+/// `--ephemeral` would carry it out in memory, and reported to watchers.
+async fn run_cli(
+    request: Request<Incoming>,
+    db: memfork_core::Db,
+    events: Arc<Events>,
+) -> Response<BoxBody> {
+    let bad = |why: String| {
+        json_response(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": why }),
+        )
+    };
+    let bytes = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => return bad(format!("the request could not be read: {e}")),
+    };
+    #[derive(serde::Deserialize)]
+    struct Call {
+        branch: String,
+        command: Command,
+        namespace: Option<String>,
+    }
+    let call: Call = match serde_json::from_slice(&bytes) {
+        Ok(call) => call,
+        Err(e) => return bad(format!("the request did not parse: {e}")),
+    };
+    if !call.command.allowed_in_script() {
+        return bad(format!(
+            "`memfork {}` is not an operation on the store",
+            call.command.name()
+        ));
+    }
+    let Call {
+        branch,
+        command,
+        namespace,
+    } = call;
+    let (key, target) = crate::exec::target(&command, &branch);
+    let name = command.name();
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::exec::execute_as(&db, &branch, &command, Some(CLI_WRITER))
+    })
+    .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => Err(crate::exec::ExecError::Usage(format!(
+            "the operation did not finish: {e}"
+        ))),
+    };
+    events.publish(Event {
+        operation: Some(name.to_owned()),
+        key,
+        branch: target,
+        ok: outcome.is_ok(),
+        error: outcome.as_ref().err().map(ToString::to_string),
+        ..Event::about(CLI_WRITER, namespace.as_deref())
+    });
+    match outcome {
+        Ok(outcome) => json_response(
+            StatusCode::OK,
+            &serde_json::json!({ "text": outcome.text, "json": outcome.json }),
+        ),
+        Err(e) => json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &serde_json::json!({ "error": e.to_string() }),
+        ),
     }
 }
 

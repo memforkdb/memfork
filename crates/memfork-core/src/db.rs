@@ -28,6 +28,27 @@ pub const DEFAULT_BRANCH: &str = "main";
 /// generous because losing this race means another writer made progress.
 const AUTO_COMMIT_RETRIES: usize = 1024;
 
+/// How many discarded branches [`Db::discarded`] remembers.
+pub const DISCARDS_REMEMBERED: usize = 100;
+
+/// A branch that was discarded: what is left to say about it once its commits
+/// are gone.
+///
+/// Discarding frees every commit only that branch could reach, so the commit
+/// graph keeps no trace of it (DESIGN §4.2). This is the one thing that does,
+/// for display: the name, where it forked from and how far it got. It is
+/// rebuilt by replaying the log, because the log already records both the
+/// branch's creation and its discard, and it takes no part in any commit id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Discarded {
+    /// The name it had.
+    pub name: String,
+    /// The commit it was forked from, which is still on some other branch.
+    pub forked_at: CommitId,
+    /// How many commits it had made on top of that.
+    pub commits: u64,
+}
+
 /// A branch: a mutable pointer into the immutable commit graph.
 ///
 /// Each branch carries its own locks, so writers on different branches never
@@ -46,6 +67,9 @@ pub(crate) struct BranchHandle {
     /// rather than a retry budget that can run out, so the operations the
     /// engine drives end to end take a turn here instead of spinning.
     pub(crate) writer: Mutex<()>,
+    /// The commit this branch was created at: the fork point, or genesis for
+    /// the default branch.
+    pub(crate) forked_at: CommitId,
 }
 
 pub(crate) struct DbInner {
@@ -66,6 +90,8 @@ pub(crate) struct DbInner {
     pub(crate) on_evict: RwLock<Option<OnEvict>>,
     /// Reading history, outside the commit chain (DESIGN §4.4).
     pub(crate) access: AccessLog,
+    /// The most recently discarded branches, oldest first.
+    pub(crate) discarded: Mutex<VecDeque<Discarded>>,
 }
 
 impl core::fmt::Debug for DbInner {
@@ -150,6 +176,7 @@ impl Db {
             Arc::new(BranchHandle {
                 head: Mutex::new(genesis.id),
                 writer: Mutex::new(()),
+                forked_at: genesis.id,
             }),
         );
         Db {
@@ -162,6 +189,7 @@ impl Db {
                 eviction: RwLock::new(None),
                 on_evict: RwLock::new(None),
                 access: AccessLog::new(),
+                discarded: Mutex::new(VecDeque::new()),
             }),
         }
     }
@@ -342,6 +370,7 @@ impl Db {
                     head,
                     seq: commit.seq,
                     key_count: commit.root.len(),
+                    forked_at: handle.forked_at,
                 })
             })
             .collect()
@@ -640,6 +669,7 @@ impl Db {
             Arc::new(BranchHandle {
                 head: Mutex::new(head),
                 writer: Mutex::new(()),
+                forked_at: head,
             }),
         );
         Ok(())
@@ -660,19 +690,34 @@ impl Db {
         self.record(&Record::BranchDiscarded {
             name: branch.to_owned(),
         })?;
-        branches.remove(branch);
+        if let Some(handle) = branches.remove(branch) {
+            // Noted before the commits go, while both ends can still be read.
+            let commits = self.inner.commits.read();
+            let seq_of = |id: &CommitId| commits.get(id).map_or(0, |c| c.seq);
+            let made = seq_of(&handle.head.lock()).saturating_sub(seq_of(&handle.forked_at));
+            drop(commits);
+            let mut discarded = self.inner.discarded.lock();
+            if discarded.len() == DISCARDS_REMEMBERED {
+                discarded.pop_front();
+            }
+            discarded.push_back(Discarded {
+                name: branch.to_owned(),
+                forked_at: handle.forked_at,
+                commits: made,
+            });
+        }
         self.inner.access.forget(branch);
-        let live_heads: Vec<CommitId> = branches.values().map(|h| *h.head.lock()).collect();
+        let surviving_heads: Vec<CommitId> = branches.values().map(|h| *h.head.lock()).collect();
         drop(branches);
-        self.collect_unreachable(&live_heads);
+        self.collect_unreachable(&surviving_heads);
         Ok(())
     }
 
     /// Drop every commit no surviving branch can reach.
-    fn collect_unreachable(&self, live_heads: &[CommitId]) {
+    fn collect_unreachable(&self, surviving_heads: &[CommitId]) {
         let mut commits = self.inner.commits.write();
         let mut reachable: BTreeSet<CommitId> = BTreeSet::new();
-        let mut queue: VecDeque<CommitId> = live_heads.iter().copied().collect();
+        let mut queue: VecDeque<CommitId> = surviving_heads.iter().copied().collect();
         while let Some(id) = queue.pop_front() {
             if !reachable.insert(id) {
                 continue;
@@ -684,6 +729,17 @@ impl Db {
             }
         }
         commits.retain(|id, _| reachable.contains(id));
+    }
+
+    /// The most recently discarded branches, oldest first, at most
+    /// [`DISCARDS_REMEMBERED`] of them.
+    pub fn discarded(&self) -> Vec<Discarded> {
+        self.inner.discarded.lock().iter().cloned().collect()
+    }
+
+    /// Every commit the graph holds, in id order: what a history view draws.
+    pub fn all_commits(&self) -> Vec<Arc<Commit>> {
+        self.inner.commits.read().values().map(Arc::clone).collect()
     }
 
     /// How many commits the graph currently holds. Tests use this to show that

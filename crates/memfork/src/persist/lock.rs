@@ -18,7 +18,7 @@
 //! depend on. On Windows it is `LockFileEx`, which blocks *reads* of the
 //! locked range as well as writes — verified, not assumed: reading a locked
 //! file there fails with "another process has locked a portion of the file".
-//! That is precisely why the token does not live in the locked file.
+//! That is precisely why the token is not kept in the locked file.
 //!
 //! **Staleness needs no heuristics.** Every operating system releases an
 //! advisory lock when the holding process dies, however it dies. So acquiring
@@ -93,7 +93,7 @@ impl Endpoint {
 /// Why the data directory could not be taken.
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
-    /// Another live process holds it.
+    /// Another running process holds it.
     #[error(
         "this data directory is in use by process {pid}{}.\n\
          Only one process can write to a MemFork data directory at a time.",
@@ -133,7 +133,7 @@ pub struct DirLock {
 impl DirLock {
     /// Take exclusive ownership of a data directory.
     ///
-    /// Fails with [`LockError::InUse`], naming the owner, if another live
+    /// Fails with [`LockError::InUse`], naming the owner, if another running
     /// process has it.
     pub fn acquire(dir: &Path) -> Result<Self, LockError> {
         std::fs::create_dir_all(dir).map_err(io(format!("cannot create {}", dir.display())))?;
@@ -255,7 +255,7 @@ pub fn read_endpoint(dir: &Path) -> Option<Endpoint> {
     serde_json::from_str(&text).ok()
 }
 
-/// Whether a live process owns this data directory.
+/// Whether a running process owns this data directory.
 ///
 /// Answered by trying the lock: if it can be taken, nobody holds it. The lock
 /// is released immediately, so this only reports a moment ago — which is all
@@ -352,7 +352,7 @@ mod tests {
 
         assert!(
             owner(dir.path()).is_none(),
-            "a stale endpoint was reported as a live owner"
+            "a stale endpoint was reported as a running owner"
         );
         assert!(
             !dir.path().join(ENDPOINT_FILE).exists(),
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn a_live_owner_is_reported_with_its_details() {
+    fn a_running_owner_is_reported_with_its_details() {
         let dir = tempfile::tempdir().expect("tempdir");
         let held = DirLock::acquire(dir.path()).expect("acquired");
         let mut endpoint = Endpoint::for_this_process();

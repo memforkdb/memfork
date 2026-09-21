@@ -3,13 +3,14 @@
 //! One entry point, [`Session::call`], shared by the MCP server and by
 //! `memfork call`, so the two can never diverge in behaviour.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use memfork_core::{Db, MergeKind, MergePolicy, Value, WRITTEN_BY};
 use serde_json::{json, Value as Json};
 
 use super::handoff;
 use super::schema::JsonObject;
+use crate::events::{Event, Events};
 use crate::namespace;
 
 /// Longest writer name recorded, in characters.
@@ -65,6 +66,10 @@ pub struct Session {
     branch: Mutex<String>,
     namespace: Mutex<String>,
     writer: Mutex<Option<String>>,
+    /// Where this session's activity is reported, in the daemon, and its
+    /// place in the list of connected clients once it has said who it is.
+    events: Option<Arc<Events>>,
+    joined: Mutex<Option<u64>>,
 }
 
 impl Session {
@@ -77,6 +82,27 @@ impl Session {
             branch: Mutex::new(branch),
             namespace: Mutex::new(namespace::FALLBACK.to_owned()),
             writer: Mutex::new(None),
+            events: None,
+            joined: Mutex::new(None),
+        }
+    }
+
+    /// Report this session's activity to `events`, for `memfork watch`.
+    #[must_use]
+    pub fn reporting_to(mut self, events: Arc<Events>) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// The client has said who it is: list it as connected. Once only.
+    pub fn announce(&self) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let mut joined = self.joined.lock().unwrap_or_else(|e| e.into_inner());
+        if joined.is_none() {
+            let who = self.writer().unwrap_or_else(|| "unknown client".to_owned());
+            *joined = Some(events.joined(&who, &self.namespace()));
         }
     }
 
@@ -146,11 +172,64 @@ impl Session {
     /// just forked has to confirm the switch — two of the redundant calls seen
     /// in practice.
     pub fn call(&self, name: &str, args: &JsonObject) -> Result<Json, ToolError> {
-        let mut result = self.dispatch(name, args)?;
+        let before = self.branch();
+        let outcome = self.dispatch(name, args);
+        self.report(name, args, &before, &outcome);
+        let mut result = outcome?;
         if let Json::Object(map) = &mut result {
             map.insert("current_branch".to_owned(), json!(self.branch()));
         }
         Ok(result)
+    }
+
+    /// Tell `memfork watch` what just happened, if anyone is listening.
+    fn report(
+        &self,
+        name: &str,
+        args: &JsonObject,
+        before: &str,
+        outcome: &Result<Json, ToolError>,
+    ) {
+        let Some(events) = &self.events else {
+            return;
+        };
+        let text = |field: &str| args.get(field).and_then(Json::as_str).map(str::to_owned);
+        // The branch a person would want to see: the one created, removed or
+        // merged for branch operations, the one acted on for everything else.
+        let branch = match name {
+            "memfork_fork" | "memfork_checkout" | "memfork_discard" => text("name"),
+            "memfork_merge" => text("source").map(|s| {
+                format!(
+                    "{s} -> {}",
+                    text("target").unwrap_or_else(|| before.to_owned())
+                )
+            }),
+            _ => Some(text("branch").unwrap_or_else(|| before.to_owned())),
+        };
+        // A handoff chooses its own key, so that one comes from the result.
+        let key = text("key").or_else(|| text("prefix")).or_else(|| {
+            outcome
+                .as_ref()
+                .ok()
+                .and_then(|r| r.get("key"))
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+        });
+        let namespace = match name {
+            "memfork_handoff" | "memfork_resume" => {
+                text("namespace").unwrap_or_else(|| self.namespace())
+            }
+            _ => self.namespace(),
+        };
+        let who = self.writer().unwrap_or_else(|| "unknown client".to_owned());
+        events.publish(Event {
+            operation: Some(name.trim_start_matches("memfork_").to_owned()),
+            key,
+            branch,
+            ok: outcome.is_ok(),
+            error: outcome.as_ref().err().map(ToString::to_string),
+            ..Event::about(&who, Some(&namespace))
+        });
     }
 
     fn dispatch(&self, name: &str, args: &JsonObject) -> Result<Json, ToolError> {
@@ -466,6 +545,17 @@ impl Session {
             // `find` above already rejected anything not in the registry, so a
             // name reaching here means the registry and this match disagree.
             other => Err(ToolError::UnknownTool(other.to_owned())),
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if let (Some(events), Some(handle)) = (
+            &self.events,
+            *self.joined.lock().unwrap_or_else(|e| e.into_inner()),
+        ) {
+            events.left(handle);
         }
     }
 }

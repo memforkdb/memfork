@@ -1,7 +1,7 @@
 [package]
 name = "memfork"
-description = "Git for agent state, in process: fork, merge, discard and rewind an agent's memory."
-keywords = ["database", "in-memory", "agent", "branching", "mcp"]
+description = "Git for agent memory, shared by every AI tool on your machine: fork, merge, rewind and hand off work between agents over MCP."
+keywords = ["agent", "memory", "mcp", "branching", "database"]
 categories = ["command-line-utilities", "database-implementations"]
 readme = "README.md"
 documentation = "https://docs.rs/memfork"
@@ -51,6 +51,10 @@ http-body-util.workspace = true
 futures = { version = "0.3", default-features = false, features = ["std"] }
 tokio-util = { version = "0.7", default-features = false }
 tower-service = "0.3"
+# Turns on colour in a Windows console. Already in the tree through clap.
+anstyle-query = "1.1"
+# Local time for `memfork watch`, from the system's time zone on every OS.
+jiff = "0.2"
 # The exact diff `memfork init --project --dry-run` prints.
 similar = { version = "2", default-features = false, features = ["text"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync", "time", "net", "process"] }

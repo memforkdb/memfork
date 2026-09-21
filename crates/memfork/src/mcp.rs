@@ -102,6 +102,7 @@ pub fn adopt(session: &Session, request: &InitializeRequestParams) {
     {
         session.set_namespace(ns.to_owned());
     }
+    session.announce();
 }
 
 /// The tool list, built from the registry.

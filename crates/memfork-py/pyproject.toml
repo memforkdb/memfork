@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "memfork"
-description = "Git for agent state, in process: fork, merge, discard and rewind an agent's memory."
+description = "Git for agent memory, shared by every AI tool on your machine: fork, merge, rewind and hand off work between agents."
 readme = "README.md"
 requires-python = ">=3.9"
 # The licence text lives once, at the root of the repository.

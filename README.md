@@ -7,7 +7,7 @@
 
 # MemFork
 
-**The agentic in-memory database**
+**Git for agent memory, shared by every AI tool on your machine.**
 
 [![CI](https://github.com/memforkdb/memfork/actions/workflows/ci.yml/badge.svg)](https://github.com/memforkdb/memfork/actions/workflows/ci.yml)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
@@ -17,13 +17,19 @@
 
 </div>
 
-Agents work by trying things. MemFork is memory that works the same way: your
-agent can **fork** everything it remembers before a risky step, **merge** the
-fork if the attempt worked, **discard** it if it did not, and **rewind** to how
-things were at any earlier point. Forking costs the same whether memory holds
-ten things or ten million, so an agent can branch freely instead of being
-careful. It runs in your own process or as a small local server, keeps what it
-stores, and is Apache-2.0.
+Agents work by trying things, and they rarely work alone. MemFork is memory built for both.
+
+Your agent can fork everything it remembers before a risky step, merge the fork if the attempt worked, discard it if it did not, and rewind to how things were at any earlier point. Forking costs the same whether memory holds ten things or ten million, so an agent can branch freely instead of being careful.
+
+That memory is shared. Claude Code, Codex, Cursor, Gemini and any other MCP client read and write the same store, so one agent can stop mid-task and leave a handoff, and another can resume from it: what was decided, why, what is done, and what comes next. No pasting context between tools. No starting over when you switch models.
+
+It runs in your own process or as a small local server, keeps what it stores, never leaves your machine, and is Apache-2.0.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memfork-story-dark.gif">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/memfork-story-light.gif">
+  <img alt="Two AI agents share one memory: Claude Code records decisions, forks before a risky step, discards the failed attempt, and leaves a handoff. Codex resumes from it with one call." src="docs/assets/memfork-story-light.gif" width="100%">
+</picture>
 
 ## Install
 
@@ -150,6 +156,38 @@ once nothing has needed it for ten minutes.
 
 Clients share the data but not their place in it: each keeps its own current
 branch, so one client forking or switching never moves another.
+
+**See what is happening.** Leave this running in a terminal while your agents
+work:
+
+```text
+$ memfork watch
+* daemon connected 127.0.0.1:52817, version X.Y.Z, store /home/ada/.local/share/memfork
+  clients connected: Claude Code (shop)
+14:02:11  Claude Code     put        shop:decision:payments  on main
+14:02:40  Claude Code     fork       on try-refunds
+14:05:02  Claude Code     discard    on try-refunds
+14:05:09  Claude Code     handoff    shop:handoff:00000003  on main
+14:06:30  * Codex CLI connected  project shop
+14:06:31  Codex CLI       resume     on main
+```
+
+`--json` prints one JSON object per line instead. It waits for the server if
+none is running rather than starting one, and a `watch` left open does not keep
+an otherwise idle server alive.
+
+And to see the history behind it:
+
+```text
+$ memfork log --graph
+* 7c0e2f4b9a1d  seq 6  [main]  merge  merge try-refunds into main (fail)
+|-\
+|-+-x discarded try-a-rewrite (2 commits)
+* | 3fa1d0c6b2e7  seq 5  put shop:decision:tax  by Codex CLI
+| * 91b7e3a0c4d2  seq 5  [try-refunds]  put shop:task:refunds  by Claude Code
+|-/
+* 5d2c19e7f0a3  seq 4  fork point  put shop:decision:payments  by Claude Code
+```
 
 **Upgrading:** the installer stops it for you. If you are replacing the binary
 by hand, run `memfork stop` first — a server from a different version will not
@@ -344,9 +382,11 @@ to the server.
 
 | Command | |
 |---|---|
-| `put`, `get`, `list`, `delete`, `search` | one operation against a database |
-| `fork`, `merge`, `discard`, `diff`, `branches`, `at`, `log` | branching and history |
-| `run <file\|->` | a script of the above against one database |
+| `put`, `get`, `ls`, `del`, `search` | one operation on the shared store |
+| `fork`, `merge`, `discard`, `diff`, `branches`, `at`, `log` | branching and history on the shared store |
+| `log --graph` | every branch as a tree: forks, merges, discarded attempts |
+| `watch` | what every client is doing, as it happens |
+| `run <file\|->` | a script of the above against one in-memory database |
 | `mcp` | serve MCP over stdio — what clients run |
 | `serve` | run the shared server (started for you when needed) |
 | `stop` | shut it down |
@@ -354,9 +394,17 @@ to the server.
 | `init --project` | write MemFork's instruction block into this repository's client instruction files |
 | `tools --format openai\|anthropic\|gemini` | the tool schemas in a vendor's format |
 
-`--json` on any command prints machine-readable output. `--ephemeral` keeps
-nothing and shares nothing. `memfork mcp --namespace <name>` (or
-`MEMFORK_NAMESPACE`) names the project a session works in.
+The operations work on the same store your MCP clients use, through the local
+server, which they start if it is not running; `--ephemeral` runs one of them
+against a fresh in-memory database instead, keeping nothing and sharing
+nothing. `--json` on any command prints machine-readable output. `memfork mcp
+--namespace <name>` (or `MEMFORK_NAMESPACE`) names the project a session works
+in.
+
+Output is coloured on a terminal that wants it. `--color always` colours it even
+when piped, in CI or with `NO_COLOR` set; `--color never` never does; `--json`
+and `memfork mcp` never carry colour whatever you ask. Every state also has a
+word, so nothing depends on seeing colour.
 
 ## How it works
 
@@ -370,6 +418,16 @@ machine — which is what makes history comparable and recovery verifiable.
 Writes go to a checksummed log before they are visible. A snapshot is taken at
 the far end of the retained history rather than at the present, so restarting
 never shortens how far back you can look.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memfork-architecture-dark.gif">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/memfork-architecture-light.gif">
+  <img alt="MemFork architecture: AI tools connect over MCP to one local process holding shared, branchable memory with handoff notes, persisted to an append-only log on your own disk." src="docs/assets/memfork-architecture-light.gif" width="100%">
+</picture>
+
+Every client talks to one small local process over MCP; that process owns the
+store and writes it to a log in a folder on your disk. The command line reaches
+the same process, and `memfork watch` shows what goes through it.
 
 The whole design is in **[docs/DESIGN.md](docs/DESIGN.md)**.
 

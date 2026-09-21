@@ -1,6 +1,6 @@
 [package]
 name = "memfork-core"
-description = "Embedded in-memory database for AI agent state with Git semantics: fork, merge, discard, rewind."
+description = "The engine behind MemFork: an embedded in-memory database for AI agent memory with Git semantics — fork, merge, discard, rewind."
 keywords = ["database", "in-memory", "agent", "branching", "persistent"]
 categories = ["data-structures", "database-implementations"]
 readme = "README.md"

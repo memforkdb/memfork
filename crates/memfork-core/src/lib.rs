@@ -87,7 +87,7 @@ mod txn;
 mod view;
 
 pub use commit::{Commit, LogEntry};
-pub use db::{validate_branch_name, Db, DEFAULT_BRANCH};
+pub use db::{validate_branch_name, Db, Discarded, DEFAULT_BRANCH, DISCARDS_REMEMBERED};
 pub use entry::{validate_key, Entry, Op, Value, DEFAULT_IMPORTANCE, MAX_KEY_BYTES, WRITTEN_BY};
 pub use error::{Error, Result};
 pub use evict::{entry_size, score, Evicted, EvictionConfig, OnEvict};
