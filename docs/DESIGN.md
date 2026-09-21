@@ -441,30 +441,30 @@ clients sanitise or reject them. Keep tool count ≤ 16 and names ≤ 48 chars,
   engine only — `memfork-core` has no I/O by design (§4.5) — so it neither writes to
   disk nor sees what an MCP client wrote. Said plainly in the README and the module
   docstring rather than left to be discovered.
-- **[v0.8] Nothing irreversible before the repository is public.** The pipeline is proved with a
-  prerelease tag, which builds every binary and wheel, publishes a GitHub prerelease,
-  and publishes to neither crates.io nor PyPI. The publish jobs skip prerelease tags,
-  and a job that runs on a prerelease says so, so the skip is observed rather than
-  hoped for. The history rewrite that precedes going public would otherwise be
-  impossible: publishing puts a version on a registry permanently, and a
-  crates.io version can never be reused.
+- **[v0.8] A release can be rehearsed.** A prerelease tag — `vX.Y.Z-rc.N` —
+  builds every binary and wheel and publishes a GitHub prerelease, and
+  publishes to neither crates.io nor PyPI. The publish job skips prerelease
+  tags, and a job that runs only on a prerelease says so, so the skip is
+  observed rather than hoped for. Rehearsal exists because the two registries
+  are the only irreversible steps: a crates.io version can never be reused, and
+  a PyPI file can never be replaced.
 
-**[v0.8] Release runbook.** In this order. Only the first step happens before
-the repository is made public:
+**[v0.8] Release sequence.** The full guide, with commands, is
+[`docs/RELEASING.md`](RELEASING.md). In outline:
 
-1. `git tag v0.1.0-rc.1 && git push origin v0.1.0-rc.1` — proves the pipeline:
-   six binaries, eight wheels, both installers, a GitHub prerelease, nothing
-   published. Delete the tag and its release afterwards, because the history
-   rewrite below changes the commit it points at.
-2. The repository is made ready to be public: history rewritten, build-process
-   references removed, the files a contributor expects added.
+1. Set the version in the workspace manifest and its internal dependency pins,
+   and date the changelog entry. `dist plan --tag vX.Y.Z` confirms the tag and
+   the version agree.
+2. Optionally, rehearse with a release candidate as above, and delete it once it
+   is green.
 3. `cargo publish --workspace --dry-run`, then `cargo publish -p memfork-core`,
    then `cargo publish -p memfork` once the index has it. Order matters: the
    binary depends on the library.
-4. PyPI: a trusted publisher for `memforkdb/memfork`, workflow `wheels.yml`,
-   environment `pypi`. No token is stored anywhere.
-5. `git tag v0.1.0 && git push origin v0.1.0` — the real release. The publish
-   jobs run this time.
+4. Push the tag. The binaries, installers and GitHub Release come from
+   `release.yml`; the wheels, and the upload to PyPI through a trusted
+   publisher, from `wheels.yml`. No token is stored anywhere.
+5. Install from the published artefacts on a clean machine and check that every
+   route reports the new version.
 
 ## 9. What the tests guarantee
 
@@ -571,22 +571,21 @@ about rather than by when they were written.
 
 **The repository itself.**
 
-MemFork was built with help from an AI coding assistant. That is a fact about
-how it was made rather than about what it is, and the repository is written to
-read that way: the engineering rules live in `CONTRIBUTING.md`, addressed to
-any contributor; `AGENTS.md` points there and adds nothing of its own; and
-source comments state a rule rather than citing one by number, since a number
-means nothing to somebody reading the code.
+The engineering rules live in `CONTRIBUTING.md`, addressed to any contributor,
+and `AGENTS.md` points there rather than keeping rules of its own. Source
+comments state a rule rather than citing one by number, since a number means
+nothing to somebody reading the code, and they describe what the code does and
+guarantees rather than when it was written.
 
-Which clients MemFork *supports* is a separate matter, and they are named
-wherever they belong — the adapter registry, `memfork init`, `memfork doctor`,
-the README. Vendor neutrality (§6.1) means no client is privileged, not that
-none is named.
+Which clients MemFork supports is named wherever it belongs — the adapter
+registry, `memfork init`, `memfork doctor`, the README. Vendor neutrality
+(§6.1) means no client is privileged, not that none is named.
 
-- **E1** no tracked file names the assistant's instruction files or carries a
-  co-author trailer. Checked by CI, with the patterns assembled at runtime so
-  that the check does not match its own source.
-- **E2** the history carries no co-author trailer either.
+- **E1** no tracked file carries an unfilled template placeholder or a stray
+  tooling file. Checked by CI, with the patterns assembled at runtime so that
+  the check does not match its own source.
+- **E2** comments and documentation contain no internal schedule language.
+  Checked by CI, reading this file only as far as the revision record.
 - **E3** every document renders in light and dark on GitHub, and uses icons
   rather than emoji. Checked by CI: pictographs and emoji variation selectors
   fail, while typography — an arrow, an em dash, a section sign — does not.
@@ -629,9 +628,9 @@ Not promises, and not in any order:
    own handles — the only `unsafe` in the workspace, and the reason the lint
    is now `deny` rather than `forbid` — and inside Python the daemon is
    started through `memfork._spawn`, which can refuse to pass anything on.
-7. **Nothing irreversible before going public** (§8). A prerelease tag proves the
-   pipeline; crates.io and PyPI come after the history rewrite, because neither
-   can be undone.
+7. **Releases can be rehearsed** (§8). A prerelease tag proves the whole
+   pipeline without touching crates.io or PyPI, the two steps that cannot be
+   undone.
 8. **Acceptance tests D3–D7** (§9) for the installers, wheel-mode launching,
    stale registrations, the inherited pipe and the publish skip.
 
@@ -698,12 +697,10 @@ Not promises, and not in any order:
    for restart fidelity and the golden-file round trip.
 
 ### v0.4 — after the MCP server
-1. **A round of polish** (§9) now sits between the working software and the
-   first public release, and what used to follow it became "still to do".
-   The work is separating the build process from the product, the repository
-   files a developer expects, user-facing wording, icons in place of emoji, and
-   a logo. None of it changes behaviour, and all of it is the difference between
-   a project that works and one someone else can pick up.
+1. **Repository standards** (§9): the files a contributor expects, wording
+   aimed at users rather than at the people who built it, icons rather than
+   emoji, and a logo. None of it changes behaviour, and all of it is the
+   difference between a project that works and one someone else can pick up.
 2. **The data-directory dependency is an open decision** (§4.5). v0.2 named
    `dirs`; `dirs` pulls in `option-ext`, which is MPL-2.0 and outside the
    licence policy. The MCP server sidestepped it by needing only the home

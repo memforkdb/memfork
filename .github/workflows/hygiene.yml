@@ -1,10 +1,6 @@
-# Two things about the repository itself, kept true by a check rather than by
-# remembering.
-#
-# MemFork was built with help from an AI coding assistant. That is a fact about
-# how it was made, not about what it is, and the repository should read that
-# way. Which clients MemFork *supports* is a different matter entirely — those
-# are named everywhere they belong, and naming one is not privileging it.
+# Properties of the repository itself, kept true by a check rather than by
+# remembering: no unfilled placeholders or stray tooling files, no internal
+# schedule language in comments and documentation, and no emoji in Markdown.
 #
 # The patterns below are assembled from pieces at runtime. A check that greps
 # for a literal string would match its own source, fail on itself, and teach
@@ -27,15 +23,15 @@ permissions:
   contents: read
 
 jobs:
-  build-process:
-    name: no build-process references or placeholders
+  placeholders:
+    name: no placeholders or stray tooling files
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
 
-      - name: No assistant file, no co-author trailer, no unfilled placeholder
+      - name: No unfilled placeholders or stray tooling files
         shell: bash
         run: |
           set -uo pipefail
@@ -44,8 +40,8 @@ jobs:
           assistant_file="CLAUDE$(printf '\056')md"
           kickoff="KICKOFF""_PROMPT"
           trailer="Co-Authored""-By"
-          # A template's placeholder contact. One shipped once, as the address
-          # people were told to report a code of conduct violation to.
+          # A template's placeholder contact: a document whose contact is a
+          # fill-in looks finished and is not.
           placeholder="YOUR_""PUBLIC_EMAIL"
 
           failed=0
@@ -81,10 +77,10 @@ jobs:
           import subprocess
           import sys
 
-          # MemFork was built in stages. Nobody arriving at the code needs to
-          # know which, and rustdoc publishes a doc comment to docs.rs for
-          # good — so a comment saying "Phase 3 brings durability" outlives
-          # both the phase and the sentence being true.
+          # A comment should say what the code does, not when it was written.
+          # rustdoc publishes doc comments to docs.rs for good, so one tied to
+          # a stage of development outlives both the stage and the sentence
+          # being true.
           PATTERNS = [
               (re.compile(r"\bphase\s+\d", re.I), "a build phase"),
               (re.compile(r"\bacceptance test\s+[a-e]\d", re.I), "an acceptance-test id"),

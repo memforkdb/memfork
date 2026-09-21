@@ -1,145 +1,184 @@
 # Releasing MemFork
 
-What to run, in what order, and what cannot be undone.
+How to cut a release, in order, and what cannot be undone.
 
-Everything here needs accounts and tokens that live with a maintainer, so no
-step is automated past the point where it becomes public. The pipeline itself
-is: push a tag, and `.github/workflows/release.yml` builds six binaries, eight
-wheels and an sdist, and publishes a GitHub Release.
+Pushing a version tag runs two workflows. `release.yml` builds six binaries
+with checksums, attaches the installers, and publishes a GitHub Release.
+`wheels.yml` builds eight wheels and an sdist, installs each one on a runner
+of its own architecture to prove it needs no compiler, and uploads them to
+PyPI. The crates go to crates.io separately, by hand.
 
-## The order
+## Two things that cannot be undone
 
-**Nothing irreversible happens before the repository is public.** A crates.io
-version can never be reused and a PyPI file can never be replaced, and the work
-that precedes going public rewrites history. Publishing first would put a
-version built on the old history onto a registry permanently.
+**A crates.io version can never be reused.** It can be yanked, which stops new
+projects from choosing it, but the number is spent and the files stay
+downloadable forever.
 
-### 1. Prove the pipeline with a prerelease
+**A PyPI file can never be replaced.** Deleting a release does not free its
+version, and uploading a corrected file under the same version is refused.
+
+Everything else — a tag, a GitHub Release, a wheel that never left CI — can be
+deleted and redone. So if anything about a release is uncertain, rehearse it
+with a release candidate first (step 2) and publish only once that is green.
+
+## Before you start
+
+- `main` is green in CI on all three operating systems.
+- `CHANGELOG.md` has an entry for the version, describing it for users. The
+  `[Unreleased]` section is empty or moved under the new heading.
+- **The repository can issue OIDC tokens.** PyPI trusted publishing needs the
+  `id-token: write` permission. Check **Settings → Actions → General →
+  Workflow permissions**, and any organisation policy above it. See
+  [When the release does not start](#when-the-release-does-not-start) for what
+  it looks like when this is missing.
+- **PyPI knows this repository.** Once, a trusted publisher for the `memfork`
+  project (or a *pending publisher* before the first upload):
+
+  | Field | Value |
+  |---|---|
+  | Owner | `memforkdb` |
+  | Repository | `memfork` |
+  | Workflow | `wheels.yml` |
+  | Environment | `pypi` |
+
+  And a `pypi` environment in the repository settings. No token is stored
+  anywhere; the publish job requests `id-token: write` and nothing else.
+
+## 1. Set the version
+
+The version lives in three places in the manifests, and all three must agree:
+
+- `version` under `[workspace.package]` in the root `Cargo.toml`;
+- the `memfork-core` entry under `[workspace.dependencies]` in the same file;
+- the `memfork` dependency in `crates/memfork-py/Cargo.toml`.
+
+The binary, both libraries, the wheel and `memfork doctor` all read the
+version from there. Then set the date on the version's heading in
+`CHANGELOG.md` to the day the tag will be pushed.
+
+Check that the tag you are about to push matches:
 
 ```sh
-git tag v0.1.0-rc.1
-git push origin v0.1.0-rc.1
+dist plan --tag vX.Y.Z
 ```
 
-This builds everything, publishes a GitHub **prerelease**, and publishes to
-neither crates.io nor PyPI: the publish job is skipped for prerelease tags and
-a job named *publish skipped (prerelease)* runs in its place, so the skip is
+`dist` derives the release from the package version, so a tag that disagrees
+with it produces an error here rather than a broken release later. Commit the
+version change on its own.
+
+## 2. Rehearse with a release candidate (optional)
+
+Worth doing whenever the release pipeline, the installers or the wheel matrix
+changed since the last release — which is to say, when a failure would be
+discovered at the point where it can no longer be fixed quietly.
+
+A candidate needs its own version, because of the check above: set it to
+`X.Y.Z-rc.N` on a throwaway branch, tag that commit, and push only the tag.
+
+```sh
+git switch -c rc-rehearsal
+# set the version to X.Y.Z-rc.N as in step 1, then:
+git commit -am "chore: version X.Y.Z-rc.N"
+git tag vX.Y.Z-rc.N
+git push origin vX.Y.Z-rc.N
+git switch main && git branch -D rc-rehearsal
+```
+
+SemVer puts a hyphen before the prerelease part and nowhere else, so both
+workflows recognise the tag as a prerelease: `release.yml` publishes a GitHub
+*prerelease*, and `wheels.yml` builds and tests every wheel but skips PyPI,
+running a job named *publish skipped (prerelease)* in its place so the skip is
 visible rather than assumed.
 
 What to check on the run:
 
-- six archives and six `.sha256` files;
-- `install.sh` and `install.ps1` attached to the release;
+- six archives, six `.sha256` files, `install.sh` and `install.ps1`;
 - eight wheels and one sdist;
-- every *install (...)* job green — that is D2, `pip install` with no compiler;
-- *publish skipped (prerelease)* present, and *publish to PyPI* absent.
+- every *install (…)* job green;
+- *publish skipped (prerelease)* present and *publish to PyPI* absent.
 
-Then delete the tag and its release, because the history rewrite below changes
-the commit it points at:
+Then remove it, so that `releases/latest` and anyone browsing tags see only
+real releases:
 
 ```sh
-gh release delete v0.1.0-rc.1 --yes
-git push origin :refs/tags/v0.1.0-rc.1
-git tag -d v0.1.0-rc.1
+gh release delete vX.Y.Z-rc.N --yes
+git push origin :refs/tags/vX.Y.Z-rc.N
+git tag -d vX.Y.Z-rc.N
 ```
 
-### 2. Make the repository ready to be public
-
-History rewrite, build-process references removed, the files a contributor
-expects, wording aimed at a reader rather than at the people who built it.
-See DESIGN §9.
-
-### 3. Publish the crates
+## 3. Publish the crates
 
 ```sh
-cargo publish --workspace --dry-run    # clean before anything is sent
+cargo publish --workspace --dry-run    # everything packages and builds
 cargo publish -p memfork-core          # the library first
 cargo publish -p memfork               # once the index has memfork-core
 ```
 
-Order matters: the binary depends on the library, and crates.io will refuse
-`memfork` until `memfork-core 0.1.0` is there. It usually takes under a minute
-to appear; `cargo publish -p memfork` will say if it is not.
+Order matters: the binary depends on the library, and crates.io refuses
+`memfork` until the matching `memfork-core` is in the index — usually under a
+minute. `memfork-py` is `publish = false`; it reaches users as a wheel.
 
-`memfork-py` is `publish = false` and never goes to crates.io. The names
-`memfork` and `memfork-core` were free as of 2026-09-21.
-
-### 4. Allow the workflow to prove who it is
-
-PyPI trusted publishing works by GitHub handing the workflow a signed token,
-which needs the `id-token: write` permission. **This repository cannot issue
-one yet**, and the symptom is severe out of proportion to the cause: a run that
-requests it is refused before it starts, with no jobs and an error that names
-nothing — "This run likely failed because of a workflow file issue".
-
-Turn it on in **Settings → Actions → General → Workflow permissions**, and
-check any organisation policy above it. Until then the wheels are built and
-tested on every tag and simply not uploaded, which is what a prerelease wanted
-anyway.
-
-This is also why `wheels.yml` runs on the tag rather than being called by the
-release workflow: a refusal there would have taken the binaries and the GitHub
-Release down with it.
-
-### 5. Set up PyPI publishing
-
-Use a **trusted publisher**, so no token is stored anywhere. On PyPI, under the
-`memfork` project (or *pending publisher* if the name is not yet claimed):
-
-| Field | Value |
-|---|---|
-| Owner | `memforkdb` |
-| Repository | `memfork` |
-| Workflow | `wheels.yml` |
-| Environment | `pypi` |
-
-Then create the `pypi` environment in the repository settings. The publish job
-already requests `id-token: write` and nothing else.
-
-If a token is used instead, put it in that environment as `PYPI_API_TOKEN` and
-give the publish step `with: password: ${{ secrets.PYPI_API_TOKEN }}`. The
-trusted publisher is better: there is no secret to leak or rotate.
-
-### 6. Release
+## 4. Tag
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-This time the publish job runs. Afterwards:
+This time the publish job in `wheels.yml` runs and uploads to PyPI.
+
+## 5. Verify
+
+On a machine that has never had MemFork installed, or after `memfork stop` and
+removing the old one:
 
 ```sh
-pip install memfork
 curl -fsSL https://github.com/memforkdb/memfork/releases/latest/download/install.sh | sh
+pip install memfork
+memfork --version
+memfork doctor
 ```
 
-Both should give version 0.1.0, and `memfork doctor` should agree.
+Every one should report the new version. `releases/latest` ignores
+prereleases, so the install one-liners only pick up a release once it is a
+real one. Check that the README's badges for crates.io, docs.rs and PyPI show
+the new version too; docs.rs builds a few minutes after publishing.
 
-## Changing the release itself
+## When the release does not start
 
-The workflow is generated. Edit `[workspace.metadata.dist]` in `Cargo.toml`,
-then:
+If a tag produces a run with **no jobs at all** and the message *"This run
+likely failed because of a workflow file issue"*, the likely cause is a
+permission the repository cannot grant — most often `id-token: write`.
+
+GitHub refuses such a run before it starts, and the refusal names nothing. It
+is also why `wheels.yml` runs on the tag rather than being called from
+`release.yml`: a job that calls a reusable workflow *and* requests
+`id-token: write` takes the calling run down with it, so a missing permission
+would stop the binaries and the GitHub Release as well as the wheels. As two
+workflows, a refusal can only stop the one that asked.
+
+Fix the permission (see [Before you start](#before-you-start)), delete the
+tag, and push it again.
+
+## Changing the release pipeline
+
+`release.yml` is generated by `dist` from `[workspace.metadata.dist]` in the
+root `Cargo.toml`. Edit the config, then regenerate:
 
 ```sh
-dist init --yes        # regenerates .github/workflows/release.yml
+dist init --yes
 ```
 
 CI runs `dist generate --check`, so a config change that was not regenerated
 fails there rather than surprising somebody mid-release. `dist init` rewrites
-the comments in that block, so the reasoning behind the settings lives in
-DESIGN §8 as well.
+the comments in that block, so the reasoning behind each setting also lives in
+DESIGN §8.
 
-Actions are pinned by commit, in `github-action-commits` and in the other
-workflows. To move one, resolve the new commit and change both:
+Every action is pinned to a commit — in `github-action-commits` for the
+generated workflow, and directly in the others — because a tag is a name
+somebody else can move. To update one, resolve the new commit and change it in
+both places:
 
 ```sh
 gh api repos/actions/checkout/commits/v5 --jq .sha
 ```
-
-## What the version number touches
-
-`version` in the workspace `Cargo.toml`, once. The binary, both libraries and
-the wheel all read it from there, and `memfork doctor` prints it. A tag whose
-name disagrees with it is the one mistake this pipeline will not catch for
-you — check `dist plan` before pushing.

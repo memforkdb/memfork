@@ -9,10 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [0.1.0] - UNRELEASED
-
-<!-- Release day: set the date above to the day the tag is pushed, in
-     YYYY-MM-DD. Nothing else in this file needs changing. -->
+## [0.1.0] - 2026-09-21
 
 The first release.
 
