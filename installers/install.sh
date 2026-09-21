@@ -12,7 +12,13 @@
 # Why this is not the installer `dist` generates: an older MemFork may be
 # running a daemon over your memory, and it has to be stopped before its
 # binary is replaced. A generated installer cannot run that step.
-
+#
+# Everything below runs in a subshell. Every instruction for this script pipes
+# it to `sh`, which makes it a process of its own; but if it were ever sourced
+# into a login shell instead, `set -eu` would change that shell for the rest of
+# the session and the first `exit` would close it. Inside `( ... )`, neither can
+# reach past the closing parenthesis.
+(
 set -eu
 
 REPO="memforkdb/memfork"
@@ -211,3 +217,4 @@ profile_file() {
 }
 
 main "$@"
+)

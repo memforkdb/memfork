@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.1.1] - 2026-09-21
+
+Fixes to the installers, found on the first real upgrade on Windows. The
+engine, the binary and the Python package are unchanged apart from the version.
+
+### Fixed
+
+- **install.ps1 no longer closes your terminal.** Run as `irm ... | iex`, it
+  executes inside your PowerShell session, and a failure used to call `exit`,
+  which ended that session. It now prints the error, says MemFork was not
+  installed, and returns. It also no longer leaves its strict mode, error
+  preference, functions or variables behind in your session; the only change
+  it makes to your session is the PATH entry it reports.
+- **A blocked upgrade on Windows now says what is blocking it.** When the
+  installed binary is still in use, the installer names each application
+  running MemFork and what to do, for example "Claude Code (pid 30748) is
+  using MemFork. Close it, then run this installer again." The daemon is still
+  stopped automatically; client applications are never closed by the
+  installer.
+- **install.sh cannot change or close a shell that sources it.** The documented
+  way to run it is `curl ... | sh`, which was already safe; its body now runs
+  in a subshell, so sourcing it by mistake cannot leave `set -eu` on or exit
+  the shell.
+
 ## [0.1.0] - 2026-09-21
 
 The first release.
@@ -57,5 +81,6 @@ The first release.
 - File permissions on the daemon's endpoint file differ between Unix and
   Windows. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/memforkdb/memfork/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/memforkdb/memfork/releases/tag/v0.1.0

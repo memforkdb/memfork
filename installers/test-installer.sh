@@ -9,7 +9,10 @@
 #   * it installs, and what it installs runs;
 #   * a wrong checksum stops it, rather than being installed anyway;
 #   * an upgrade stops a running daemon first, which on Windows is the
-#     difference between replacing the binary and failing to.
+#     difference between replacing the binary and failing to;
+#   * a failure leaves the shell that ran it alive and unchanged;
+#   * on Windows, an upgrade blocked by a client names that client, and
+#     leaves it running.
 #
 # Runs on all three operating systems under bash (Git Bash on Windows).
 
@@ -32,7 +35,29 @@ cleanup() {
     if [ -x "$work/install/memfork.exe" ]; then
         MEMFORK_DATA_DIR="$work/data" "$work/install/memfork.exe" stop >/dev/null 2>&1 || true
     fi
+    restore_user_path
     rm -rf "$work" 2>/dev/null || true
+}
+
+# On Windows the installer adds its directory to the *user* PATH in the
+# registry, which is exactly what it should do for a real person — and exactly
+# what a test must not leave behind. Every run used to add another temporary
+# directory to the developer's own PATH, one per run, pointing at nothing once
+# the run ended. So the value is saved before anything is installed and put
+# back on the way out, however the run ends.
+user_path_saved=""
+save_user_path() {
+    command -v cygpath >/dev/null 2>&1 || return 0
+    user_path_saved="$work/user-path.saved"
+    powershell -NoProfile -Command \
+        "Set-Content -LiteralPath '$(cygpath -w "$user_path_saved")' -NoNewline -Value ([Environment]::GetEnvironmentVariable('Path','User'))" \
+        >/dev/null 2>&1 || user_path_saved=""
+}
+restore_user_path() {
+    [ -n "$user_path_saved" ] && [ -f "$user_path_saved" ] || return 0
+    powershell -NoProfile -Command \
+        "[Environment]::SetEnvironmentVariable('Path', [IO.File]::ReadAllText('$(cygpath -w "$user_path_saved")'), 'User')" \
+        >/dev/null 2>&1 || true
 }
 
 fail() { printf 'not ok: %s\n' "$*" >&2; exit 1; }
@@ -45,6 +70,10 @@ case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) target="x86_64-pc-windows-msvc"; exe="memfork.exe"; kind="zip" ;;
     *) fail "unsupported system $(uname -s)" ;;
 esac
+
+if [ "$kind" != tar ]; then
+    save_user_path
+fi
 
 # ---- a release, served from disk -------------------------------------------
 
@@ -153,7 +182,12 @@ if [ "$kind" != tar ]; then
     export PSModulePath
 fi
 
-# Run whichever installer belongs to this platform, into $work/install.
+# Run whichever installer belongs to this platform, into $work/install, and
+# succeed exactly when it installed.
+#
+# install.ps1 never calls `exit` — under `irm | iex` that would close the
+# user's terminal — so on Windows there is no exit code to read. It prints a
+# fixed line when it fails instead, and that line is the signal here.
 run_installer() {
     log="$1"
     if [ "$kind" = tar ]; then
@@ -161,6 +195,9 @@ run_installer() {
     else
         powershell -NoProfile -ExecutionPolicy Bypass -File "$(win_path "$work/install.ps1")" \
             > "$log" 2>&1
+        if grep -q "MemFork was not installed" "$log"; then
+            return 1
+        fi
     fi
 }
 
@@ -221,6 +258,110 @@ grep -qi "stopping the memfork already installed" "$work/upgrade.log" \
     || fail "the daemon is still registered as running after the upgrade"
 wait "$daemon_pid" 2>/dev/null || true
 ok "an upgrade stops the running daemon and replaces the binary"
+
+# ---- the installer cannot take the calling shell down with it -------------
+
+# The documented way to run each installer puts it inside the caller's shell
+# (iex on Windows) or could be misread as doing so (sourcing on Unix). Either
+# way a failure must leave that shell alive and unchanged: an `exit` in an
+# iex'd script closes the person's terminal, and a leaked `set -e` or error
+# preference changes every command they type afterwards.
+if [ "$kind" = tar ]; then
+    sh -c '
+        MEMFORK_DOWNLOAD_BASE=http://127.0.0.1:9
+        export MEMFORK_DOWNLOAD_BASE
+        . "$1"
+        echo "SHELL-SURVIVED"
+        false
+        echo "SET-E-DID-NOT-LEAK"
+    ' sh "$work/install.sh" > "$work/sourced.log" 2>&1 || true
+    grep -q "SHELL-SURVIVED" "$work/sourced.log" ||
+        { cat "$work/sourced.log"; fail "sourcing a failing install.sh ended the calling shell"; }
+    grep -q "SET-E-DID-NOT-LEAK" "$work/sourced.log" ||
+        { cat "$work/sourced.log"; fail "sourcing install.sh left set -e on in the calling shell"; }
+    ok "a failing install.sh cannot end or change a shell that sources it"
+else
+    # Served from the stand-in release and piped to iex, exactly as the README
+    # says to run it — through a download base that cannot answer, so it fails.
+    # The caller is a script of its own rather than a -Command string: iex runs
+    # in the scope of whatever calls it, so anything install.ps1 leaks lands in
+    # this script's scope and the checks after it can see it.
+    cp "$root/installers/install.ps1" "$release/install.ps1"
+    cat > "$work/caller.ps1" <<PS1
+\$env:MEMFORK_DOWNLOAD_BASE = 'http://127.0.0.1:9'
+irm '$base/install.ps1' | iex
+'HOST-SURVIVED'
+'error preference: ' + \$ErrorActionPreference
+'leaked function: ' + [bool](Get-Command Get-Target -ErrorAction SilentlyContinue)
+PS1
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(win_path "$work/caller.ps1")" \
+        > "$work/iex.log" 2>&1 || true
+    grep -q "HOST-SURVIVED" "$work/iex.log" ||
+        { cat "$work/iex.log"; fail "install.ps1 ended the PowerShell host it was iex'd into"; }
+    grep -q "MemFork was not installed" "$work/iex.log" ||
+        { cat "$work/iex.log"; fail "install.ps1 did not say the install failed"; }
+    grep -q "error preference: Continue" "$work/iex.log" ||
+        { cat "$work/iex.log"; fail "install.ps1 changed the caller's error preference"; }
+    grep -q "leaked function: False" "$work/iex.log" ||
+        { cat "$work/iex.log"; fail "install.ps1 left its functions in the caller's session"; }
+    ok "a failing install.ps1 leaves the PowerShell session it was iex'd into alive and unchanged"
+fi
+
+# ---- an upgrade blocked by a client that is using MemFork ------------------
+
+# On Windows an MCP client holding a `memfork.exe mcp` child keeps the
+# executable locked, and the installer must say which application that is —
+# and must not close it. Tested with a real one: a stand-in client that starts
+# `memfork mcp` from the installed binary and keeps it running.
+if [ "$kind" != tar ]; then
+    holder_script="$work/holder.py"
+    cat > "$holder_script" <<'PY'
+import subprocess, sys, time
+child = subprocess.Popen([sys.argv[1], "mcp"], stdin=subprocess.PIPE,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+print(child.pid, flush=True)
+time.sleep(600)
+PY
+    "$py" "$holder_script" "$(win_path "$installed")" > "$work/holder.out" 2>&1 &
+    holder_pid=$!
+    for _ in $(seq 1 50); do
+        [ -s "$work/holder.out" ] && break
+        sleep 0.2
+    done
+    [ -s "$work/holder.out" ] || fail "the stand-in client did not start memfork mcp"
+    # The Windows pid of the stand-in client itself, which is what the
+    # installer should name — not Git Bash's own numbering of it.
+    client_winpid=$(powershell -NoProfile -Command \
+        "(Get-CimInstance Win32_Process -Filter \"ProcessId = $(cat "$work/holder.out")\").ParentProcessId")
+    client_winpid=$(printf '%s' "$client_winpid" | tr -d '\r\n ')
+    ok "a stand-in client (pid $client_winpid) is holding memfork mcp"
+
+    if run_installer "$work/blocked.log"; then
+        fail "the installer replaced an executable that a client was running"
+    fi
+    grep -q "(pid $client_winpid) is using MemFork" "$work/blocked.log" ||
+        { cat "$work/blocked.log"; fail "the installer did not name the client holding MemFork"; }
+    grep -q "Close it, then run this installer again" "$work/blocked.log" ||
+        { cat "$work/blocked.log"; fail "the installer did not say what to do"; }
+    powershell -NoProfile -Command \
+        "if (Get-Process -Id $client_winpid -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' }" \
+        > "$work/holder.state" 2>&1
+    grep -q "alive" "$work/holder.state" ||
+        fail "the installer closed the client application; it must never do that"
+    ok "a blocked upgrade names the client, says what to do, and leaves it running"
+
+    # Now let it go, and the same upgrade goes through.
+    kill "$holder_pid" 2>/dev/null || true
+    powershell -NoProfile -Command \
+        "Stop-Process -Id $client_winpid -Force -ErrorAction SilentlyContinue; \
+         Get-CimInstance Win32_Process -Filter \"Name = 'memfork.exe'\" |
+           Where-Object { \$_.ParentProcessId -eq $client_winpid } |
+           ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" \
+        > /dev/null 2>&1 || true
+    run_installer "$work/unblocked.log" ||
+        { cat "$work/unblocked.log"; fail "the upgrade failed after the client let go"; }
+    ok "once the client lets go, the upgrade goes through"
+fi
 
 # ---- a download that is not what it claims ---------------------------------
 

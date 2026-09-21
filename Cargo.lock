@@ -678,7 +678,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memfork"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "assert_cmd",
  "blake3",
@@ -708,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "memfork-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "memfork-py"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "memfork",
  "memfork-core",

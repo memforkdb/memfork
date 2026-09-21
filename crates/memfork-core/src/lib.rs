@@ -69,7 +69,6 @@
 //! The design is documented in
 //! [`docs/DESIGN.md`](https://github.com/memforkdb/memfork/blob/main/docs/DESIGN.md).
 
-#![doc(html_root_url = "https://docs.rs/memfork-core/0.1.0")]
 #![warn(missing_docs)]
 
 mod access;

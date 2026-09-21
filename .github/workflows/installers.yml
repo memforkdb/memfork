@@ -60,6 +60,21 @@ jobs:
             (Resolve-Path installers/install.ps1).Path, [ref]$null, [ref]$errors)
           if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
           'parses on 5.1'
+      # People run it as `irm ... | iex`, inside their own session, where an
+      # `exit` closes their terminal. The behavioural test covers the paths it
+      # reaches; this covers every path there is.
+      - name: No code path in it calls exit
+        shell: powershell
+        run: |
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path installers/install.ps1).Path, [ref]$null, [ref]$null)
+          $exits = $ast.FindAll({ param($n)
+            $n -is [System.Management.Automation.Language.ExitStatementAst] }, $true)
+          if ($exits) {
+            $exits | ForEach-Object { "install.ps1:$($_.Extent.StartLineNumber): $($_.Extent.Text)" }
+            exit 1
+          }
+          'no exit anywhere in install.ps1'
 
   # The behaviour that matters: it installs, it refuses a bad download, and it
   # stops a running daemon before replacing the binary it is running from.
