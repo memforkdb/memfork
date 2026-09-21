@@ -306,6 +306,16 @@ new process group on Unix, `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS` on
 Windows, null standard streams on both — waits for the endpoint file, and
 proxies to it. Only the daemon ever opens the write-ahead log.
 
+**[v0.11] Starting is allowed to be slow, and failing says why.** The wait
+for the endpoint is sixty seconds by default, `MEMFORK_START_TIMEOUT` seconds
+if set: a first start on a machine scanning a new executable is the slowest
+there is and the worst time to fail. Past three seconds one plain line says
+the start is still under way. The daemon's stderr goes to
+`memfork-daemon.log` in the data directory, rewritten by each start, rather
+than to nowhere; if the process exits without serving, the wait stops two
+seconds later instead of running out the clock, and a failure names the
+command that was tried, quotes the end of that log, and says what to do next.
+
 Nobody should have to run `memfork serve` by hand. Two clients at once is the
 normal case, and the second failing with "in use by process N" would be a bug
 report rather than a feature.
@@ -778,6 +788,17 @@ about rather than by when they were written.
 - **G5** a client idle past the daemon's session timeout keeps working.
 - **G6** the installers download, check and install the same with progress
   on, and draw no progress bar into a log.
+- **G7** a daemon that dies on arrival is reported within seconds, with the
+  command tried, the end of its own log and what to do; one that never serves
+  is waited for exactly `MEMFORK_START_TIMEOUT` seconds with one progress line;
+  a timeout that is not a number is refused by name.
+- **G8** a command that has to start the daemon, run with its stdout and
+  stderr captured, returns promptly while the daemon runs on: the daemon holds
+  neither.
+- **G9** on a terminal, `ls` and `at` put each value on one line, cut to the
+  width with a marker and a note; `--full` prints them whole; into a pipe every
+  value is whole, byte for byte, with or without `--full`; `--json` is
+  unchanged.
 
 **The repository itself.**
 
@@ -822,6 +843,17 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.11 — nothing to trip over
+1. **The daemon may take a minute to start** (§5), overridable, with one line
+   of progress, its own output kept in a log, and a failure that says what
+   was tried and what to do.
+2. **`ls` and `at` fit a terminal** (§5.2): values on one line each, cut to
+   the width with a marker and a note, whole with `--full`, and always whole
+   into a pipe.
+3. **Acceptance tests G7–G9** (§9): the start timeout and its message, a
+   captured command that starts a daemon returning promptly, and listings on
+   a terminal, with `--full`, and into a pipe.
 
 ### v0.10 — seeing it happen
 1. **The command line works on the shared store** (§5), through the daemon and

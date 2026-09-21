@@ -254,6 +254,9 @@ pub fn text() -> String {
             Registration::Stale { .. } => "registered, but not to this MemFork",
             Registration::No if r.installed => "not registered",
             Registration::No => "not installed",
+            // A client that is not here at all is simply not installed; why
+            // MemFork could not ask it is beside the point.
+            Registration::Unknown(_) if !r.installed => "not installed",
             Registration::Unknown(_) => "unknown",
         };
         out.push_str(&format!("  {} ({})  [{status}]\n", r.display, r.id));
@@ -269,7 +272,9 @@ pub fn text() -> String {
         }
         out.push_str(&format!("    checked     {}\n", describe(&r.checked)));
         if let Registration::Unknown(why) = &r.registration {
-            out.push_str(&format!("    why         {why}\n"));
+            if r.installed {
+                out.push_str(&format!("    why         {why}\n"));
+            }
         }
         if let Registration::Stale { found } = &r.registration {
             out.push_str(&format!(

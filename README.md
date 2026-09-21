@@ -49,8 +49,14 @@ irm https://github.com/memforkdb/memfork/releases/latest/download/install.ps1 | 
 
 ```sh
 pip install memfork      # or: uv tool install memfork
-cargo install memfork    # builds from source; needs Rust 1.89 or newer
+cargo install memfork    # builds from source; needs Rust 1.89 or newer and a C linker
 ```
+
+If `memfork` is not found afterwards, open a new terminal. On macOS and Linux
+the installer prints the exact line to add to your shell's startup file if its
+directory is not on your `PATH` yet; `pip` warns in the same way when its
+scripts directory is not on it, and `uv tool install` or `pipx install` avoid
+the question.
 
 The install scripts put one file into a directory you own — `~/.memfork/bin` or
 `%LOCALAPPDATA%\Programs\memfork\bin` — and nothing asks for administrator.
@@ -79,12 +85,20 @@ Registered with 3 client(s). Restart them to pick up the tools.
 ```
 
 If something is not working, `memfork doctor` says which MemFork is running,
-where your memory is kept, and what each client thinks is registered.
+where your memory is kept, and what each client thinks is registered. The
+first command or tool call starts a small background server, which can take a
+few seconds on a first run while the system checks a new program; if it does
+not start within a minute, the error names what was tried and the log file
+holding its own output (`memfork-daemon.log` in the data directory), and
+`MEMFORK_START_TIMEOUT=180` allows a slow machine longer.
 
 ## Try it
 
 Ask your agent to remember something, branch, change it on the branch, and
-throw the branch away. From the command line, the same thing:
+throw the branch away. From the command line, the same thing — in a scratch
+database in memory, so it touches nothing you have stored:
+
+**macOS and Linux** (bash or zsh; in fish, save the lines to a file and run `memfork run file`)
 
 ```sh
 memfork run - <<'SCRIPT'
@@ -97,6 +111,21 @@ get plan:1                            # still "ship on Friday" here
 discard attempt                       # the attempt never happened
 get plan:1                            # "ship on Friday"
 SCRIPT
+```
+
+**Windows (PowerShell)**
+
+```powershell
+@'
+put plan:1 "ship on Friday"          # remember something
+
+fork attempt                          # branch the whole of memory
+put plan:1 "ship on Monday" --branch attempt
+get plan:1                            # still "ship on Friday" here
+
+discard attempt                       # the attempt never happened
+get plan:1                            # "ship on Friday"
+'@ | memfork run -
 ```
 
 Swap `discard` for `merge attempt` and the change comes back to the main line
@@ -385,7 +414,7 @@ to the server.
 
 | Command | |
 |---|---|
-| `put`, `get`, `ls`, `del`, `search` | one operation on the shared store |
+| `put`, `get`, `ls`, `del`, `search` | one operation on the shared store; on a terminal `ls` fits values to the width, `--full` shows them whole |
 | `fork`, `merge`, `discard`, `diff`, `branches`, `at`, `log` | branching and history on the shared store |
 | `log --graph` | every branch as a tree: forks, merges, discarded attempts |
 | `watch` | what every client is doing, as it happens |

@@ -167,6 +167,10 @@ pub enum Command {
         /// Stop after this many keys.
         #[arg(long)]
         limit: Option<usize>,
+        /// On a terminal, print every value whole rather than cut to the
+        /// terminal's width. Output to a pipe or a file is always whole.
+        #[arg(long)]
+        full: bool,
     },
 
     /// Search by cosine similarity against a query vector.
@@ -238,6 +242,10 @@ pub enum Command {
         /// Only list keys starting with this prefix.
         #[arg(long)]
         prefix: Option<String>,
+        /// On a terminal, print every listed value whole rather than cut to
+        /// the terminal's width. Output to a pipe or a file is always whole.
+        #[arg(long)]
+        full: bool,
     },
 
     /// Show key-level differences between two branches or commit ids.

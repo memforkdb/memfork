@@ -224,13 +224,17 @@ pub struct Style {
     pub colour: bool,
     /// Use box-drawing glyphs rather than ASCII.
     pub unicode: bool,
+    /// The terminal's width, when stdout is a terminal. `None` means output
+    /// goes to a pipe or a file, and must be printed whole.
+    pub columns: Option<usize>,
 }
 
 impl Style {
-    /// No colour, ASCII glyphs: what a log file or a test sees.
+    /// No colour, ASCII glyphs, no terminal: what a log file or a test sees.
     pub const PLAIN: Style = Style {
         colour: false,
         unicode: false,
+        columns: None,
     };
 
     /// The style for this process's stdout.
@@ -242,9 +246,13 @@ impl Style {
             // no-op everywhere else.
             let _ = anstyle_query::windows::enable_ansi_colors();
         }
+        let columns = (channel == Channel::Human && env.stdout_tty)
+            .then(|| terminal_size::terminal_size().map(|(w, _)| usize::from(w.0)))
+            .flatten();
         Style {
             colour,
             unicode: channel == Channel::Human && env.unicode,
+            columns,
         }
     }
 
@@ -332,6 +340,8 @@ pub fn preferences() -> (ColorChoice, Channel) {
 pub struct Spinner {
     stop: Option<std::sync::mpsc::Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// What the spinner says, which [`Spinner::update`] can change.
+    message: std::sync::Arc<std::sync::Mutex<String>>,
 }
 
 impl Spinner {
@@ -349,9 +359,11 @@ impl Spinner {
 
     fn begin(choice: ColorChoice, channel: Channel, message: &str, say_it: bool) -> Spinner {
         let env = Surroundings::here();
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(message.to_owned()));
         let none = Spinner {
             stop: None,
             thread: None,
+            message: std::sync::Arc::clone(&shared),
         };
         if channel == Channel::Protocol {
             return none;
@@ -370,16 +382,20 @@ impl Spinner {
         let style = Style {
             colour: colour(choice, channel, &env),
             unicode: env.unicode,
+            columns: None,
         };
-        let message = message.to_owned();
+        let message = std::sync::Arc::clone(&shared);
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let thread = std::thread::spawn(move || {
             use std::io::Write as _;
             let mut i = 0usize;
             loop {
                 let frame = style.accent(frames[i % frames.len()]);
+                let text = message.lock().map(|m| m.clone()).unwrap_or_default();
                 let mut err = std::io::stderr().lock();
-                let _ = write!(err, "\r{frame} {message}");
+                // Cleared first, so a shorter message does not leave the end
+                // of a longer one behind.
+                let _ = write!(err, "\r\x1b[2K{frame} {text}");
                 let _ = err.flush();
                 drop(err);
                 i += 1;
@@ -395,6 +411,19 @@ impl Spinner {
         Spinner {
             stop: Some(tx),
             thread: Some(thread),
+            message: shared,
+        }
+    }
+
+    /// Say something new about the wait: in the spinner, if one is drawn,
+    /// or as one plain line on stderr if not.
+    pub fn update(&self, message: &str) {
+        if self.thread.is_some() {
+            if let Ok(mut current) = self.message.lock() {
+                *current = message.to_owned();
+            }
+        } else {
+            eprintln!("memfork: {message}");
         }
     }
 }
@@ -520,6 +549,7 @@ mod tests {
         let s = Style {
             colour: true,
             unicode: true,
+            columns: None,
         };
         let text = s.accent("ok");
         assert!(text.starts_with("\x1b[38;2;61;220;151m"), "{text:?}");

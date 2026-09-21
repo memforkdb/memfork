@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.2.1] - 2026-09-21
+
+A robustness release: nothing new, and less for a first user to trip over.
+
+### Fixed
+
+- **The daemon may take a minute to start.** The wait was a fixed 20 seconds,
+  which a slow machine — an antivirus scanning a new executable, say — could
+  run out on a first start. It is now 60 seconds, and `MEMFORK_START_TIMEOUT`
+  sets another. A start that takes more than a few seconds says so once.
+- **A daemon that cannot start says why.** Its own error output now goes to
+  `memfork-daemon.log` in the data directory instead of being lost. If it exits
+  without serving, the command fails within seconds rather than waiting out the
+  timeout, and the message names the command that was tried, quotes the end of
+  that log, and says what to do next.
+- **`memfork ls` fits the terminal.** On a terminal each value is shown on one
+  line and cut to the width, with a marker and a note; `--full` shows them
+  whole. Into a pipe or a file every value is printed whole, exactly as before,
+  and `--json` is unchanged. The same goes for `memfork at` listing a branch.
+- **`memfork init` with no clients says what to do** instead of "Nothing to
+  change", and `memfork doctor` reports a client that is not there as not
+  installed rather than unknown.
+- **`install.sh` explains a failed unpack**: `.tar.xz` needs xz support, which
+  slim Linux images often lack.
+- The README's "Try it" example has a PowerShell version, says what to do if
+  `memfork` is not found after installing, and says what `cargo install` needs.
+
 ## [0.2.0] - 2026-09-21
 
 Agent handoff becomes a first-class workflow, and you can see it happen. One
@@ -139,7 +166,8 @@ The first release.
 - File permissions on the daemon's endpoint file differ between Unix and
   Windows. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/memforkdb/memfork/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/memforkdb/memfork/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/memforkdb/memfork/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/memforkdb/memfork/releases/tag/v0.1.0

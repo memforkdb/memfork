@@ -327,3 +327,19 @@ fn listed_values_line_up_whatever_the_key_length() {
     assert_eq!(doc[1]["keys"][0]["key"], "project:owner");
     assert_eq!(doc[1]["keys"][0]["value"], "ada");
 }
+
+#[test]
+fn into_a_pipe_listings_print_whole_values_with_or_without_full() {
+    // Scripts read `ls` and `at` through a pipe; they get every byte, as
+    // before, and `--full` changes nothing there.
+    let long = "x".repeat(500);
+    let script = format!("put k '{long}'\nls\nls --full\nat 1\nat 1 --full\n");
+    let text = run(&script);
+    let listed: Vec<&str> = text.lines().filter(|l| l.starts_with("k  ")).collect();
+    assert_eq!(listed.len(), 4, "{text}");
+    for line in listed {
+        assert_eq!(line, format!("k  {long}"));
+    }
+    let doc = run_json(&format!("put k '{long}'\nls --full\n"));
+    assert_eq!(doc[1]["keys"][0]["value"], long.as_str());
+}

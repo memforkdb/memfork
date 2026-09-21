@@ -161,7 +161,11 @@ main() {
 
     # `-xf` rather than `-xzf`: the archives are xz, and both GNU tar and the
     # bsdtar macOS ships work out the compression for themselves.
-    tar -xf "$tmp/$archive" -C "$tmp"
+    # GNU tar hands .xz to the `xz` program, which slim images often lack; say
+    # that, rather than leaving tar's own complaint as the last word.
+    tar -xf "$tmp/$archive" -C "$tmp" ||
+        die "could not unpack $archive; unpacking .tar.xz needs xz support \
+(install the xz or xz-utils package) and then run this again"
     binary=$(find "$tmp" -type f -name memfork | head -n 1)
     [ -n "$binary" ] || die "the archive did not contain a memfork binary"
 

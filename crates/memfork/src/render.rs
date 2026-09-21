@@ -19,11 +19,82 @@ pub fn lines(command: &Command, outcome: &Outcome, style: &Style) -> Vec<String>
         Command::Log { graph: true, .. } => crate::history::render(&outcome.json["graph"], style),
         Command::Branches => branches(&outcome.json, style),
         Command::Diff { .. } => diff(&outcome.json, style),
+        Command::Ls { full, .. } => listing(outcome, *full, style),
+        Command::At {
+            key: None, full, ..
+        } => listing(outcome, *full, style),
         Command::Fork { .. } => lead(&outcome.text, |w| style.accent(w)),
         Command::Merge { .. } => lead(&outcome.text, |w| style.accent(w)),
         Command::Discard { .. } => lead(&outcome.text, |w| style.warn(w)),
         _ => outcome.text.clone(),
     }
+}
+
+/// `memfork ls`, and `memfork at` listing a branch.
+///
+/// Into a pipe or a file, exactly the lines the command produced: whole
+/// values, whatever they hold, so a script sees every byte. On a terminal,
+/// each value is put on one line and cut to fit the width, with a marker
+/// where it was cut and a note saying `--full` shows it whole — three stored
+/// decisions should not fill a screen with JSON. An empty listing says so on
+/// a terminal, rather than printing nothing.
+pub fn listing(outcome: &Outcome, full: bool, style: &Style) -> Vec<String> {
+    let Some(columns) = style.columns else {
+        return outcome.text.clone();
+    };
+    let keys = outcome.json["keys"].as_array().cloned().unwrap_or_default();
+    if keys.is_empty() {
+        let branch = outcome.json["branch"].as_str().unwrap_or("main");
+        let within = outcome.json["prefix"]
+            .as_str()
+            .filter(|p| !p.is_empty())
+            .map(|p| format!(" starting with `{p}`"))
+            .unwrap_or_default();
+        return vec![style.dim(&format!("no keys{within} on {branch}"))];
+    }
+    if full {
+        return outcome.text.clone();
+    }
+    let width = keys
+        .iter()
+        .filter_map(|k| k["key"].as_str())
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    // Whatever room the keys leave, but never so little that nothing of the
+    // value shows; a very narrow terminal wraps rather than hides.
+    let room = columns.saturating_sub(width + 2).max(16);
+    let (marker, marker_len) = if style.unicode {
+        ("…", 1)
+    } else {
+        ("...", 3)
+    };
+    let mut cut = 0usize;
+    let mut lines: Vec<String> = keys
+        .iter()
+        .map(|k| {
+            let key = k["key"].as_str().unwrap_or_default();
+            let value = k["value"].as_str().unwrap_or_default();
+            // One line per key, however many the value has.
+            let flat = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let shown = if flat.chars().count() > room {
+                cut += 1;
+                let kept: String = flat.chars().take(room - marker_len).collect();
+                format!("{kept}{}", style.dim(marker))
+            } else {
+                flat
+            };
+            let pad = width - key.chars().count();
+            format!("{}{}  {shown}", style.primary(key), " ".repeat(pad))
+        })
+        .collect();
+    if cut > 0 {
+        lines.push(style.dim(&format!(
+            "{cut} value{} cut to fit the terminal; --full shows them whole",
+            if cut == 1 { "" } else { "s" }
+        )));
+    }
+    lines
 }
 
 /// The lines, with the first word of the first line styled.
@@ -220,6 +291,7 @@ mod tests {
             &Style {
                 colour: true,
                 unicode: false,
+                columns: None,
             },
         );
         assert!(
@@ -235,6 +307,87 @@ mod tests {
             &Style::PLAIN,
         );
         assert_eq!(none, vec!["no differences between main and x"]);
+    }
+
+    fn outcome(entries: &[(&str, &str)]) -> Outcome {
+        let db = memfork_core::Db::new();
+        for (k, v) in entries {
+            db.put("main", k, memfork_core::Value::new(v.to_string()))
+                .unwrap();
+        }
+        crate::exec::execute(
+            &db,
+            "main",
+            &Command::Ls {
+                prefix: String::new(),
+                limit: None,
+                full: false,
+            },
+        )
+        .unwrap()
+    }
+
+    fn terminal(columns: usize) -> Style {
+        Style {
+            colour: false,
+            unicode: true,
+            columns: Some(columns),
+        }
+    }
+
+    const DECISION: &str = "{\n  \"decision\": \"store orders in one table per tenant\",\n  \"reason\": \"tenants never share rows, and a per-tenant table makes deleting one a single statement\"\n}";
+
+    #[test]
+    fn on_a_terminal_values_are_cut_to_fit_and_say_so() {
+        let out = outcome(&[("shop:decision:orders", DECISION), ("shop:owner", "ada")]);
+        let lines = listing(&out, false, &terminal(60));
+        assert_eq!(lines.len(), 3, "{lines:#?}");
+        for line in &lines[..2] {
+            assert!(
+                line.chars().count() <= 60,
+                "{line:?} is wider than the terminal"
+            );
+            assert!(!line.contains('\n'));
+        }
+        assert!(
+            lines[0].starts_with("shop:decision:orders  {"),
+            "{lines:#?}"
+        );
+        assert!(lines[0].ends_with('…'), "{lines:#?}");
+        assert_eq!(lines[1], "shop:owner            ada");
+        assert!(lines[2].contains("1 value cut to fit the terminal; --full shows them whole"));
+
+        let ascii = listing(
+            &out,
+            false,
+            &Style {
+                unicode: false,
+                ..terminal(60)
+            },
+        );
+        assert!(ascii[0].ends_with("..."), "{ascii:#?}");
+    }
+
+    #[test]
+    fn full_prints_every_value_whole_even_on_a_terminal() {
+        let out = outcome(&[("shop:decision:orders", DECISION)]);
+        assert_eq!(listing(&out, true, &terminal(60)), out.text);
+        assert!(out.text[0].contains("per-tenant table makes deleting one a single statement"));
+    }
+
+    #[test]
+    fn into_a_pipe_values_are_whole_exactly_as_the_command_produced() {
+        let out = outcome(&[("shop:decision:orders", DECISION), ("shop:owner", "ada")]);
+        assert_eq!(listing(&out, false, &Style::PLAIN), out.text);
+        // Newlines and all.
+        assert!(out.text[0].contains('\n'));
+    }
+
+    #[test]
+    fn an_empty_listing_says_so_on_a_terminal_and_prints_nothing_into_a_pipe() {
+        let out = outcome(&[]);
+        assert_eq!(listing(&out, false, &terminal(80)), vec!["no keys on main"]);
+        assert!(listing(&out, false, &Style::PLAIN).is_empty());
     }
 
     #[test]

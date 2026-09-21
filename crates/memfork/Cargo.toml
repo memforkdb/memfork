@@ -53,6 +53,8 @@ tokio-util = { version = "0.7", default-features = false }
 tower-service = "0.3"
 # Turns on colour in a Windows console. Already in the tree through clap.
 anstyle-query = "1.1"
+# The terminal's width, so `memfork ls` can fit values to it.
+terminal_size = "0.4"
 # Local time for `memfork watch`, from the system's time zone on every OS.
 jiff = "0.2"
 # The exact diff `memfork init --project --dry-run` prints.

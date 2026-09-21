@@ -141,7 +141,7 @@ pub fn execute_as(
             ))
         }
 
-        Command::Ls { prefix, limit } => {
+        Command::Ls { prefix, limit, .. } => {
             let entries = db.list(branch, prefix, *limit)?;
             let text = key_value_lines(&entries);
             let json = json!({
@@ -317,7 +317,9 @@ pub fn execute_as(
             Ok(Outcome::new(text, json))
         }
 
-        Command::At { seq, key, prefix } => {
+        Command::At {
+            seq, key, prefix, ..
+        } => {
             let view = db.at(branch, *seq)?;
             match key {
                 Some(key) => match view.get(key) {

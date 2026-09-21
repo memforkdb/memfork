@@ -21,6 +21,14 @@ use support::Sandbox;
 
 type Client = RunningService<RoleClient, ClientConfig>;
 
+/// One daemon-starting test at a time in this file.
+///
+/// Each test here starts its own daemon, and five cold starts at once on a
+/// loaded CI runner were what this file used to flake on. They are about
+/// handoff, not about starting under load, so they take turns; starting under
+/// load has tests of its own.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// A repository inside the sandbox, found by its `.git` directory.
 fn repository(sandbox: &Sandbox, name: &str) -> PathBuf {
     let repo = sandbox.root().join(name);
@@ -73,6 +81,7 @@ fn instructions(client: &Client) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn one_client_hands_off_and_another_resumes() {
+    let _turn = ONE_AT_A_TIME.lock().await;
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "Shop Front");
 
@@ -172,6 +181,7 @@ async fn one_client_hands_off_and_another_resumes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_projects_share_the_store_without_seeing_each_other() {
+    let _turn = ONE_AT_A_TIME.lock().await;
     let sandbox = Sandbox::new();
     let shop = repository(&sandbox, "shop");
     let blog = repository(&sandbox, "blog");
@@ -196,6 +206,7 @@ async fn two_projects_share_the_store_without_seeing_each_other() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_namespace_can_be_named_by_flag_or_environment() {
+    let _turn = ONE_AT_A_TIME.lock().await;
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "whatever");
 
@@ -246,6 +257,7 @@ fn an_unusable_namespace_flag_is_refused_before_anything_starts() {
 
 #[test]
 fn a_client_cannot_write_in_another_clients_name() {
+    let _turn = ONE_AT_A_TIME.blocking_lock();
     let sandbox = Sandbox::new();
     let out = sandbox
         .command()

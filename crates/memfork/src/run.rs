@@ -203,13 +203,18 @@ fn daemon_for(dir: &std::path::Path, choice: ColorChoice) -> Result<persist::End
     if let Some(running) = daemon::usable(dir).map_err(|e| ExecError::Usage(e.to_string()))? {
         return Ok(running);
     }
-    let _spinner = Spinner::start(
+    let spinner = Spinner::start(
         choice,
         Channel::Human,
         "starting the MemFork daemon and reading the store",
     );
-    daemon::ensure(dir, &launch::resolve(), serve::DEFAULT_IDLE_SECONDS)
-        .map_err(|e| ExecError::Usage(e.to_string()))
+    daemon::ensure_reporting(
+        dir,
+        &launch::resolve(),
+        serve::DEFAULT_IDLE_SECONDS,
+        &|waited| spinner.update(&daemon::still_starting(waited)),
+    )
+    .map_err(|e| ExecError::Usage(e.to_string()))
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, ExecError> {
@@ -1030,8 +1035,25 @@ fn run_init(
         writeln!(out, "{doc}").map_err(io_err)?;
     } else if dry_run {
         writeln!(out, "\nNothing was run or written: this was a dry run.").map_err(io_err)?;
+    } else if plans
+        .iter()
+        .all(|p| matches!(p.action, init::Action::NotInstalled))
+    {
+        // The first thing a new user may see; "nothing to change" would not
+        // tell them what to do next.
+        writeln!(
+            out,
+            "\nNo MCP clients were found on this machine, so nothing was registered.\n\
+             Install one of the clients above and run `memfork init` again. Any other \
+             client that speaks MCP works too: configure it to run `memfork mcp`."
+        )
+        .map_err(io_err)?;
     } else if changed == 0 {
-        writeln!(out, "\nNothing to change.").map_err(io_err)?;
+        writeln!(
+            out,
+            "\nNothing to change: every client found already has this MemFork."
+        )
+        .map_err(io_err)?;
     } else {
         writeln!(
             out,

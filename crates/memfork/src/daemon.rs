@@ -11,8 +11,32 @@ use std::time::{Duration, Instant};
 use crate::launch::Launch;
 use crate::persist::{lock, Endpoint};
 
-/// How long to wait for a daemon we started to publish its endpoint.
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long to wait for a daemon we started to publish its endpoint, unless
+/// [`START_TIMEOUT_ENV`] says otherwise.
+///
+/// Generous on purpose. The first start is the slowest one there is — the
+/// system may be scanning an executable it has never seen, and the daemon
+/// replays the whole log before it listens — and it is also the worst moment
+/// to fail. A daemon that starts in half a second is not slowed down by a long
+/// limit; a slow machine is failed by a short one.
+pub const DEFAULT_START_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Seconds to wait for the daemon to start, overriding
+/// [`DEFAULT_START_TIMEOUT`].
+pub const START_TIMEOUT_ENV: &str = "MEMFORK_START_TIMEOUT";
+
+/// After this long, say once that the start is still under way.
+pub const SLOW_START: Duration = Duration::from_secs(3);
+
+/// How long to keep looking after the process we started has exited. It may
+/// have lost a race to another client's daemon, whose endpoint is about to
+/// appear; if none does, the start has failed and there is nothing to wait for.
+const AFTER_EXIT: Duration = Duration::from_secs(2);
+
+/// The file in the data directory that a daemon's own output goes to: the
+/// errors it hits while starting, above all, which would otherwise be lost.
+/// Rewritten by every start, so it never grows beyond one daemon's life.
+pub const LOG_FILE: &str = "memfork-daemon.log";
 
 /// How often to look while waiting.
 const POLL: Duration = Duration::from_millis(25);
@@ -20,12 +44,10 @@ const POLL: Duration = Duration::from_millis(25);
 /// Why the daemon could not be used.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum DaemonError {
-    /// The daemon did not come up.
-    #[error("the MemFork daemon did not start within {}s: {reason}", STARTUP_TIMEOUT.as_secs())]
-    DidNotStart {
-        /// What was observed.
-        reason: String,
-    },
+    /// The daemon did not come up. The message says what was tried, where
+    /// its own output went, and what to do next.
+    #[error("{0}")]
+    DidNotStart(String),
     /// A daemon is running, but it is a different build.
     #[error(
         "a MemFork daemon from version {theirs} already owns {dir}, and this is \
@@ -87,17 +109,75 @@ fn check_version(dir: &Path, endpoint: &Endpoint) -> Result<(), DaemonError> {
 /// winner's endpoint. So a failure to start is only a failure if no endpoint
 /// appears at all.
 pub fn ensure(dir: &Path, launch: &Launch, idle_seconds: u64) -> Result<Endpoint, DaemonError> {
+    ensure_reporting(dir, launch, idle_seconds, &|waited: Duration| {
+        eprintln!("memfork: {}", still_starting(waited));
+    })
+}
+
+/// What to say when a start is taking a while: once, plainly, and not
+/// alarming, because it is usually nothing but a slow first run.
+pub fn still_starting(waited: Duration) -> String {
+    format!(
+        "still starting the MemFork daemon ({}s so far); a first start can take a \
+         while as the system checks a new program and the store is read",
+        waited.as_secs()
+    )
+}
+
+/// How long to wait for a start: [`START_TIMEOUT_ENV`] if it is set, else
+/// [`DEFAULT_START_TIMEOUT`]. A value that is not a whole number of seconds
+/// is refused rather than quietly ignored.
+pub fn start_timeout() -> Result<Duration, DaemonError> {
+    match std::env::var(START_TIMEOUT_ENV) {
+        Err(_) => Ok(DEFAULT_START_TIMEOUT),
+        Ok(raw) if raw.trim().is_empty() => Ok(DEFAULT_START_TIMEOUT),
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Ok(Duration::from_secs(seconds)),
+            _ => Err(DaemonError::Spawn(format!(
+                "{START_TIMEOUT_ENV} must be a whole number of seconds above zero, \
+                 got `{raw}`"
+            ))),
+        },
+    }
+}
+
+/// [`ensure`], calling `slow` once if the start takes longer than
+/// [`SLOW_START`].
+pub fn ensure_reporting(
+    dir: &Path,
+    launch: &Launch,
+    idle_seconds: u64,
+    slow: &dyn Fn(Duration),
+) -> Result<Endpoint, DaemonError> {
     if let Some(endpoint) = usable(dir)? {
         if endpoint.port.is_some() {
             return Ok(endpoint);
         }
     }
 
-    spawn(dir, launch, idle_seconds)?;
+    let timeout = start_timeout()?;
+    let log = dir.join(LOG_FILE);
+    let (tried, mut child) = spawn(dir, launch, idle_seconds, &log)?;
 
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let started = Instant::now();
+    let mut deadline = started + timeout;
+    let mut said_slow = false;
     let mut last = String::from("no endpoint file appeared");
     while Instant::now() < deadline {
+        // The process we started has gone: give a rival's endpoint a moment
+        // to appear, then stop waiting for one that never will.
+        if let Some(status) = child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            child = None;
+            last = match status.code() {
+                Some(code) => format!("its process exited with code {code} before serving"),
+                None => "its process was ended before serving".to_owned(),
+            };
+            deadline = deadline.min(Instant::now() + AFTER_EXIT);
+        }
+        if !said_slow && started.elapsed() >= SLOW_START {
+            slow(started.elapsed());
+            said_slow = true;
+        }
         match usable(dir) {
             Ok(Some(endpoint)) if endpoint.port.is_some() => return Ok(endpoint),
             Ok(Some(_)) => last = "something owns the directory but is not serving".to_owned(),
@@ -108,7 +188,64 @@ pub fn ensure(dir: &Path, launch: &Launch, idle_seconds: u64) -> Result<Endpoint
         }
         std::thread::sleep(POLL);
     }
-    Err(DaemonError::DidNotStart { reason: last })
+    Err(DaemonError::DidNotStart(did_not_start(
+        started.elapsed().max(Duration::from_secs(1)).min(timeout),
+        timeout,
+        &last,
+        &tried,
+        &log,
+    )))
+}
+
+/// The whole message for a start that timed out.
+fn did_not_start(
+    waited: Duration,
+    timeout: Duration,
+    observed: &str,
+    tried: &str,
+    log: &Path,
+) -> String {
+    let tail: Vec<String> = std::fs::read_to_string(log)
+        .map(|text| {
+            let lines: Vec<String> = text
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let skip = lines.len().saturating_sub(8);
+            lines.into_iter().skip(skip).collect()
+        })
+        .unwrap_or_default();
+    let output = if tail.is_empty() {
+        format!(
+            "  Its own output goes to {} (nothing was written there).",
+            log.display()
+        )
+    } else {
+        format!(
+            "  Its own output is in {}, which ends:\n{}",
+            log.display(),
+            tail.iter()
+                .map(|l| format!("      {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    let when = if waited < timeout {
+        format!("after {}s", waited.as_secs())
+    } else {
+        format!("within {}s", timeout.as_secs())
+    };
+    format!(
+        "the MemFork daemon did not start {when} ({observed}).\n\
+         \x20 Tried: {tried}\n\
+         {output}\n\
+         \x20 What to do: run that command yourself to see it fail in front of you; \
+         run `memfork doctor` to see the state of the data directory; and if this \
+         machine is simply slow to start a new program (an antivirus scan of a new \
+         executable, say), allow longer with {START_TIMEOUT_ENV}=180 and try again."
+    )
 }
 
 /// Start a detached daemon.
@@ -118,7 +255,12 @@ pub fn ensure(dir: &Path, launch: &Launch, idle_seconds: u64) -> Result<Endpoint
 /// standard streams on both. The daemon must outlive the client that started
 /// it and must never write to the client's stdout, which on a proxy is
 /// carrying the MCP protocol.
-fn spawn(dir: &Path, launch: &Launch, idle_seconds: u64) -> Result<(), DaemonError> {
+fn spawn(
+    dir: &Path,
+    launch: &Launch,
+    idle_seconds: u64,
+    log: &Path,
+) -> Result<(String, Option<std::process::Child>), DaemonError> {
     // Before anything is spawned: on Windows a new process inherits every
     // inheritable handle its parent holds, and this parent holds the client's
     // pipes. A daemon that inherited them would keep the client's stdout open
@@ -146,19 +288,50 @@ fn spawn(dir: &Path, launch: &Launch, idle_seconds: u64) -> Result<(), DaemonErr
     // the client's pipes that the launcher and the virtualenv redirector made,
     // and nothing here can name them to clear those. Python can refuse to pass
     // any of it on, so in that case Python starts the daemon.
+    // What was tried, for the message if the start times out: quoted where a
+    // part has a space, so it can be pasted into a terminal as it stands.
+    let tried = argv
+        .iter()
+        .map(|part| {
+            if part.contains(' ') {
+                format!("\"{part}\"")
+            } else {
+                part.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+
     if let Some(helper) = spawn_helper() {
-        return spawn_through(&helper, &argv);
+        spawn_through(&helper, &argv)?;
+        // The helper started it and has gone; there is no handle to watch.
+        return Ok((tried, None));
     }
 
     let (program, args) = argv.split_first().ok_or_else(|| {
         DaemonError::Spawn("there is no command to start a daemon with".to_owned())
     })?;
+    // The daemon's stderr goes to a file in the data directory, never to the
+    // client: a daemon that fails to start says why there, and the timeout
+    // message points at it. If the file cannot be made, the output is lost
+    // rather than the start refused.
+    let errors = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log)
+        .map(|mut file| {
+            use std::io::Write as _;
+            let _ = writeln!(file, "memfork: starting the daemon: {}", argv.join(" "));
+            std::process::Stdio::from(file)
+        })
+        .unwrap_or_else(|_| std::process::Stdio::null());
     let mut command = std::process::Command::new(program);
     command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(errors);
 
     #[cfg(unix)]
     {
@@ -177,7 +350,7 @@ fn spawn(dir: &Path, launch: &Launch, idle_seconds: u64) -> Result<(), DaemonErr
 
     command
         .spawn()
-        .map(|_| ())
+        .map(|child| (tried, Some(child)))
         .map_err(|e| DaemonError::Spawn(e.to_string()))
 }
 

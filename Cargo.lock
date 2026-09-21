@@ -769,7 +769,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memfork"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anstyle-query",
  "assert_cmd",
@@ -790,6 +790,7 @@ dependencies = [
  "serde_json",
  "similar",
  "tempfile",
+ "terminal_size",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -802,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "memfork-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -818,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "memfork-py"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "memfork",
  "memfork-core",
@@ -1482,6 +1483,16 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.3",
  "once_cell",
+ "rustix",
+ "windows-sys",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
+dependencies = [
  "rustix",
  "windows-sys",
 ]
