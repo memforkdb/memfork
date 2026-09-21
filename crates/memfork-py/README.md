@@ -37,8 +37,9 @@ memfork init      # register the server with the MCP clients you have
 memfork doctor    # what is installed, and what is talking to it
 ```
 
-Clients then get thirteen tools — store, recall, search, fork, merge, discard,
-time travel — over one store they share.
+Clients then get fifteen tools — store, recall, search, fork, merge, discard,
+time travel, and handing work from one agent to another — over one store they
+share.
 
 ## What is in memory and what is on disk
 

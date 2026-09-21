@@ -30,6 +30,17 @@
 # that is gone. A client with no documented `remove` is left alone and the
 # command to run is printed instead, because guessing at a command that edits
 # somebody's configuration is not a thing to do.
+#
+# `mcp_names` is what the client calls itself in MCP `initialize`, taken from
+# its source code or its shipped build, since none of these document it. It is
+# only used to show what a client wrote under the name a person knows; a
+# client that is not listed is shown by the name it gave. A trailing `*`
+# matches a prefix.
+#
+# [client.instructions] lists the files, relative to the repository root, that
+# the client reads project instructions from on its own — only files it always
+# reads, not ones it reads conditionally. `memfork init --project` writes its
+# block into the fewest of these that reach every chosen client.
 
 [[client]]
 id = "claude-code"
@@ -39,6 +50,8 @@ verified = "2026-09-20"
 # The directory this client creates for itself, so "installed but never
 # configured" is not mistaken for "not installed".
 detect_dir = "$HOME/.claude"
+# Found in the shipped build; not documented.
+mcp_names = ["claude-code"]
 
 [client.cli]
 binary = "claude"
@@ -64,6 +77,13 @@ project = ".mcp.json"
 # project scope instead and says why. Leaving the path out of the registry is
 # what makes that structural rather than a rule someone has to remember.
 
+[client.instructions]
+# It also reads AGENTS.md, but only when there is no CLAUDE.md at or above the
+# working directory, so that is not a file it can be relied on to read.
+reads = ["CLAUDE.md"]
+docs = "https://code.claude.com/docs/en/memory"
+verified = "2026-09-21"
+
 [[client]]
 id = "cursor"
 display = "Cursor"
@@ -82,6 +102,12 @@ http_url_key = "url"
 user = "$HOME/.cursor/mcp.json"
 project = ".cursor/mcp.json"
 
+[client.instructions]
+# Also `.cursor/rules/*.mdc`, which need front matter; AGENTS.md is plain text.
+reads = ["AGENTS.md"]
+docs = "https://cursor.com/docs/context/rules"
+verified = "2026-09-21"
+
 [[client]]
 id = "codex"
 display = "Codex CLI"
@@ -90,6 +116,8 @@ verified = "2026-09-20"
 # The directory this client creates for itself, so "installed but never
 # configured" is not mistaken for "not installed".
 detect_dir = "$HOME/.codex"
+# From codex-rs/codex-mcp/src/rmcp_client.rs.
+mcp_names = ["codex-mcp-client"]
 
 [client.cli]
 binary = "codex"
@@ -110,6 +138,11 @@ http_url_key = "url"
 user = "$HOME/.codex/config.toml"
 project = ".codex/config.toml"
 
+[client.instructions]
+reads = ["AGENTS.md"]
+docs = "https://learn.chatgpt.com/docs/agent-configuration/agents-md"
+verified = "2026-09-21"
+
 [[client]]
 id = "gemini-cli"
 display = "Gemini CLI"
@@ -118,6 +151,8 @@ verified = "2026-09-20"
 # The directory this client creates for itself, so "installed but never
 # configured" is not mistaken for "not installed".
 detect_dir = "$HOME/.gemini"
+# From packages/core/src/tools/mcp-client.ts.
+mcp_names = ["gemini-cli-mcp-client"]
 
 [client.cli]
 binary = "gemini"
@@ -139,6 +174,12 @@ http_url_key = "httpUrl"
 user = "$HOME/.gemini/settings.json"
 project = ".gemini/settings.json"
 
+[client.instructions]
+# The default; `context.fileName` in its settings can change it.
+reads = ["GEMINI.md"]
+docs = "https://geminicli.com/docs/cli/gemini-md/"
+verified = "2026-09-21"
+
 [[client]]
 id = "grok"
 display = "Grok Build"
@@ -147,6 +188,9 @@ verified = "2026-09-20"
 # The directory this client creates for itself, so "installed but never
 # configured" is not mistaken for "not installed".
 detect_dir = "$HOME/.grok"
+# From crates/codegen/xai-grok-mcp/src/servers.rs: the configured server's name
+# follows the prefix.
+mcp_names = ["grok-shell-*"]
 
 [client.cli]
 binary = "grok"
@@ -165,3 +209,9 @@ emit_type_stdio = false
 http_url_key = "url"
 user = "$HOME/.grok/config.toml"
 project = ".grok/config.toml"
+
+[client.instructions]
+# It reads both, so it is reached by whichever the other clients need.
+reads = ["AGENTS.md", "CLAUDE.md"]
+docs = "https://docs.x.ai/build/features/project-rules"
+verified = "2026-09-21"

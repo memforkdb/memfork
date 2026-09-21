@@ -17,13 +17,15 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+    InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::json;
 
+use crate::namespace;
 use crate::tools::{self, dispatch::Session, dispatch::ToolError};
 
 /// What the client is told about this server when it connects.
@@ -44,6 +46,63 @@ write in one session is memory you can recall in the next. Other clients can \
 be using the same memory at the same time, and will see what you write; each \
 of you keeps your own current branch, so switching branches never moves \
 anybody else.";
+
+/// The experimental capability a proxy uses to tell the daemon who it is
+/// speaking for: `{"namespace": …, "client": …}`.
+///
+/// A proxy is the daemon's client, so the daemon's own `clientInfo` would only
+/// ever say "memfork-proxy". The proxy knows the real client's name, from that
+/// client's `initialize`, and the project, from its working directory, and
+/// passes both on here — an ordinary MCP capability field, so any other
+/// client simply does not send it.
+pub const SESSION_CAPABILITY: &str = "memfork/session";
+
+/// What the client is told when it connects: [`INSTRUCTIONS`], then which
+/// project this session is in and the conventions that go with it.
+///
+/// Built per session, because the namespace is per session. This is how every
+/// agent learns its project's name and the handoff routine without anyone
+/// editing a file.
+pub fn instructions(ns: &str) -> String {
+    let decision = namespace::prefix(ns, "decision");
+    let task = namespace::prefix(ns, "task");
+    format!(
+        "{INSTRUCTIONS}
+
+This session's project namespace is `{ns}`. Keep what you record about this \
+project under it, with colons between the parts: each decision and its reason \
+under `{decision}<topic>`, open tasks under `{task}<id>`. Call memfork_resume \
+when you start, to pick up what earlier agents decided and did, and \
+memfork_handoff before you stop, so the next one can continue from you. Fork \
+before anything risky, merge if it worked, discard if it did not. Other \
+projects share this store under their own names, and keys without a project \
+in front are still there for the tools that take a key."
+    )
+}
+
+/// Take what a client said in `initialize` into its session: who it is, for
+/// attribution, and — from a proxy — which project it is working in.
+pub fn adopt(session: &Session, request: &InitializeRequestParams) {
+    let hello = request
+        .capabilities
+        .experimental
+        .as_ref()
+        .and_then(|e| e.get(SESSION_CAPABILITY));
+    let named = hello
+        .and_then(|h| h.get("client"))
+        .and_then(|c| c.as_str())
+        .filter(|c| !c.trim().is_empty());
+    session.set_writer(named.unwrap_or(&request.client_info.name));
+    // A namespace that is not valid is ignored rather than refused: the
+    // session keeps the one it had, and the handshake still succeeds.
+    if let Some(ns) = hello
+        .and_then(|h| h.get("namespace"))
+        .and_then(|n| n.as_str())
+        .filter(|n| namespace::validate(n).is_ok())
+    {
+        session.set_namespace(ns.to_owned());
+    }
+}
 
 /// The tool list, built from the registry.
 ///
@@ -77,7 +136,17 @@ impl ServerHandler for MemforkServer {
                 Implementation::new("memfork", env!("CARGO_PKG_VERSION"))
                     .with_title("MemFork — branchable agent memory"),
             )
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(instructions(&self.session.namespace()))
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        adopt(&self.session, &request);
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
     }
 
     async fn list_tools(
@@ -85,7 +154,7 @@ impl ServerHandler for MemforkServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        // Thirteen tools fit in one page comfortably, and DESIGN §6.1 caps the
+        // Fifteen tools fit in one page comfortably, and DESIGN §6.1 caps the
         // count at sixteen, so there is nothing to paginate.
         Ok(ListToolsResult::with_all_items(tool_list()))
     }
@@ -179,6 +248,68 @@ mod tests {
     }
 
     #[test]
+    fn each_session_is_told_its_project_and_the_routine() {
+        let text = instructions("shop-front");
+        assert!(text.starts_with(INSTRUCTIONS));
+        assert!(text.contains("project namespace is `shop-front`"), "{text}");
+        assert!(text.contains("`shop-front:decision:<topic>`"), "{text}");
+        assert!(text.contains("`shop-front:task:<id>`"), "{text}");
+        for step in [
+            "memfork_resume",
+            "memfork_handoff",
+            "fork",
+            "merge",
+            "discard",
+        ] {
+            assert!(text.contains(step), "no `{step}` in: {text}");
+        }
+    }
+
+    fn hello(client: &str, experimental: Option<serde_json::Value>) -> InitializeRequestParams {
+        let mut caps = rmcp::model::ClientCapabilities::default();
+        if let Some(serde_json::Value::Object(obj)) = experimental {
+            let mut map = std::collections::BTreeMap::new();
+            map.insert(SESSION_CAPABILITY.to_owned(), obj);
+            caps.experimental = Some(map);
+        }
+        InitializeRequestParams::new(caps, Implementation::new(client, "1.0"))
+    }
+
+    #[test]
+    fn a_direct_client_is_recorded_by_the_name_it_gives() {
+        let session = Session::in_namespace(memfork_core::Db::new(), "here");
+        adopt(&session, &hello("some-client", None));
+        assert_eq!(session.writer().as_deref(), Some("some-client"));
+        assert_eq!(session.namespace(), "here");
+    }
+
+    #[test]
+    fn a_proxy_speaks_for_its_client_and_project() {
+        let session = Session::new(memfork_core::Db::new());
+        adopt(
+            &session,
+            &hello(
+                "memfork-proxy",
+                Some(json!({"client": "real-client", "namespace": "shop"})),
+            ),
+        );
+        assert_eq!(session.writer().as_deref(), Some("real-client"));
+        assert_eq!(session.namespace(), "shop");
+        assert!(instructions(&session.namespace()).contains("`shop`"));
+    }
+
+    #[test]
+    fn an_unusable_namespace_in_a_hello_is_ignored() {
+        let session = Session::in_namespace(memfork_core::Db::new(), "kept");
+        adopt(
+            &session,
+            &hello("memfork-proxy", Some(json!({"namespace": "Not Valid:"}))),
+        );
+        assert_eq!(session.namespace(), "kept");
+        assert_eq!(session.writer().as_deref(), Some("memfork-proxy"));
+    }
+
+    #[test]
     fn the_instructions_name_no_vendor() {
         const VENDORS: &[&str] = &[
             "claude",
@@ -190,7 +321,7 @@ mod tests {
             "cursor",
             "codex",
         ];
-        let lower = INSTRUCTIONS.to_ascii_lowercase();
+        let lower = instructions("project").to_ascii_lowercase();
         for v in VENDORS {
             assert!(!lower.contains(v), "instructions mention `{v}`");
         }

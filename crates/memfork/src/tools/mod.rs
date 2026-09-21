@@ -9,12 +9,13 @@
 //! client: which clients are supported is data in the registry, never code.
 
 pub mod dispatch;
+pub mod handoff;
 pub mod schema;
 pub mod vendor;
 
 use schema::{
-    free_object, integer, no_arguments, number, number_array, object, string, string_enum,
-    JsonObject,
+    free_object, integer, no_arguments, number, number_array, object, string, string_array,
+    string_enum, JsonObject,
 };
 
 /// One tool: its name, what it is for, and the shape of its arguments.
@@ -38,6 +39,16 @@ pub struct ToolDef {
 const BRANCH_NOTE: &str = "Omit `branch` unless you mean a branch other than \
      the one you are on; every result says which that is, in `current_branch`.";
 
+fn namespace_arg() -> (&'static str, serde_json::Value) {
+    (
+        "namespace",
+        string(
+            "Project namespace. Defaults to this session's, which the server \
+             instructions name; give another only to work on a different project.",
+        ),
+    )
+}
+
 fn branch_arg() -> (&'static str, serde_json::Value) {
     (
         "branch",
@@ -60,9 +71,13 @@ pub fn all() -> Vec<ToolDef> {
             description: "Write a value under a key, replacing any previous value. \
                  Use this to record anything worth recalling later: a decision and \
                  its reasoning, a fact discovered, a plan, an intermediate result. \
-                 Keys are conventionally `namespace:id`, for example `decision:42` \
-                 or `file:src/main.rs`, which makes them listable and searchable by \
-                 prefix. Supply `embedding` if you want the entry to be findable by \
+                 Keys are colon-separated, project first: `<project>:<kind>:<id>`, \
+                 for example `shop:decision:payment-provider` or `shop:task:12`, \
+                 which makes them listable by prefix; the server instructions name \
+                 this session's project. Store each decision with its reason under \
+                 `<project>:decision:<topic>` as soon as it is made, and open work \
+                 under `<project>:task:<id>`, so the next agent can pick it up. \
+                 Supply `embedding` if you want the entry to be findable by \
                  memfork_search. Raise `importance` for entries that should survive \
                  longest when memory is tight. The result repeats the value it \
                  stored and says whether it replaced anything, so there is no need \
@@ -72,7 +87,10 @@ pub fn all() -> Vec<ToolDef> {
                 &[
                     (
                         "key",
-                        string("Key to write, at most 1024 bytes. Convention: `namespace:id`."),
+                        string(
+                            "Key to write, at most 1024 bytes. Convention: \
+                             `<project>:<kind>:<id>`.",
+                        ),
                     ),
                     (
                         "value",
@@ -130,9 +148,9 @@ pub fn all() -> Vec<ToolDef> {
             title: "List memories by prefix",
             description: format!(
                 "List keys and values in ascending key order, optionally limited to \
-                 a prefix. Use this to see what you already know about a namespace \
-                 before adding to it, for example prefix `decision:` to review every \
-                 decision so far. {BRANCH_NOTE}"
+                 a prefix. Use this to see what you already know before adding to \
+                 it, for example prefix `shop:decision:` to review every decision in \
+                 project `shop`. {BRANCH_NOTE}"
             ),
             schema: object(
                 &[
@@ -304,6 +322,53 @@ pub fn all() -> Vec<ToolDef> {
             ),
         },
         ToolDef {
+            name: "memfork_resume",
+            title: "Pick up where work left off",
+            description: format!(
+                "Get one short briefing on a project: the latest handoff note, the \
+                 most recent decisions and the open tasks. Call this first, when you \
+                 start work in a project or take over from another agent, before \
+                 deciding anything, so you continue from what was already decided \
+                 and done instead of starting over. The briefing is bounded in size; \
+                 if more is stored it says so and which prefix to list. A project \
+                 with nothing stored returns `empty: true`. {BRANCH_NOTE}"
+            ),
+            schema: object(&[namespace_arg(), branch_arg()], &[]),
+        },
+        ToolDef {
+            name: "memfork_handoff",
+            title: "Leave a handoff note",
+            description: format!(
+                "Record where the work stands so that another agent, or you in a \
+                 later session, can resume it with memfork_resume. Call this before \
+                 you stop, before switching to another tool or model, and whenever \
+                 you are asked to pause or wrap up. Say what is done, what should \
+                 happen next, what is blocking, and any open questions. Each call \
+                 adds a new note; earlier ones are kept as history. {BRANCH_NOTE}"
+            ),
+            schema: object(
+                &[
+                    (
+                        "summary",
+                        string("Where things stand, in a sentence or two."),
+                    ),
+                    ("done", string_array("What was finished.")),
+                    (
+                        "next",
+                        string_array("What should happen next, most important first."),
+                    ),
+                    ("blockers", string_array("What is in the way, if anything.")),
+                    (
+                        "questions",
+                        string_array("Open questions that need someone's answer."),
+                    ),
+                    namespace_arg(),
+                    branch_arg(),
+                ],
+                &["summary"],
+            ),
+        },
+        ToolDef {
             name: "memfork_diff",
             title: "Compare two branches",
             description: "Show which keys differ between two branches, and how: added, \
@@ -338,7 +403,7 @@ mod tests {
 
     #[test]
     fn the_registry_matches_the_spec() {
-        // DESIGN §6 lists exactly these thirteen tools.
+        // DESIGN §6 lists exactly these fifteen tools.
         assert_eq!(
             names(),
             vec![
@@ -354,6 +419,8 @@ mod tests {
                 "memfork_branches",
                 "memfork_log",
                 "memfork_at",
+                "memfork_resume",
+                "memfork_handoff",
                 "memfork_diff",
             ]
         );
@@ -424,6 +491,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn resume_and_handoff_say_when_in_the_work_to_call_them() {
+        let by_name = |name: &str| {
+            find(name)
+                .unwrap_or_else(|| panic!("{name} is in the registry"))
+                .description
+                .to_ascii_lowercase()
+        };
+        let resume = by_name("memfork_resume");
+        assert!(resume.contains("call this first"), "{resume}");
+        assert!(resume.contains("start work"), "{resume}");
+        let handoff = by_name("memfork_handoff");
+        assert!(handoff.contains("before you stop"), "{handoff}");
+        assert!(handoff.contains("before switching"), "{handoff}");
+    }
+
+    #[test]
+    fn the_key_convention_is_colons_everywhere() {
+        // One separator, the one prefix listing is built on. A slash anywhere
+        // in a key example would teach a second convention.
+        for tool in all() {
+            for fragment in tool.description.split('`').skip(1).step_by(2) {
+                if fragment.contains(':') {
+                    assert!(
+                        !fragment.contains('/') || fragment.starts_with("file:"),
+                        "`{}` shows a key with a slash: {fragment}",
+                        tool.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn within_the_tool_limit() {
+        // DESIGN §6.1: some clients take no more than sixteen tools per server.
+        assert!(all().len() <= 16, "{} tools", all().len());
     }
 
     #[test]

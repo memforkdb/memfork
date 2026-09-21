@@ -122,6 +122,9 @@ pub async fn run(
     // two clients share the data and keep their own current branch.
     let shared = db.clone();
     let service = StreamableHttpService::new(
+        // Each session starts in the fallback namespace with no writer; its
+        // `initialize` says which project and client it is (see
+        // `crate::mcp::adopt`).
         move || Ok(MemforkServer::new(Arc::new(Session::new(shared.clone())))),
         Arc::new(LocalSessionManager::default()),
         // Our tools are request-and-response, so the server can answer in

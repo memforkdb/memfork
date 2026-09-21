@@ -68,6 +68,7 @@ pub mod exec;
 pub mod init;
 pub mod launch;
 pub mod mcp;
+pub mod namespace;
 pub mod persist;
 pub mod proxy;
 pub mod run;

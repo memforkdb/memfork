@@ -109,7 +109,11 @@ async fn c11_a_handshake_and_a_tool_list_start_no_daemon() {
 
     let service = client(&sandbox).await;
     let tools = service.list_all_tools().await.expect("tools listed");
-    assert_eq!(tools.len(), 13, "the proxy listed the wrong tool surface");
+    assert_eq!(
+        tools.len(),
+        memfork::tools::names().len(),
+        "the proxy listed the wrong tool surface"
+    );
 
     assert!(
         sandbox.owner().is_none(),
@@ -190,7 +194,7 @@ async fn c11_a_proxy_lists_exactly_what_a_daemon_would() {
     let endpoint = sandbox
         .wait_for_daemon(Duration::from_secs(90))
         .expect("the daemon did not start");
-    let upstream = memfork::proxy::Upstream::connect(&endpoint)
+    let upstream = memfork::proxy::Upstream::connect(&endpoint, &Default::default())
         .await
         .expect("connected to the daemon");
     let from_daemon = fingerprint(&upstream.list_tools().await.expect("the daemon listed"));

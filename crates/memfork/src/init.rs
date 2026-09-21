@@ -15,6 +15,8 @@
 //! Every run prints which method it used for each client, and re-running
 //! changes nothing.
 
+pub mod project;
+
 use std::path::PathBuf;
 
 use crate::clients::{self, edit, Client, Registration, Scope};
@@ -108,25 +110,34 @@ pub struct ClientPlan {
 /// Work out what `memfork init` would do, without doing any of it.
 pub fn plan(
     scope: Scope,
-    only: Option<&str>,
+    only: &[String],
     home: Option<&str>,
     launch: &Launch,
 ) -> Result<Vec<ClientPlan>, String> {
+    let registry = select(only)?;
+    let home = home.map(str::to_owned).or_else(clients::home_dir);
+
+    Ok(registry
+        .into_iter()
+        .map(|c| plan_one(&c, scope, home.as_deref(), launch))
+        .collect())
+}
+
+/// The registry, narrowed to the clients named, or all of it when none are.
+/// An unknown name is an error that lists the known ones.
+pub fn select(only: &[String]) -> Result<Vec<Client>, String> {
     let registry = clients::load()?;
-    if let Some(id) = only {
-        if !registry.iter().any(|c| c.id == id) {
+    for id in only {
+        if !registry.iter().any(|c| &c.id == id) {
             return Err(format!(
                 "no client named `{id}`; known clients: {}",
                 clients::ids().join(", ")
             ));
         }
     }
-    let home = home.map(str::to_owned).or_else(clients::home_dir);
-
     Ok(registry
         .into_iter()
-        .filter(|c| only.is_none_or(|id| c.id == id))
-        .map(|c| plan_one(&c, scope, home.as_deref(), launch))
+        .filter(|c| only.is_empty() || only.contains(&c.id))
         .collect())
 }
 
@@ -429,7 +440,7 @@ mod tests {
     fn an_unknown_client_is_named_along_with_the_known_ones() {
         let err = plan(
             Scope::User,
-            Some("nope"),
+            &["nope".to_owned()],
             Some("/home/ada"),
             &Launch::program("memfork"),
         )
@@ -442,7 +453,7 @@ mod tests {
     fn selecting_one_client_plans_only_that_client() {
         let plans = plan(
             Scope::User,
-            Some("cursor"),
+            &["cursor".to_owned()],
             Some("/home/ada"),
             &Launch::program("memfork"),
         )

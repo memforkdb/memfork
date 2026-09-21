@@ -397,11 +397,11 @@ mod tests {
     fn the_mismatch_message_says_what_to_do_about_it() {
         let err = DaemonError::VersionMismatch {
             theirs: "0.0.1".to_owned(),
-            ours: "0.2.0".to_owned(),
+            ours: "9.9.9".to_owned(),
             dir: "/tmp/x".to_owned(),
         };
         let text = err.to_string();
         assert!(text.contains("memfork stop"), "{text}");
-        assert!(text.contains("0.0.1") && text.contains("0.2.0"), "{text}");
+        assert!(text.contains("0.0.1") && text.contains("9.9.9"), "{text}");
     }
 }

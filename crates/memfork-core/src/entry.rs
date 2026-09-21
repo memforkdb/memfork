@@ -13,6 +13,16 @@ pub const MAX_KEY_BYTES: usize = 1024;
 /// Default importance for an entry that does not specify one (DESIGN §4.1).
 pub const DEFAULT_IMPORTANCE: f32 = 0.5;
 
+/// The metadata key that records who wrote an entry (DESIGN §4.1).
+///
+/// Set by whatever front end knows the writer, such as the MCP server, which
+/// records the connected client's name. It is ordinary metadata, so it is part
+/// of the operation and of the commit id: the same write from the same writer
+/// is the same commit everywhere. It is not part of an entry's *content*,
+/// though. Two writers storing the same value have not disagreed, so
+/// [`Entry::content_eq`] ignores it, and merge and diff with it.
+pub const WRITTEN_BY: &str = "memfork.by";
+
 /// One stored record.
 ///
 /// `value` is opaque bytes; JSON is a convention, not a requirement. The two
@@ -42,13 +52,17 @@ impl Entry {
     ///
     /// The logical clock fields are deliberately excluded: two branches that
     /// wrote the same value at different sequence numbers have not made
-    /// conflicting changes (DESIGN §4.2).
+    /// conflicting changes (DESIGN §4.2). So is [`WRITTEN_BY`], for the same
+    /// reason: two writers storing the same value have not disagreed.
     pub fn content_eq(&self, other: &Entry) -> bool {
+        fn described(meta: &BTreeMap<String, String>) -> impl Iterator<Item = (&String, &String)> {
+            meta.iter().filter(|(k, _)| k.as_str() != WRITTEN_BY)
+        }
         self.value == other.value
             && self.embedding == other.embedding
             && self.importance.to_bits() == other.importance.to_bits()
             && self.ttl_commits == other.ttl_commits
-            && self.meta == other.meta
+            && described(&self.meta).eq(described(&other.meta))
     }
 }
 

@@ -55,6 +55,9 @@ impl Sandbox {
             .env(FORBID_PER_USER_ENV, "1")
             .env("MEMFORK_HOME", self.home())
             .env("PATH", self.path_value())
+            // A namespace the developer happens to have set must not decide
+            // what a test sees; tests that want one set it themselves.
+            .env_remove(memfork::namespace::NAMESPACE_ENV)
             .current_dir(self.root());
         cmd
     }
@@ -302,7 +305,8 @@ pub fn memfork() -> Command {
     cmd.env(DATA_DIR_ENV, scratch.join("data"))
         .env(FORBID_PER_USER_ENV, "1")
         .env("MEMFORK_HOME", scratch.join("home"))
-        .env("PATH", confined_path(&scratch.join("bin")));
+        .env("PATH", confined_path(&scratch.join("bin")))
+        .env_remove(memfork::namespace::NAMESPACE_ENV);
     cmd
 }
 

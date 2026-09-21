@@ -120,6 +120,8 @@ async fn b1_the_server_lists_every_tool_with_a_usable_schema() {
         "memfork_branches",
         "memfork_log",
         "memfork_at",
+        "memfork_resume",
+        "memfork_handoff",
         "memfork_diff",
     ]
     .iter()
@@ -225,7 +227,25 @@ async fn b1_every_tool_can_be_called_over_mcp() {
     assert_eq!(discarded["discarded"], true);
     called.insert("memfork_discard");
 
-    assert_eq!(called.len(), 13, "not every tool was exercised: {called:?}");
+    let empty = call(&client, "memfork_resume", json!({ "namespace": "b1" })).await;
+    assert_eq!(empty["empty"], true);
+    let handed = call(
+        &client,
+        "memfork_handoff",
+        json!({ "namespace": "b1", "summary": "exercised", "next": ["ship"] }),
+    )
+    .await;
+    assert_eq!(handed["key"], "b1:handoff:00000001");
+    called.insert("memfork_handoff");
+    let resumed = call(&client, "memfork_resume", json!({ "namespace": "b1" })).await;
+    assert_eq!(resumed["latest_handoff"]["next"][0], "ship");
+    called.insert("memfork_resume");
+
+    assert_eq!(
+        called.len(),
+        memfork::tools::names().len(),
+        "not every tool was exercised: {called:?}"
+    );
     client.cancel().await.expect("clean shutdown");
 }
 

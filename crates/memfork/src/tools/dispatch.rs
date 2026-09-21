@@ -5,10 +5,20 @@
 
 use std::sync::Mutex;
 
-use memfork_core::{Db, MergeKind, MergePolicy, Value};
+use memfork_core::{Db, MergeKind, MergePolicy, Value, WRITTEN_BY};
 use serde_json::{json, Value as Json};
 
+use super::handoff;
 use super::schema::JsonObject;
+use crate::namespace;
+
+/// Longest writer name recorded, in characters.
+const MAX_WRITER_CHARS: usize = 128;
+
+/// Metadata keys under this prefix belong to MemFork, and callers may not set
+/// them: a model that could write `memfork.by` could put words in another
+/// client's mouth.
+const RESERVED_META_PREFIX: &str = "memfork.";
 
 /// Why a tool call could not be carried out.
 #[derive(Debug)]
@@ -43,23 +53,68 @@ impl From<memfork_core::Error> for ToolError {
     }
 }
 
-/// One caller's view of a database: the engine plus the branch they are on.
+/// One caller's view of a database: the engine, the branch they are on, the
+/// project they are working in, and who they are.
 ///
 /// The current branch is per-session state, not database state, so two clients
-/// can sit on different branches of the same database.
+/// can sit on different branches of the same database. The same goes for the
+/// namespace and the writer: two clients in two projects share one store.
 #[derive(Debug)]
 pub struct Session {
     db: Db,
     branch: Mutex<String>,
+    namespace: Mutex<String>,
+    writer: Mutex<Option<String>>,
 }
 
 impl Session {
-    /// Start a session on the database's default branch.
+    /// Start a session on the database's default branch, in the fallback
+    /// namespace, with no writer recorded.
     pub fn new(db: Db) -> Self {
         let branch = db.default_branch().to_owned();
         Session {
             db,
             branch: Mutex::new(branch),
+            namespace: Mutex::new(namespace::FALLBACK.to_owned()),
+            writer: Mutex::new(None),
+        }
+    }
+
+    /// Start a session in a given namespace.
+    pub fn in_namespace(db: Db, namespace: impl Into<String>) -> Self {
+        let session = Session::new(db);
+        session.set_namespace(namespace.into());
+        session
+    }
+
+    /// The project namespace the handoff and resume tools work in.
+    pub fn namespace(&self) -> String {
+        self.namespace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Move the session to another namespace. The caller has validated it.
+    pub fn set_namespace(&self, name: String) {
+        *self.namespace.lock().unwrap_or_else(|e| e.into_inner()) = name;
+    }
+
+    /// Who this session's writes are recorded as, if anyone.
+    pub fn writer(&self) -> Option<String> {
+        self.writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Record this session's writes as coming from `name` — for the MCP
+    /// server, the name the client gave when it connected. Blank names are
+    /// ignored, and long ones cut, since this is whatever a client sent.
+    pub fn set_writer(&self, name: &str) {
+        let name: String = name.trim().chars().take(MAX_WRITER_CHARS).collect();
+        if !name.is_empty() {
+            *self.writer.lock().unwrap_or_else(|e| e.into_inner()) = Some(name);
         }
     }
 
@@ -121,7 +176,16 @@ impl Session {
                     value = value.with_ttl_commits(t);
                 }
                 for (k, v) in opt_meta(args, "meta")? {
+                    if k.starts_with(RESERVED_META_PREFIX) {
+                        return Err(ToolError::BadArguments(format!(
+                            "`meta.{k}` is reserved: keys starting with \
+                             `{RESERVED_META_PREFIX}` are set by MemFork itself"
+                        )));
+                    }
                     value = value.with_meta(k, v);
+                }
+                if let Some(writer) = self.writer() {
+                    value = value.with_meta(WRITTEN_BY, writer);
                 }
                 // Read first so the result can say whether this replaced
                 // something. It is one in-memory lookup, and it saves the
@@ -154,6 +218,7 @@ impl Session {
                         "created_seq": entry.created_seq,
                         "ttl_commits": entry.ttl_commits,
                         "has_embedding": entry.embedding.is_some(),
+                        "written_by": entry.meta.get(WRITTEN_BY),
                         "meta": entry.meta,
                     })),
                     None => Ok(json!({ "branch": branch, "key": key, "found": false })),
@@ -372,9 +437,51 @@ impl Session {
                 }))
             }
 
+            "memfork_handoff" => {
+                let ns = self.namespace_arg(args)?;
+                let note = handoff::Handoff {
+                    summary: req_str(args, "summary")?.to_owned(),
+                    done: opt_str_array(args, "done")?,
+                    next: opt_str_array(args, "next")?,
+                    blockers: opt_str_array(args, "blockers")?,
+                    questions: opt_str_array(args, "questions")?,
+                };
+                let written =
+                    handoff::write(&self.db, &branch, &ns, &note, self.writer().as_deref())?;
+                Ok(json!({
+                    "namespace": ns,
+                    "branch": branch,
+                    "key": written.key,
+                    "number": written.number,
+                    "stored": true,
+                    "commit": written.commit.to_hex(),
+                }))
+            }
+
+            "memfork_resume" => {
+                let ns = self.namespace_arg(args)?;
+                Ok(handoff::briefing(&self.db, &branch, &ns)?)
+            }
+
             // `find` above already rejected anything not in the registry, so a
             // name reaching here means the registry and this match disagree.
             other => Err(ToolError::UnknownTool(other.to_owned())),
+        }
+    }
+}
+
+impl Session {
+    /// The namespace a handoff or resume call works in: the one it names, if
+    /// valid, else the session's.
+    fn namespace_arg(&self, args: &JsonObject) -> Result<String, ToolError> {
+        match opt_str(args, "namespace")? {
+            None => Ok(self.namespace()),
+            Some(given) => {
+                namespace::validate(given).map_err(|why| {
+                    ToolError::BadArguments(format!("`namespace` `{given}` is not usable: {why}"))
+                })?;
+                Ok(given.to_owned())
+            }
         }
     }
 }
@@ -476,6 +583,25 @@ fn opt_f32_array(args: &JsonObject, field: &str) -> Result<Option<Vec<f32>>, Too
             Ok(Some(out))
         }
         Some(other) => Err(wrong(field, "an array of numbers", other)),
+    }
+}
+
+fn opt_str_array(args: &JsonObject, field: &str) -> Result<Vec<String>, ToolError> {
+    match args.get(field) {
+        None | Some(Json::Null) => Ok(Vec::new()),
+        Some(Json::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| match item {
+                Json::String(s) => Ok(s.clone()),
+                other => Err(ToolError::BadArguments(format!(
+                    "`{field}` must contain only strings; element {i} is {other}"
+                ))),
+            })
+            .collect(),
+        // A model with one item sometimes sends it bare; it meant a list of one.
+        Some(Json::String(s)) => Ok(vec![s.clone()]),
+        Some(other) => Err(wrong(field, "an array of strings", other)),
     }
 }
 

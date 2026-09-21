@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Handing work between agents.** Two new tools: `memfork_resume` gives an
+  agent a short, bounded briefing on a project when it starts, and
+  `memfork_handoff` records where the work stands before it stops. Any client
+  can resume what any other handed off.
+- **Project namespaces.** Each session works in a namespace taken from the
+  repository it was started in, and is told it when it connects. Set it with
+  `memfork mcp --namespace` or `MEMFORK_NAMESPACE`. Keys are still literal;
+  nothing is prefixed for you.
+- **Who wrote what.** Every entry a client stores records the client's name,
+  and briefings show it. Stores from 0.1.x open unchanged.
+- **`memfork init --project`** writes one managed block into each client's own
+  instruction file in a repository, with `--client` (repeatable), `--all`,
+  `--remove` and `--dry-run`. Only the block is ever touched.
+
+### Changed
+
+- Tool descriptions teach one key convention, `<project>:<kind>:<id>`.
+- `memfork init --client` may be given more than once.
 
 ## [0.1.1] - 2026-09-21
 

@@ -96,7 +96,7 @@ branch it came from until one of them changes.
 
 ## What your agent gets
 
-Thirteen tools, in three groups.
+Fifteen tools, in four groups.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/package-dark.svg"><img src="docs/assets/icons/package-light.svg" alt="" width="16"></picture>
 **Remember and recall** — store a value under a key, read it back, list keys by
@@ -109,6 +109,10 @@ one entirely, or switch which branch you are working on.
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/rotate-ccw-dark.svg"><img src="docs/assets/icons/rotate-ccw-light.svg" alt="" width="16"></picture>
 **Go back** — read memory as it was at any earlier point, or look through the
 history of what changed.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/arrow-right-left-dark.svg"><img src="docs/assets/icons/arrow-right-left-light.svg" alt="" width="16"></picture>
+**Hand over** — pick up a project where the last agent left it, and leave a
+note for the next one when you stop.
 
 Full descriptions are in [the tool reference](#mcp-tools) below.
 
@@ -150,6 +154,81 @@ branch, so one client forking or switching never moves another.
 **Upgrading:** the installer stops it for you. If you are replacing the binary
 by hand, run `memfork stop` first — a server from a different version will not
 talk to a client from this one, and says so rather than guessing.
+
+## Handing work between agents
+
+One agent can stop in the middle of a task and another, from any vendor,
+can pick it up: what was decided and why, what is done, and what comes next.
+
+**Each project has a namespace.** When a client starts `memfork mcp`, MemFork
+takes the name of the repository it was started in (or of the working
+directory, outside a repository), lowercased, and tells the agent that name
+when it connects. Everything about the project goes under it, with colons
+between the parts:
+
+| Key | What it holds |
+|---|---|
+| `shop:decision:<topic>` | a decision and the reason for it |
+| `shop:task:<id>` | an open task; `{"status":"done"}` closes it |
+| `shop:handoff:<n>` | handoff notes, numbered, the newest last |
+
+Set it yourself with `memfork mcp --namespace <name>` in the client's
+configuration, or with `MEMFORK_NAMESPACE`. The tools that take a key take it
+literally: nothing is prefixed for you, and keys written before namespaces
+existed are exactly where they were.
+
+**Two tools do the handing over.** `memfork_resume` returns one short briefing:
+the latest handoff, the most recent decisions and the open tasks. An agent
+calls it when it starts. `memfork_handoff` records where things stand, and an
+agent calls it before it stops or before you switch to another tool.
+
+A worked example, in a repository called `shop`:
+
+```text
+In Claude Code:
+  you    Add hosted checkout. We're not storing card data, so use the
+         provider's hosted page.
+  agent  memfork_put shop:decision:payments "Hosted checkout: no card data
+         on our servers."  ...builds it...
+  you    I'm out of time; hand this over.
+  agent  memfork_handoff  summary "Checkout works; refunds not started"
+                          next ["refunds", "EU tax"]
+                          blockers ["need a sandbox account for refunds"]
+
+Later, in Codex:
+  you    Carry on with the shop.
+  agent  memfork_resume
+         -> latest handoff by claude-code: "Checkout works; refunds not
+            started", next: refunds, EU tax; decision: hosted checkout,
+            no card data on our servers
+  agent  Starting on refunds. You'll need a sandbox account first...
+```
+
+**Who wrote what is kept.** Everything a client stores records the name the
+client gave when it connected, so a briefing says which agent decided or handed
+off what.
+
+**Tell every agent the routine.** Run this inside the repository:
+
+```sh
+memfork init --project            # the clients installed here
+memfork init --project --all      # every client, for a repository your team shares
+memfork init --project --client codex --client gemini-cli
+```
+
+It writes one short block — resume when you start, record decisions with their
+reasons, hand off before you stop, fork before anything risky — into the
+instruction file each client reads (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`),
+once per file however many clients share it. The block sits between two marker
+comments and nothing outside them is touched: running it again updates only
+the block, `--remove` takes only the block out, `--dry-run` prints the exact
+diff and writes nothing. It never runs git; committing the files is up to you.
+Plain `memfork init` never edits files in your project.
+
+**What is not shared.** Agents share what they write down, not their
+conversation. A handoff carries only what the agent put into it, and a decision
+that was discussed but never stored is not there for the next one. The block
+above exists to make writing it down the habit.
 
 ## Why not Redis, or a vector database?
 
@@ -201,6 +280,8 @@ Said plainly, because finding out later is worse.
 | `memfork_checkout` | Switch this client's current branch |
 | `memfork_at` | Read a key as it was at an earlier point |
 | `memfork_log` | The history of a branch |
+| `memfork_resume` | A short briefing on a project: latest handoff, recent decisions, open tasks |
+| `memfork_handoff` | Leave a note on where the work stands, for whoever picks it up |
 
 ---
 
@@ -270,10 +351,12 @@ to the server.
 | `serve` | run the shared server (started for you when needed) |
 | `stop` | shut it down |
 | `init`, `doctor` | register with clients; report what is going on |
+| `init --project` | write MemFork's instruction block into this repository's client instruction files |
 | `tools --format openai\|anthropic\|gemini` | the tool schemas in a vendor's format |
 
 `--json` on any command prints machine-readable output. `--ephemeral` keeps
-nothing and shares nothing.
+nothing and shares nothing. `memfork mcp --namespace <name>` (or
+`MEMFORK_NAMESPACE`) names the project a session works in.
 
 ## How it works
 

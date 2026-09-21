@@ -53,7 +53,14 @@ The version lives in three places in the manifests, and all three must agree:
 - the `memfork` dependency in `crates/memfork-py/Cargo.toml`.
 
 The binary, both libraries, the wheel and `memfork doctor` all read the
-version from there. Then set the date on the version's heading in
+version from there. There is deliberately no fourth place: no doc URL, constant
+or test carries it. `cargo test` enforces that
+(`crates/memfork/tests/version_locations.rs`) and names any line that does, so
+if you are tempted to add one, derive it from `CARGO_PKG_VERSION` instead.
+`CHANGELOG.md`, `Cargo.lock` and the stores under `tests/fixtures/` are the
+only exceptions, since they are history or generated.
+
+Then set the date on the version's heading in
 `CHANGELOG.md` to the day the tag will be pushed.
 
 Check that the tag you are about to push matches:

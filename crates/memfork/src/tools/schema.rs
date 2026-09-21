@@ -89,6 +89,15 @@ pub fn number_array(description: &str) -> Value {
     })
 }
 
+/// An array of strings.
+pub fn string_array(description: &str) -> Value {
+    json!({
+        "type": "array",
+        "description": description,
+        "items": { "type": "string" }
+    })
+}
+
 /// A free-form object of string values.
 ///
 /// The subset has no `additionalProperties`, so an object with caller-chosen

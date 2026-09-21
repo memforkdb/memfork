@@ -51,6 +51,8 @@ http-body-util.workspace = true
 futures = { version = "0.3", default-features = false, features = ["std"] }
 tokio-util = { version = "0.7", default-features = false }
 tower-service = "0.3"
+# The exact diff `memfork init --project --dry-run` prints.
+similar = { version = "2", default-features = false, features = ["text"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync", "time", "net", "process"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 

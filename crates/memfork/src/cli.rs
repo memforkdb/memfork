@@ -243,6 +243,13 @@ pub enum Command {
         /// Where to keep the data, and how carefully.
         #[command(flatten)]
         persist: PersistArgs,
+
+        /// The project namespace this session works in. Defaults to
+        /// MEMFORK_NAMESPACE, else the repository's top-level directory name,
+        /// else the working directory's name. Lowercase letters, digits, `.`,
+        /// `_` and `-`.
+        #[arg(long, value_name = "NAME")]
+        namespace: Option<String>,
     },
 
     /// Print the tool definitions in a vendor's function-calling format.
@@ -276,12 +283,24 @@ pub enum Command {
         /// Print what would change without running or writing anything.
         #[arg(long)]
         dry_run: bool,
-        /// Only configure this client, by registry id.
-        #[arg(long)]
-        client: Option<String>,
+        /// Only configure this client, by registry id. Repeat for several.
+        #[arg(long, value_name = "ID")]
+        client: Vec<String>,
         /// Register for this user everywhere, or only for this project.
         #[arg(long, default_value = "user", value_parser = ["user", "project"])]
         scope: String,
+        /// Instead of registering, write MemFork's instruction block into
+        /// the instruction files of this repository's clients. Run inside a
+        /// repository. Only the block is ever touched.
+        #[arg(long, conflicts_with = "scope")]
+        project: bool,
+        /// With --project: every client in the registry, installed or not,
+        /// for a repository shared by people using different tools.
+        #[arg(long, requires = "project", conflicts_with = "client")]
+        all: bool,
+        /// With --project: take the block out again, and nothing else.
+        #[arg(long, requires = "project")]
+        remove: bool,
     },
 
     /// Report version, paths, persistence and which clients know about MemFork.

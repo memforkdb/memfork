@@ -34,7 +34,11 @@ binary (MCP server, daemon and command line in one), and a Python package.
 ## 4. Core model (`memfork-core`)
 
 ### 4.1 Types
-- `Key`: UTF-8 string, max 1024 bytes. Convention `namespace:id`.
+- `Key`: UTF-8 string, max 1024 bytes. Convention `namespace:id`. **[v0.9]**
+  With projects (§6.3) the convention is `<project>:<kind>:<id>` — one
+  separator, the colon, everywhere — so a prefix such as `shop:decision:`
+  lists exactly one kind of thing in one project. The engine itself attaches no
+  meaning to any of it.
 - `Entry`:
   - `value: Bytes` (opaque; JSON by convention)
   - `embedding: Option<Vec<f32>>` (fixed dimension per database, set on first insert)
@@ -45,7 +49,13 @@ binary (MCP server, daemon and command line in one), and a Python package.
     break "readers never block" (§4.3) and would put reads into the event log.
     Recency for eviction therefore comes from a side structure, see §4.4.
   - `ttl_commits: Option<u64>` (expiry measured in commits on that branch)
-  - `meta: BTreeMap<String,String>`
+  - `meta: BTreeMap<String,String>`. **[v0.9]** The key `memfork.by` records
+    who wrote the entry (§6.2). It is ordinary metadata, so it is part of the
+    operation and of the commit id: the same write by the same writer is the
+    same commit everywhere, and a store written before it existed is read
+    unchanged. It is not part of the entry's *content*: `content_eq`, and so
+    merge and diff, ignore it, because two writers storing the same value have
+    not disagreed.
 - `Root`: persistent ordered map `Key -> Arc<Entry>`, behind a `trait Store` so the
   structure can be replaced later. **[v0.3]** The implementation is
   `rpds::RedBlackTreeMapSync`, not `imbl::OrdMap`: `imbl` is MPL-2.0, which the
@@ -263,6 +273,11 @@ Subcommands:
 - `memfork init` — detect installed clients and register the MCP server with each.
   Driven by the client adapter registry (§6.1), never by hard-coded per-client logic.
   Idempotent. Prints exactly what it changed. `--dry-run` and `--client <name>` supported.
+  **[v0.9]** `--client` may be repeated. `memfork init --project` is a separate
+  job entirely — the instruction files of §6.4 — and plain `init` never edits a
+  file in the project.
+- **[v0.9]** `memfork mcp --namespace <name>` names the project a session works
+  in (§6.3); otherwise `MEMFORK_NAMESPACE`, otherwise the repository.
 - `memfork doctor` — print version, data dir, lock status, detected tools, and whether
   each tool's config contains the MemFork entry.
 - `memfork put|get|del|ls|search|fork|merge|discard|branches|log|at|diff` — thin CLI
@@ -371,6 +386,8 @@ memfork_discard   name
 memfork_branches
 memfork_log       limit?
 memfork_at        seq, key? | prefix?   # time-travel read
+memfork_resume    namespace?            # [v0.9] briefing: latest handoff, decisions, tasks
+memfork_handoff   summary, done?, next?, blockers?, questions?, namespace?   # [v0.9]
 memfork_diff      a, b
 ```
 Tool descriptions must tell the model WHEN to use each tool (e.g. "fork before any
@@ -405,6 +422,88 @@ every vendor accepts: `type`, `properties`, `required`, `description`, `enum`, `
 No `$ref`, `oneOf`/`anyOf`/`allOf`, `format`, `pattern`, or nested unions — some
 clients sanitise or reject them. Keep tool count ≤ 16 and names ≤ 48 chars,
 `[a-z0-9_]` only. A CI test validates every schema against this subset.
+**[v0.9]** Fifteen tools.
+
+### 6.2 Who wrote it
+**[v0.9]** A client names itself in MCP `initialize`, and the session records
+that name against every entry it writes, under `memfork.by` (§4.1). A caller
+cannot set that key itself — any `meta` key starting `memfork.` is refused —
+so one client cannot write in another's name.
+
+A proxy is the daemon's client, so on its own the daemon would only ever hear
+"memfork-proxy". The proxy therefore passes on what it knows in the standard
+`capabilities.experimental` field of its own `initialize`, under
+`memfork/session`: the real client's name and the project namespace. Any other
+client simply does not send it, and is recorded by its own `clientInfo.name`.
+
+Deletes, forks, merges and discards are not attributed in the store: an entry
+that no longer exists has nowhere to carry a name, and a branch operation has
+no entry at all. Adding a writer to commit messages would change every such
+commit's id by who made it, for a record nobody reads there.
+
+The registry's `mcp_names` turn the raw name into the one a person knows, for
+display. None of these clients documents its name; each entry says where it was
+found.
+
+### 6.3 Projects, handoff and resume
+**[v0.9]** One store serves every project on the machine. Each session has a
+namespace: `--namespace`, else `MEMFORK_NAMESPACE`, else the name of the
+repository's top-level directory — found by walking up to the first `.git`,
+which is a directory in a clone and a file in a worktree, and never by running
+git — else the working directory's name. Derived names are lowercased and
+reduced to `[a-z0-9._-]`, at most 64 characters; a name someone typed is
+refused with a suggestion rather than silently altered. The proxy knows its
+working directory and passes the namespace to the daemon (§6.2). The MCP
+`instructions` a client receives name the session's namespace and the routine,
+so every agent learns both with no file edited.
+
+The tools that take a key take it literally. Nothing is prefixed behind the
+caller's back, and everything stored before namespaces existed is where it was.
+Only the two tools below use the namespace, and both accept another one
+explicitly.
+
+| Key | Holds |
+|---|---|
+| `<ns>:handoff:<8 digits>` | one handoff, numbered from 1; numbering is serialised across sessions |
+| `<ns>:decision:<topic>` | a decision and its reason, written with `memfork_put` |
+| `<ns>:task:<id>` | an open task; a JSON value with `"status":"done"` closes it |
+
+`memfork_handoff` stores `summary`, `done`, `next`, `blockers` and `questions`
+as the next numbered note; earlier notes stay as history. `memfork_resume`
+returns one briefing: the latest handoff and a count of earlier ones, the ten
+most recently written decisions (newest first, key order breaking ties) and up
+to twenty open tasks. It is bounded — 300 characters per text, ten items per
+list, 6 KB of JSON in all — because it is read at the start of every piece of
+work. Over budget, it gives up the least useful thing first: what was done,
+then open questions, then the oldest decisions, then tasks, then blockers, and
+the next steps last. What it leaves out is counted, with the prefix to list
+for the rest. Nothing in it depends on wall-clock time or map order, so the
+same store gives the same briefing. A project with nothing stored returns
+`empty: true` and says how to start.
+
+### 6.4 Project instructions
+**[v0.9]** `memfork init --project`, run inside a repository, writes one short
+block into the instruction file each chosen client reads, so every agent is
+told the same routine: resume when you start, record decisions with their
+reasons, hand off before you stop, fork before anything risky.
+
+Which files is data. Each registry entry lists the files the client always
+reads (`[client.instructions].reads`), and the fewest files that reach every
+chosen client are written, once each, however many clients share one. The
+chosen clients are the ones installed, or those named with `--client`, or
+every client with `--all`, for a repository shared by people using different
+tools. One client reads two of the files, so when both are needed it sees the
+block twice; that is harmless and documented rather than worked around.
+
+The block is managed: it sits between marker comments and nothing outside them
+is ever touched. A file without it gets it appended after a blank line; a file
+with it gets only the block replaced, recognised by the begin marker's prefix
+so an older wording is found; `--remove` takes out only the block and the blank
+line an append added, so adding and removing gives back the original bytes; a
+missing file is created holding only the block; line endings and a byte-order
+mark are kept; a file with broken or repeated markers is refused rather than
+guessed at. `--dry-run` prints the exact unified diff and writes nothing. It
+never runs git.
 
 ## 7. Cross-platform requirements
 - Targets: x86_64 + aarch64 for linux-musl, apple-darwin, pc-windows-msvc.
@@ -569,6 +668,35 @@ about rather than by when they were written.
 - **D7** `cargo publish --workspace --dry-run` is clean, and the publish jobs
   skip prerelease tags — tested by running the release pipeline on one.
 
+**Handing work between agents.**
+
+- **F1** namespaces: derived from the repository's top level from any depth,
+  including a worktree's `.git` file, without running git; sanitised;
+  overridden by flag or environment, and an explicit name that is not valid is
+  refused before anything starts. Every session's instructions name it.
+- **F2** two real MCP clients with different names, started from the same
+  repository, share one daemon: the first records decisions and hands off, the
+  second resumes, sees what the first wrote and who wrote it, and its own
+  handoff is numbered next with the first kept. Two projects in one store do
+  not see each other; raw keys are never prefixed.
+- **F3** a briefing is deterministic, bounded to 6 KB however much is stored,
+  gives up what was done before what comes next, and says clearly when a
+  project is empty.
+- **F4** attribution: the same write by the same writer is the same commit on
+  every OS (a pinned id); a different writer is a different commit; the same
+  value written by two writers is not a merge conflict and does not show in a
+  diff; callers cannot set `memfork.by`.
+- **F5** a data directory written by the 0.1.1 release's own code — a snapshot,
+  a log tail, three branches, a merge, a discard — opens with every branch,
+  entry and commit id exactly as 0.1.1 read them, is not rewritten by being
+  opened, and takes new attributed writes with reproducible, pinned ids.
+- **F6** `memfork init --project` writes the block for installed, named or
+  all clients, once per shared file; changes only the block; is idempotent;
+  gives back the original bytes on `--remove`; keeps CRLF and a byte-order
+  mark; refuses outside a repository and on broken markers; never runs git;
+  and plain `memfork init` edits no project file.
+- **F7** the version appears in exactly the places `docs/RELEASING.md` lists.
+
 **The repository itself.**
 
 The engineering rules live in `CONTRIBUTING.md`, addressed to any contributor,
@@ -583,7 +711,11 @@ registry, `memfork init`, `memfork doctor`, the README. Vendor neutrality
 
 - **E1** no tracked file carries an unfilled template placeholder or a stray
   tooling file. Checked by CI, with the patterns assembled at runtime so that
-  the check does not match its own source.
+  the check does not match its own source. **[v0.9]** One client's instruction
+  file shares its name with an assistant's personal file. That file is never
+  tracked, at any depth; its *name* may appear only in the client registry, the
+  tests of `memfork init --project`, the README, this document and the
+  changelog, because the product writes into it for that client.
 - **E2** comments and documentation contain no internal schedule language.
   Checked by CI, reading this file only as far as the revision record.
 - **E3** every document renders in light and dark on GitHub, and uses icons
@@ -608,6 +740,26 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.9 — handing work between agents
+1. **Projects have namespaces** (§6.3), worked out from the repository without
+   running git and announced in each session's instructions, so no file has to
+   be edited for an agent to learn its project's name. Raw keys stay literal.
+2. **Handoff and resume** (§6.3): two tools, fifteen in all, with a bounded,
+   deterministic briefing.
+3. **Who wrote what** (§6.2, §4.1) is ordinary entry metadata, so neither the
+   log format nor the id format changes and a 0.1.x store opens unchanged; it is
+   excluded from content equality so writers do not conflict over identical
+   values. Branch operations and deletes are not attributed in the store.
+4. **One key separator**, the colon, which the tool descriptions already
+   taught, rather than introducing a slash for projects.
+5. **Project instructions** (§6.4): a managed block in each client's own
+   instruction file, the files chosen from registry data.
+6. **The hygiene rule on one file name is split** (§9, E1): never tracked as a
+   file, nameable only where the product needs it.
+7. **The version lives in three places and a test says so** (§9, F7); the doc
+   URL that was a fourth was removed rather than documented.
+8. **Acceptance tests F1–F7** (§9).
 
 ### v0.8 — distribution
 1. **Launching is resolved, not assumed** (§5). `current_exe()` is a Python

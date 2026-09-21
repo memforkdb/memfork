@@ -92,6 +92,19 @@ bash installers/test-installer.sh            # runs against a release on disk
 CI runs the same things on all three operating systems. A change is not
 finished until it passes on all of them, not just on yours.
 
+The Hygiene workflow also checks the repository itself:
+
+- No unfilled template placeholders and no tool-generated commit trailers.
+- No personal assistant or prompt files committed, at any depth. Keep
+  those in `.git/info/exclude`.
+- The one client instruction file whose name is also a personal
+  assistant file may be *named* only where the product needs it: the client
+  registry (`clients.toml`), the tests of `memfork init --project`, the
+  README, `docs/DESIGN.md` and the changelog.
+- No build-phase numbers or acceptance-test ids in comments or docs, outside
+  the revision record in `docs/DESIGN.md`.
+- No emoji in Markdown.
+
 ## Tests
 
 Tests are the specification in executable form. The ones the design document

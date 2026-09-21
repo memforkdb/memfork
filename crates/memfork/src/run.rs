@@ -59,7 +59,7 @@ pub fn run(cli: Cli) -> ExitCode {
     // client would see a connection that opens and then never answers. Every
     // other subcommand locks stdout for the duration of its own output.
     let result = match &cli.command {
-        Command::Mcp { persist } => run_mcp(persist),
+        Command::Mcp { persist, namespace } => run_mcp(persist, namespace.as_deref()),
         // Beside `mcp` rather than inside the block below, for the same
         // reason: it holds a data directory for a long time and writes
         // nothing to stdout, so it has no business holding stdout's lock.
@@ -81,14 +81,26 @@ pub fn run(cli: Cli) -> ExitCode {
                 Command::Init {
                     dry_run,
                     client,
-                    scope,
-                } => run_init(
+                    project: true,
+                    all,
+                    remove,
+                    ..
+                } => run_init_project(
                     &mut stdout,
-                    *dry_run,
-                    client.as_deref(),
-                    scope,
+                    ProjectInit {
+                        dry_run: *dry_run,
+                        clients: client,
+                        all: *all,
+                        remove: *remove,
+                    },
                     cli.global.json,
                 ),
+                Command::Init {
+                    dry_run,
+                    client,
+                    scope,
+                    ..
+                } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
                 Command::Doctor => run_doctor(&mut stdout, cli.global.json),
                 command => {
                     let db = Db::new();
@@ -336,7 +348,28 @@ fn run_stop(data_dir: Option<&str>) -> Result<(), ExecError> {
     writeln!(stdout, "{said}").map_err(io_err)
 }
 
-fn run_mcp(args: &PersistArgs) -> Result<(), ExecError> {
+/// The namespace for a session started here, from the flag, the environment
+/// or the working directory, in that order.
+fn session_namespace(flag: Option<&str>) -> Result<crate::namespace::Namespace, ExecError> {
+    let env = std::env::var(crate::namespace::NAMESPACE_ENV).ok();
+    let cwd = std::env::current_dir()
+        .map_err(|e| ExecError::Usage(format!("cannot read the working directory: {e}")))?;
+    crate::namespace::resolve(flag, env.as_deref(), &cwd).map_err(ExecError::Usage)
+}
+
+fn describe_namespace(ns: &crate::namespace::Namespace) -> String {
+    use crate::namespace::Source;
+    let from = match ns.source {
+        Source::Flag => "from --namespace",
+        Source::Environment => "from MEMFORK_NAMESPACE",
+        Source::Repository => "from the repository's directory name",
+        Source::WorkingDirectory => "from the working directory's name",
+        Source::Fallback => "nothing better could be worked out",
+    };
+    format!("project namespace `{}` ({from})", ns.name)
+}
+
+fn run_mcp(args: &PersistArgs, namespace_flag: Option<&str>) -> Result<(), ExecError> {
     // Diagnostics go to stderr: stdout carries the protocol, and a stray byte
     // there would corrupt it. Off unless RUST_LOG asks for it.
     let _ = tracing_subscriber::fmt()
@@ -352,12 +385,15 @@ fn run_mcp(args: &PersistArgs) -> Result<(), ExecError> {
         .build()
         .map_err(|e| ExecError::Usage(format!("cannot start the async runtime: {e}")))?;
 
+    // Settled first, so a bad --namespace is reported before anything starts.
+    let namespace = session_namespace(namespace_flag)?;
+
     // Ephemeral sessions are entirely private: no daemon, no data directory,
     // nothing shared and nothing kept.
     if args.ephemeral {
         let (db, _, note) = open_database(args)?;
-        eprintln!("memfork: {note}");
-        let session = Arc::new(tools::dispatch::Session::new(db));
+        eprintln!("memfork: {note}; {}", describe_namespace(&namespace));
+        let session = Arc::new(tools::dispatch::Session::in_namespace(db, namespace.name));
         return runtime
             .block_on(mcp::serve_stdio(session))
             .map_err(ExecError::Usage);
@@ -375,7 +411,7 @@ fn run_mcp(args: &PersistArgs) -> Result<(), ExecError> {
     let connect = {
         let dir = dir.clone();
         let launch = launch.clone();
-        move || {
+        move |hello: proxy::Hello| {
             let dir = dir.clone();
             let launch = launch.clone();
             Box::pin(async move {
@@ -384,7 +420,7 @@ fn run_mcp(args: &PersistArgs) -> Result<(), ExecError> {
                 })
                 .await
                 .map_err(|e| format!("the daemon lookup task failed: {e}"))??;
-                proxy::Upstream::connect(&endpoint)
+                proxy::Upstream::connect(&endpoint, &hello)
                     .await
                     .map_err(|e| e.to_string())
             }) as futures::future::BoxFuture<'static, Result<proxy::Upstream, String>>
@@ -403,12 +439,16 @@ fn run_mcp(args: &PersistArgs) -> Result<(), ExecError> {
     // health-check a server — gets its answer without a daemon being started
     // on its behalf and left behind.
     eprintln!(
-        "memfork: sharing the memory in {}; the daemon starts when a tool is called",
-        dir.display()
+        "memfork: sharing the memory in {}; the daemon starts when a tool is called; {}",
+        dir.display(),
+        describe_namespace(&namespace)
     );
 
     runtime
-        .block_on(proxy::serve_stdio(proxy::Proxy::new(Arc::new(connect))))
+        .block_on(proxy::serve_stdio(proxy::Proxy::new(
+            Arc::new(connect),
+            namespace.name,
+        )))
         .map_err(ExecError::Usage)
 }
 
@@ -441,7 +481,7 @@ fn run_call(out: &mut impl Write, tool: &str, arguments: &str) -> Result<(), Exe
             )))
         }
     };
-    let session = tools::dispatch::Session::new(Db::new());
+    let session = tools::dispatch::Session::in_namespace(Db::new(), session_namespace(None)?.name);
     let result = session
         .call(tool, &args)
         .map_err(|e| ExecError::Usage(e.to_string()))?;
@@ -452,10 +492,170 @@ fn run_call(out: &mut impl Write, tool: &str, arguments: &str) -> Result<(), Exe
 }
 
 /// Register the MCP server with the clients installed here.
+/// What `memfork init --project` was asked to do.
+struct ProjectInit<'a> {
+    dry_run: bool,
+    clients: &'a [String],
+    all: bool,
+    remove: bool,
+}
+
+/// Write, update or remove MemFork's block in this repository's instruction
+/// files.
+fn run_init_project(
+    out: &mut impl Write,
+    ask: ProjectInit<'_>,
+    as_json: bool,
+) -> Result<(), ExecError> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| ExecError::Usage(format!("cannot read the working directory: {e}")))?;
+    let root = crate::namespace::repository_root(&cwd).ok_or_else(|| {
+        ExecError::Usage(format!(
+            "{} is not inside a repository (no `.git` above it). Run this from \
+             the repository whose instruction files should carry the block.",
+            cwd.display()
+        ))
+    })?;
+
+    // Which clients: the ones named, every one, or the ones installed here.
+    let registry = init::select(ask.clients).map_err(ExecError::Usage)?;
+    let chosen: Vec<clients::Client> = if ask.all || !ask.clients.is_empty() {
+        registry
+    } else {
+        let home = clients::home_dir();
+        registry
+            .into_iter()
+            .filter(|c| home.as_deref().is_some_and(|h| init::is_installed(c, h)))
+            .collect()
+    };
+    let how = if ask.all {
+        "every client in the registry"
+    } else if !ask.clients.is_empty() {
+        "the clients named"
+    } else {
+        "the clients installed on this machine"
+    };
+    if chosen.is_empty() {
+        return Err(ExecError::Usage(format!(
+            "no clients to write for: none of the registry's clients is installed \
+             here. Name them with --client ({}), or use --all.",
+            clients::ids().join(", ")
+        )));
+    }
+
+    let display = |id: &str| {
+        chosen
+            .iter()
+            .find(|c| c.id == id)
+            .map_or_else(|| id.to_owned(), |c| c.display.clone())
+    };
+    let files: Vec<(String, Vec<String>)> = clients::instruction_files(&chosen)
+        .into_iter()
+        .map(|(file, ids)| (file, ids.iter().map(|id| display(id)).collect()))
+        .collect();
+    let plans = init::project::plan(&root, &files, ask.remove).map_err(ExecError::Usage)?;
+
+    let mut failures = Vec::new();
+    let mut records = Vec::new();
+    if !as_json {
+        writeln!(
+            out,
+            "memfork init --project{}: {} in {}, for {how}",
+            if ask.dry_run { " --dry-run" } else { "" },
+            if ask.remove {
+                "removing the MemFork block"
+            } else {
+                "the MemFork block"
+            },
+            root.display()
+        )
+        .map_err(io_err)?;
+    }
+    for plan in &plans {
+        let mut error = None;
+        if !ask.dry_run {
+            if let Err(e) = init::project::apply(plan) {
+                failures.push(format!("{}: {e}", plan.relative));
+                error = Some(e);
+            }
+        }
+        let word = if ask.dry_run || !plan.change.writes() {
+            plan.change.verb()
+        } else if error.is_some() {
+            "failed"
+        } else {
+            plan.change.done()
+        };
+        if as_json {
+            records.push(json!({
+                "file": plan.relative,
+                "clients": plan.clients,
+                "change": word,
+                "diff": if ask.dry_run { Some(plan.diff()) } else { None },
+                "left_empty": plan.left_empty(),
+                "error": error,
+            }));
+        } else {
+            writeln!(
+                out,
+                "  {:<12} {:<14} read by {}",
+                plan.relative,
+                word,
+                plan.clients.join(", ")
+            )
+            .map_err(io_err)?;
+            if ask.dry_run && plan.change.writes() {
+                for line in plan.diff().lines() {
+                    writeln!(out, "      {line}").map_err(io_err)?;
+                }
+            }
+            if plan.left_empty() && !ask.dry_run {
+                writeln!(
+                    out,
+                    "      note: {} now holds nothing else; delete it if you do not need it",
+                    plan.relative
+                )
+                .map_err(io_err)?;
+            }
+            if let Some(e) = &error {
+                writeln!(out, "      error: {e}").map_err(io_err)?;
+            }
+        }
+    }
+    if as_json {
+        writeln!(
+            out,
+            "{}",
+            json!({
+                "root": root.display().to_string(),
+                "dry_run": ask.dry_run,
+                "remove": ask.remove,
+                "chosen": chosen.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+                "files": records,
+            })
+        )
+        .map_err(io_err)?;
+    } else if ask.dry_run {
+        writeln!(out, "Nothing was written (--dry-run).").map_err(io_err)?;
+    } else {
+        writeln!(
+            out,
+            "Only the lines between the MemFork markers were touched. Nothing was \
+             committed; review and commit the files as you would any other change."
+        )
+        .map_err(io_err)?;
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(ExecError::Usage(failures.join("; ")))
+    }
+}
+
 fn run_init(
     out: &mut impl Write,
     dry_run: bool,
-    client: Option<&str>,
+    client: &[String],
     scope: &str,
     as_json: bool,
 ) -> Result<(), ExecError> {

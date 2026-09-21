@@ -45,13 +45,42 @@ jobs:
           placeholder="YOUR_""PUBLIC_EMAIL"
 
           failed=0
-          for pattern in "$assistant_file" "$kickoff" "$trailer" "$placeholder"; do
-            # This workflow is the one file allowed to contain the pieces.
+
+          # These may appear nowhere. This workflow is the one file allowed to
+          # contain the pieces.
+          for pattern in "$kickoff" "$trailer" "$placeholder"; do
             if git grep -n -I -F -- "$pattern" -- . ":!.github/workflows/hygiene.yml"; then
               echo "::error::tracked files mention '$pattern'; see CONTRIBUTING.md"
               failed=1
             fi
           done
+
+          # One client's instruction file is also a file an assistant keeps
+          # beside a checkout. As a *file* it never belongs in this repository,
+          # at any depth. As a *name* it is product data: `memfork init
+          # --project` writes into it for that client, so the registry, the
+          # tests of that command and the documents that describe it have to
+          # say it. Those, and only those, may.
+          tracked=$(git ls-files | awk -F/ -v f="$assistant_file" 'tolower($NF) == tolower(f)')
+          if [ -n "$tracked" ]; then
+            echo "$tracked"
+            echo "::error::$assistant_file is tracked; it must never be committed here"
+            failed=1
+          fi
+          may_name=(
+            ".github/workflows/hygiene.yml"
+            "crates/memfork/src/clients/clients.toml"
+            "crates/memfork/tests/project_instructions.rs"
+            "README.md"
+            "docs/DESIGN.md"
+            "CHANGELOG.md"
+          )
+          excluded=()
+          for f in "${may_name[@]}"; do excluded+=(":!$f"); done
+          if git grep -n -I -F -- "$assistant_file" -- . "${excluded[@]}"; then
+            echo "::error::only the client registry, its tests and the docs may name $assistant_file; see CONTRIBUTING.md"
+            failed=1
+          fi
 
           if [ -e "$assistant_file" ] || [ -e "$kickoff.txt" ]; then
             echo "::error::$assistant_file or $kickoff.txt is present in the checkout"

@@ -131,6 +131,25 @@ pub struct Client {
     /// never configured" apart from "not installed".
     #[serde(default)]
     pub detect_dir: Option<String>,
+    /// The names this client gives in MCP `initialize`, so what it writes can
+    /// be shown under `display`. A trailing `*` matches a prefix.
+    #[serde(default)]
+    pub mcp_names: Vec<String>,
+    /// Where this client reads a repository's instructions from.
+    #[serde(default)]
+    pub instructions: Option<ClientInstructions>,
+}
+
+/// The files a client reads project instructions from.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientInstructions {
+    /// Paths relative to the repository root, all of which this client reads
+    /// unconditionally.
+    pub reads: Vec<String>,
+    /// Where these facts came from.
+    pub docs: String,
+    /// The date `docs` was last checked.
+    pub verified: String,
 }
 
 /// The client's own `mcp add` command.
@@ -476,6 +495,81 @@ pub fn load() -> Result<Vec<Client>, String> {
         .map_err(|e| format!("the compiled-in client registry is malformed: {e}"))
 }
 
+/// The display name for a writer recorded from MCP `initialize`, if the
+/// registry knows that client; otherwise the name as it was given.
+pub fn display_for_writer(name: &str) -> String {
+    all()
+        .into_iter()
+        .find(|c| {
+            c.mcp_names
+                .iter()
+                .any(|pattern| match pattern.strip_suffix('*') {
+                    Some(prefix) => name.starts_with(prefix),
+                    None => name == pattern,
+                })
+        })
+        .map(|c| c.display)
+        .unwrap_or_else(|| name.to_owned())
+}
+
+/// The fewest instruction files that reach every one of `clients`.
+///
+/// Returns each file with the clients it serves, in a stable order. Clients
+/// that read the same file get it once. Greedy: the file that reaches the
+/// most clients not yet reached is taken first, ties going to the file listed
+/// first in registry order, so the same set of clients always gives the same
+/// files. A client that reads nothing is left out.
+pub fn instruction_files(clients: &[Client]) -> Vec<(String, Vec<String>)> {
+    let mut remaining: Vec<&Client> = clients
+        .iter()
+        .filter(|c| c.instructions.as_ref().is_some_and(|i| !i.reads.is_empty()))
+        .collect();
+    // Registry order, whatever order they were asked for in.
+    let order = ids();
+    remaining.sort_by_key(|c| {
+        order
+            .iter()
+            .position(|id| *id == c.id)
+            .unwrap_or(usize::MAX)
+    });
+    let mut chosen: Vec<(String, Vec<String>)> = Vec::new();
+    while !remaining.is_empty() {
+        // The file read by the most remaining clients; ties go to the file
+        // that comes first in registry order.
+        let mut candidates: Vec<&String> = Vec::new();
+        for c in &remaining {
+            for f in c.instructions.iter().flat_map(|i| &i.reads) {
+                if !candidates.contains(&f) {
+                    candidates.push(f);
+                }
+            }
+        }
+        let reach = |f: &String| {
+            remaining
+                .iter()
+                .filter(|c| c.instructions.iter().any(|i| i.reads.contains(f)))
+                .count()
+        };
+        let Some(best) = candidates
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by(|(ia, a), (ib, b)| reach(a).cmp(&reach(b)).then(ib.cmp(ia)))
+            .map(|(_, f)| f.clone())
+        else {
+            break;
+        };
+        let served: Vec<String> = remaining
+            .iter()
+            .filter(|c| c.instructions.iter().any(|i| i.reads.contains(&best)))
+            .map(|c| c.id.clone())
+            .collect();
+        remaining.retain(|c| !served.contains(&c.id));
+        chosen.push((best, served));
+    }
+    chosen
+}
+
 /// Find one client by id.
 pub fn find(id: &str) -> Option<Client> {
     all().into_iter().find(|c| c.id == id)
@@ -504,6 +598,71 @@ pub fn home_dir() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writers_are_shown_by_the_name_a_person_knows() {
+        assert_eq!(display_for_writer("claude-code"), "Claude Code");
+        assert_eq!(display_for_writer("codex-mcp-client"), "Codex CLI");
+        assert_eq!(display_for_writer("gemini-cli-mcp-client"), "Gemini CLI");
+        // Prefix match: this client's name includes the server's name.
+        assert_eq!(display_for_writer("grok-shell-memfork"), "Grok Build");
+        // Unknown clients keep the name they gave.
+        assert_eq!(display_for_writer("some-new-client"), "some-new-client");
+    }
+
+    #[test]
+    fn every_client_says_where_it_reads_instructions() {
+        for c in all() {
+            let i = c
+                .instructions
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no instructions entry", c.id));
+            assert!(!i.reads.is_empty(), "{}", c.id);
+            assert!(i.docs.starts_with("https://"), "{}", c.id);
+            assert!(i.verified.len() == 10, "{}", c.id);
+            for f in &i.reads {
+                assert!(
+                    !f.starts_with('/') && !f.contains('\\') && !f.contains(".."),
+                    "{}: `{f}` must be a plain path inside the repository",
+                    c.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clients_that_share_a_file_get_it_once() {
+        let pick = |ids: &[&str]| {
+            let clients: Vec<Client> = ids.iter().map(|id| find(id).unwrap()).collect();
+            instruction_files(&clients)
+        };
+        let agents = crate::init::project::AGENTS_FILE;
+        let shared = pick(&["codex", "cursor", "grok"]);
+        assert_eq!(shared.len(), 1, "{shared:?}");
+        assert_eq!(shared[0].0, agents);
+        assert_eq!(shared[0].1, ["cursor", "codex", "grok"]);
+
+        // Every client, and each file it needs, with no file twice.
+        let every = pick(&["claude-code", "cursor", "codex", "gemini-cli", "grok"]);
+        let files: Vec<&str> = every.iter().map(|(f, _)| f.as_str()).collect();
+        let mut unique = files.clone();
+        unique.dedup();
+        assert_eq!(files, unique);
+        for id in ["claude-code", "cursor", "codex", "gemini-cli", "grok"] {
+            assert!(
+                every
+                    .iter()
+                    .any(|(_, served)| served.iter().any(|s| s == id)),
+                "{id} is not reached by {every:?}"
+            );
+        }
+
+        // Stable: the same clients in another order give the same files.
+        let reversed = pick(&["grok", "gemini-cli", "codex", "cursor", "claude-code"]);
+        let names =
+            |v: &[(String, Vec<String>)]| v.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&every), names(&reversed));
+    }
 
     #[test]
     fn the_registry_parses_and_is_complete() {

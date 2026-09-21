@@ -31,8 +31,9 @@ use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+    InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -82,6 +83,30 @@ impl UpstreamError {
     }
 }
 
+/// Who a proxy is speaking for, told to the daemon when it connects.
+///
+/// See [`crate::mcp::SESSION_CAPABILITY`]. The daemon records the client's
+/// name against what the session writes, and works in the namespace.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hello {
+    /// The project namespace, already valid.
+    pub namespace: String,
+    /// The name the real client gave in its own `initialize`, if it has
+    /// shaken hands yet.
+    pub client: Option<String>,
+}
+
+impl Hello {
+    fn capabilities(&self) -> Json {
+        let mut session = serde_json::Map::new();
+        session.insert("namespace".to_owned(), json!(self.namespace));
+        if let Some(client) = &self.client {
+            session.insert("client".to_owned(), json!(client));
+        }
+        json!({ "experimental": { crate::mcp::SESSION_CAPABILITY: session } })
+    }
+}
+
 /// A connection to a running daemon.
 #[derive(Debug)]
 pub struct Upstream {
@@ -93,8 +118,9 @@ pub struct Upstream {
 }
 
 impl Upstream {
-    /// Connect to the daemon an endpoint file describes, and shake hands.
-    pub async fn connect(endpoint: &Endpoint) -> Result<Self, UpstreamError> {
+    /// Connect to the daemon an endpoint file describes, and shake hands,
+    /// saying who this connection speaks for.
+    pub async fn connect(endpoint: &Endpoint, hello: &Hello) -> Result<Self, UpstreamError> {
         let port = endpoint
             .port
             .ok_or_else(|| UpstreamError::Unusable("the endpoint file names no port".to_owned()))?;
@@ -109,17 +135,17 @@ impl Upstream {
             session: Mutex::new(None),
             next_id: std::sync::atomic::AtomicI64::new(1),
         };
-        upstream.initialize().await?;
+        upstream.initialize(hello).await?;
         Ok(upstream)
     }
 
-    async fn initialize(&self) -> Result<(), UpstreamError> {
+    async fn initialize(&self, hello: &Hello) -> Result<(), UpstreamError> {
         let result = self
             .request(
                 "initialize",
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
+                    "capabilities": hello.capabilities(),
                     "clientInfo": { "name": "memfork-proxy", "version": crate::VERSION },
                 }),
             )
@@ -264,9 +290,11 @@ fn parse_message(text: &str) -> Result<Json, UpstreamError> {
     )))
 }
 
-/// How a proxy gets hold of a daemon, including starting one.
-pub type Reconnect =
-    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<Upstream, String>> + Send + Sync>;
+/// How a proxy gets hold of a daemon, including starting one, introducing
+/// itself with the given [`Hello`].
+pub type Reconnect = Arc<
+    dyn Fn(Hello) -> futures::future::BoxFuture<'static, Result<Upstream, String>> + Send + Sync,
+>;
 
 /// An MCP server that forwards everything to the daemon.
 #[derive(Clone)]
@@ -274,6 +302,10 @@ pub struct Proxy {
     /// `None` until a tool call needs the daemon. Handshakes never fill it.
     upstream: Arc<tokio::sync::RwLock<Option<Arc<Upstream>>>>,
     connect: Reconnect,
+    /// The project this session works in, from where the proxy was started.
+    namespace: String,
+    /// The real client's name, from its `initialize`.
+    client: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl std::fmt::Debug for Proxy {
@@ -288,10 +320,24 @@ impl Proxy {
     /// `connect` both starts the daemon, if none is running, and connects to
     /// it. It is not called here: see the note at the top of this module about
     /// what a handshake must not cost.
-    pub fn new(connect: Reconnect) -> Self {
+    pub fn new(connect: Reconnect, namespace: String) -> Self {
         Proxy {
             upstream: Arc::new(tokio::sync::RwLock::new(None)),
             connect,
+            namespace,
+            client: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    /// Who this proxy speaks for, as it stands.
+    fn hello(&self) -> Hello {
+        Hello {
+            namespace: self.namespace.clone(),
+            client: self
+                .client
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 
@@ -305,7 +351,7 @@ impl Proxy {
         if let Some(existing) = slot.clone() {
             return Ok(existing);
         }
-        let fresh = Arc::new((self.connect)().await?);
+        let fresh = Arc::new((self.connect)(self.hello()).await?);
         *slot = Some(Arc::clone(&fresh));
         Ok(fresh)
     }
@@ -317,7 +363,7 @@ impl Proxy {
     /// clear failure into a hang.
     async fn reconnect(&self) -> Result<Arc<Upstream>, String> {
         let mut slot = self.upstream.write().await;
-        let fresh = Arc::new((self.connect)().await?);
+        let fresh = Arc::new((self.connect)(self.hello()).await?);
         *slot = Some(Arc::clone(&fresh));
         Ok(fresh)
     }
@@ -382,7 +428,22 @@ impl ServerHandler for Proxy {
                 Implementation::new("memfork", crate::VERSION)
                     .with_title("MemFork — branchable agent memory"),
             )
-            .with_instructions(crate::mcp::INSTRUCTIONS)
+            .with_instructions(crate::mcp::instructions(&self.namespace))
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        // Remembered for the daemon, which only ever hears from this proxy.
+        // Still nothing is started: see the note at the top of this module.
+        let name = request.client_info.name.trim();
+        if !name.is_empty() {
+            *self.client.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.to_owned());
+        }
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
     }
 
     async fn list_tools(
@@ -442,6 +503,29 @@ pub async fn serve_stdio(proxy: Proxy) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hello_carries_the_project_and_the_client() {
+        let hello = Hello {
+            namespace: "shop".to_owned(),
+            client: Some("real-client".to_owned()),
+        };
+        let caps = hello.capabilities();
+        let session = &caps["experimental"][crate::mcp::SESSION_CAPABILITY];
+        assert_eq!(session["namespace"], "shop");
+        assert_eq!(session["client"], "real-client");
+
+        // Before the client has shaken hands there is no name to pass on.
+        let early = Hello {
+            namespace: "shop".to_owned(),
+            client: None,
+        };
+        assert!(
+            early.capabilities()["experimental"][crate::mcp::SESSION_CAPABILITY]
+                .get("client")
+                .is_none()
+        );
+    }
 
     #[test]
     fn a_plain_json_answer_parses() {

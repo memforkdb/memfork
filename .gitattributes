@@ -13,6 +13,8 @@
 
 # Golden files are byte-compared across operating systems: never translate them.
 crates/memfork-core/tests/golden/** -text
+# A data directory written by an earlier release: bytes, compared as bytes.
+crates/memfork/tests/fixtures/store-*/data/** binary
 
 *.png     binary
 *.gif     binary

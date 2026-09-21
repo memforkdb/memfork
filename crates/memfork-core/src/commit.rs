@@ -23,7 +23,8 @@ pub struct Commit {
     pub root: Root,
     /// Monotonic along the first-parent chain; the genesis commit is 0.
     pub seq: u64,
-    /// Optional human-readable message. Not part of the content address.
+    /// Optional human-readable message. Part of the content address, so the
+    /// same change under a different message is a different commit.
     pub message: Option<String>,
     /// This commit's change set, sorted by key.
     pub ops: Vec<Op>,
