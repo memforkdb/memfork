@@ -1,0 +1,75 @@
+name: Bug report
+description: Something does not behave the way it says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time. The most useful bug reports say what you
+        did, what happened, and what you expected instead.
+
+        If this is a security problem, please do not file it here — use
+        [private reporting](https://github.com/memforkdb/memfork/security)
+        instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what MemFork did in return.
+      placeholder: |
+        I ran `memfork init`, and ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `memfork doctor`
+      description: >
+        This says which build is running, where memory is kept and which
+        clients are registered, which answers most of the questions we would
+        otherwise have to ask. It prints paths from your machine — remove
+        anything you would rather not share.
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - install.sh or install.ps1
+        - pip / uv
+        - cargo install
+        - built from source
+        - something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else
+      description: Logs, a minimal example, or what you have already ruled out.
+    validations:
+      required: false

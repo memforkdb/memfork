@@ -1,0 +1,28 @@
+name: Feature request
+description: Something MemFork should do and does not.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: >
+        The problem rather than the solution, if you can. The best feature
+        requests describe a situation MemFork handles badly.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you have tried instead
+      description: Including deciding it was not worth it.
+    validations:
+      required: false

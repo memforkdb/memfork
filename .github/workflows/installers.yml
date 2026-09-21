@@ -1,0 +1,92 @@
+# The installers are written by hand, so they are tested by hand-written tests.
+#
+# `dist` cannot generate an installer that stops a running daemon before
+# replacing its binary (DESIGN §8), and that is the step an upgrade needs. What
+# is written instead has to be checked: a broken installer is the first thing
+# a new user meets.
+#
+# These run against a fake release served from disk, so nothing here needs a
+# published release to exist and no test reaches the network.
+
+name: Installers
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: The script is POSIX sh and free of the usual traps
+        run: |
+          set -eux
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck --shell=sh installers/install.sh
+
+  powershell-lint:
+    name: PSScriptAnalyzer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: It parses and passes the analyzer, on both PowerShells
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $findings = Invoke-ScriptAnalyzer -Path installers/install.ps1 -Severity Error,Warning
+          $findings | Format-Table -AutoSize
+          if ($findings | Where-Object { $_.Severity -eq 'Error' }) { exit 1 }
+      - name: Windows PowerShell 5.1 can parse it too
+        shell: powershell
+        run: |
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path installers/install.ps1).Path, [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { $_.ToString() }; exit 1 }
+          'parses on 5.1'
+
+  # The behaviour that matters: it installs, it refuses a bad download, and it
+  # stops a running daemon before replacing the binary it is running from.
+  install:
+    name: install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Build the binary the fake release will serve
+        run: cargo build --release -p memfork
+
+      - name: Test the installer against a release served from disk
+        shell: bash
+        env:
+          # Nothing these start may fall back to the real data directory.
+          MEMFORK_FORBID_PER_USER_DATA_DIR: "1"
+        run: bash installers/test-installer.sh

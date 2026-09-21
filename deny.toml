@@ -1,0 +1,80 @@
+# cargo-deny configuration — the dependency policy, enforced rather than
+# trusted. See CONTRIBUTING.md.
+#
+# Run with: cargo deny check
+
+[graph]
+# Every target MemFork ships for (DESIGN §7). A dependency that is only pulled in
+# on one of these is still checked.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+all-features = true
+
+[licenses]
+# Permissive licences only. No GPL, AGPL, LGPL, SSPL or MPL: MemFork is
+# Apache-2.0, and a copyleft dependency would decide that for its users.
+# Anything not on this list fails the build; it is an allow-list, so a new
+# dependency with an unexpected licence cannot slip in unnoticed.
+allow = [
+    "Apache-2.0",
+    # Apache-2.0 with an *additional permission* granted, not a restriction:
+    # the LLVM exception waives the requirement to pass on the licence when
+    # the code is compiled into a binary. Arrived with pyo3's build
+    # dependencies (`target-lexicon`), and is within the policy in
+    # CONTRIBUTING: permissive, not copyleft.
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# The list above is deliberately wider than what the tree currently uses, so a
+# new dependency under a permissive licence does not need a config change.
+unused-allowed-license = "allow"
+exceptions = []
+
+# MemFork itself is Apache-2.0, and this pins the text so an accidental edit to
+# LICENSE is caught here rather than by a user.
+[[licenses.clarify]]
+crate = "memfork-core"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "memfork"
+expression = "Apache-2.0"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Nothing is banned outright yet. Entries belong here when a crate turns out to
+# pull in a licence or a platform assumption MemFork cannot accept.
+deny = []
+skip = []
+skip-tree = []
+
+[advisories]
+# An unmaintained crate in our own dependency tree is a problem; one that only
+# appears transitively through a dev tool is noted but does not fail the build.
+unmaintained = "workspace"
+unsound = "all"
+yanked = "deny"
+ignore = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

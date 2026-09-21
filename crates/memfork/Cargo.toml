@@ -1,0 +1,78 @@
+[package]
+name = "memfork"
+description = "Git for agent state, in process: fork, merge, discard and rewind an agent's memory."
+keywords = ["database", "in-memory", "agent", "branching", "mcp"]
+categories = ["command-line-utilities", "database-implementations"]
+readme = "README.md"
+documentation = "https://docs.rs/memfork"
+include = ["src/**/*.rs", "src/clients/clients.toml", "README.md", "../../LICENSE"]
+version.workspace = true
+edition.workspace = true
+# Higher than the workspace minimum: `rmcp`, the official MCP SDK, needs 1.88,
+# and `std::fs::File::try_lock` — which is how the data directory is held
+# without pulling in a locking crate — landed in 1.89. `memfork-core` is the
+# crate people embed, and it stays at 1.85.
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lib]
+name = "memfork"
+path = "src/lib.rs"
+
+[[bin]]
+name = "memfork"
+path = "src/main.rs"
+
+[dependencies]
+memfork-core.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+rmcp = { workspace = true, features = [
+    "server",
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+# HTTP for the daemon and for the proxy that talks to it. No TLS: the daemon
+# binds loopback only, so a TLS stack would be ~50 crates for nothing.
+hyper = { workspace = true, features = ["server", "client", "http1"] }
+hyper-util = { workspace = true, features = ["server", "client-legacy", "http1", "tokio", "service"] }
+http-body-util.workspace = true
+futures = { version = "0.3", default-features = false, features = ["std"] }
+tokio-util = { version = "0.7", default-features = false }
+tower-service = "0.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync", "time", "net", "process"] }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+
+# Windows only, and for one call: marking this process's standard handles
+# non-inheritable before the daemon is spawned. See `daemon::spawn`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+assert_cmd = "2.2"
+predicates = "3.1"
+tempfile = "3.27"
+memfork-core.workspace = true
+# The MCP tests drive a real client speaking to `memfork mcp` over real pipes.
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process", "time"] }
+
+[lints]
+workspace = true

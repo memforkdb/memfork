@@ -1,0 +1,279 @@
+# Python wheels (DESIGN §8).
+#
+# Triggered by the same tag as the release, and runnable on its own to check
+# the matrix without cutting one.
+#
+# Not called by the release workflow, though it was at first. A job that calls
+# a reusable workflow *and* asks for `id-token: write` — which PyPI trusted
+# publishing needs — is refused before the run starts wherever an Actions
+# policy forbids that permission, and the refusal takes the whole release with
+# it: no binaries, no archives, no release, and an error naming no cause. Two
+# workflows on one tag cannot do that to each other.
+#
+# Eight wheels, not six. The six targets in DESIGN §7 are *binary* targets, and
+# musl is right for a binary that has to run on any distribution. A wheel is a
+# different question: a musllinux wheel installs on Alpine and nowhere else, so
+# an Ubuntu user running `pip install memfork` would be sent to a compiler.
+# Both libcs are built for both architectures, which is what makes "installing
+# never needs a compiler" true rather than nearly true.
+
+name: Wheels
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/memfork-py/**"
+      - ".github/workflows/wheels.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # No test may fall back to the real per-user data directory, here either.
+  MEMFORK_FORBID_PER_USER_DATA_DIR: "1"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        uses: pyo3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --manifest-path crates/memfork-py/Cargo.toml
+          manylinux: ${{ matrix.manylinux }}
+          # The container has no Rust toolchain of its own for musl builds.
+          before-script-linux: ${{ matrix.before-script-linux }}
+          sccache: "true"
+
+      - name: Keep the wheel
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux, glibc — what nearly every Linux Python is.
+          - name: manylinux-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_17"
+            before-script-linux: ""
+          - name: manylinux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: "2_17"
+            before-script-linux: ""
+          # Linux, musl — Alpine and the containers built on it.
+          - name: musllinux-x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            before-script-linux: "apk add --no-cache musl-dev || true"
+          - name: musllinux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            manylinux: musllinux_1_2
+            before-script-linux: "apk add --no-cache musl-dev || true"
+          # macOS.
+          - name: macos-aarch64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: "auto"
+            before-script-linux: ""
+          - name: macos-x86_64
+            runner: macos-latest
+            target: x86_64-apple-darwin
+            manylinux: "auto"
+            before-script-linux: ""
+          # Windows.
+          - name: windows-x86_64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: "auto"
+            before-script-linux: ""
+          - name: windows-aarch64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            manylinux: "auto"
+            before-script-linux: ""
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Build the source distribution
+        uses: pyo3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b
+        with:
+          command: sdist
+          args: --out dist --manifest-path crates/memfork-py/Cargo.toml
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wheel-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # `pip install memfork` works with no compiler. Checked by installing the
+  # built wheel with `--only-binary :all:`, on a runner of that architecture,
+  # and then running the tests against what was installed.
+  install-test:
+    name: install (${{ matrix.name }})
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        if: ${{ !matrix.container }}
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist
+
+      - name: Install it, refusing to build anything
+        shell: bash
+        run: |
+          set -eux
+          python -m pip install --upgrade pip pytest
+          python -m pip install --no-index --only-binary :all: --find-links dist memfork
+
+      - name: Run the tests against what was installed
+        shell: bash
+        run: python -m pytest crates/memfork-py/tests -q
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: manylinux-x86_64
+            runner: ubuntu-latest
+            python-version: "3.12"
+            container: ""
+          - name: manylinux-aarch64
+            runner: ubuntu-24.04-arm
+            python-version: "3.12"
+            container: ""
+          # The oldest Python the abi3 wheel claims, checked as well as the
+          # newest: one wheel promising 3.9 and up is only worth having if 3.9
+          # can actually load it.
+          - name: manylinux-x86_64
+            runner: ubuntu-latest
+            python-version: "3.9"
+            container: ""
+          - name: macos-aarch64
+            runner: macos-latest
+            python-version: "3.12"
+            container: ""
+          - name: windows-x86_64
+            runner: windows-latest
+            python-version: "3.12"
+            container: ""
+          - name: windows-aarch64
+            runner: windows-11-arm
+            python-version: "3.12"
+            container: ""
+
+  # Alpine has no GitHub-hosted runner, so the musllinux wheels are installed
+  # and exercised inside its container instead.
+  install-test-musl:
+    name: install (musllinux-x86_64)
+    needs: build
+    runs-on: ubuntu-latest
+    container: python:3.12-alpine
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: wheel-musllinux-x86_64
+          path: dist
+      - name: Install it, refusing to build anything
+        run: |
+          set -eux
+          python -m pip install --upgrade pip pytest
+          python -m pip install --no-index --only-binary :all: --find-links dist memfork
+      - name: Run the tests against what was installed
+        run: python -m pytest crates/memfork-py/tests -q
+
+  # macOS on Intel has no hosted runner any more, so that one wheel is checked
+  # by what it says it is rather than by running it. Said here rather than left
+  # for someone to discover.
+  inspect-untestable:
+    name: inspect (macos-x86_64)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: wheel-macos-x86_64
+          path: dist
+      - name: The wheel is tagged for the platform it claims
+        run: |
+          set -eux
+          ls dist
+          test -n "$(ls dist/*macosx*x86_64*.whl)"
+          python -m zipfile -l dist/*.whl | grep -q "memfork/_memfork.abi3.so"
+          echo "No Intel macOS runner exists to run this on; tag and contents checked."
+
+  publish:
+    name: publish to PyPI
+    needs: [build, sdist, install-test, install-test-musl]
+    runs-on: ubuntu-latest
+    # Only from a tag, and never from a prerelease: an rc proves the pipeline,
+    # and nothing it builds should end up installed by somebody typing
+    # `pip install memfork`. SemVer puts a hyphen before the prerelease part
+    # and nowhere else, so the tag name is the whole test.
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+    environment: pypi
+    permissions:
+      # For PyPI trusted publishing. No token is stored anywhere.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+
+  # Proof that the skip above is real rather than hoped for: on a prerelease
+  # this reports that publishing was skipped, and the release notes say so.
+  publish-skipped:
+    name: publish skipped (prerelease)
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-') }}
+    steps:
+      - name: Say what was not done
+        run: |
+          echo "::notice::${{ github.ref_name }} is a prerelease: wheels were built and tested, and nothing was published to PyPI."

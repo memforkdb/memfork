@@ -1,0 +1,105 @@
+[workspace]
+members = ["crates/memfork-core", "crates/memfork", "crates/memfork-py"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/memforkdb/memfork"
+homepage = "https://github.com/memforkdb/memfork"
+authors = ["MemFork contributors"]
+
+[workspace.dependencies]
+memfork-core = { path = "crates/memfork-core", version = "0.1.0" }
+blake3 = "1.8"
+bytes = "1.12"
+clap = { version = "4.6", features = ["derive"] }
+parking_lot = "0.12"
+rpds = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+# `preserve_order` keeps a user's JSON config in its original key order when
+# `memfork init` writes one entry back into it.
+serde_json = { version = "1.0", features = ["preserve_order"] }
+smallvec = "1.16"
+thiserror = "2.0"
+# Edits TOML in place, preserving comments, key order and whitespace exactly.
+toml = "1.1"
+toml_edit = "0.25"
+getrandom = "0.4"
+rmcp = { version = "3.4", default-features = false }
+hyper = { version = "1", default-features = false }
+hyper-util = { version = "0.1", default-features = false }
+http-body-util = "0.1"
+tokio = { version = "1.53", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.33.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = []
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "aarch64-pc-windows-msvc", "x86_64-apple-darwin", "x86_64-unknown-linux-musl", "x86_64-pc-windows-msvc"]
+# Build only the required packages, and individually
+precise-builds = true
+# Which phase dist should use to create the GitHub release
+github-release = "auto"
+# Checksums to generate for each App
+checksum = "sha256"
+# Whether to install an updater program
+install-updater = false
+# The wheels are deliberately not a dist publish job. They were, until the
+# release failed to start at all: a job that calls a reusable workflow *and*
+# asks for `id-token: write` — which dist emits for publish jobs, and which
+# PyPI trusted publishing needs — is refused outright where an Actions policy
+# forbids that permission, and the refusal takes the whole run with it, before
+# a single binary is built. `wheels.yml` triggers on the same tag instead, so
+# the two cannot stop each other.
+# Every action pinned to a commit, including inside the generated workflow.
+# A tag is a name somebody else can move.
+# The installers ship with the release, so the one-liner in the README fetches
+# the script that matches the release rather than whatever is on the default
+# branch. `cp` because they need no building — only publishing.
+[[workspace.metadata.dist.extra-artifacts]]
+artifacts = ["install.sh", "install.ps1"]
+build = ["cp", "installers/install.sh", "installers/install.ps1", "."]
+
+[workspace.metadata.dist.github-action-commits]
+"actions/checkout" = "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+"actions/upload-artifact" = "ea165f8d65b6e75b540449e92b4886f43607fa02"
+"actions/download-artifact" = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
+"actions/attest-build-provenance" = "977bb373ede98d70efdf65b84cb5f73e068dcc2a"
+"swatinem/rust-cache" = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
+"taiki-e/install-action" = "94c31af3204a9f15ab40b35ad084410b905bbc73"
+# Native arm64 runners, free on public repositories, so nothing is
+# cross-compiled to a platform it was never run on.
+[workspace.metadata.dist.github-custom-runners]
+aarch64-unknown-linux-musl = "ubuntu-24.04-arm"
+aarch64-pc-windows-msvc = "windows-11-arm"
+
+[profile.release]
+lto = "thin"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+[workspace.lints.rust]
+# `deny`, not `forbid`. There is exactly one `unsafe` in the
+# workspace — `daemon::windows_handles`, three FFI calls that stop a spawned
+# daemon inheriting the client's pipes — and `forbid` cannot be lifted even
+# for a reviewed exception. Every other module is unaffected: an `unsafe`
+# anywhere else is still an error.
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

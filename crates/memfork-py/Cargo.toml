@@ -1,0 +1,37 @@
+[package]
+name = "memfork-py"
+description = "Python bindings for MemFork: branchable in-memory agent state."
+# Never goes to crates.io. The Rust crates people depend on are `memfork-core`
+# and `memfork`; this one exists to be built into a wheel.
+publish = false
+version.workspace = true
+edition.workspace = true
+# The binary's minimum, not the engine's: the wheel carries the whole command,
+# so it carries the whole dependency tree.
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lib]
+name = "_memfork"
+# `cdylib` for the extension module Python imports; `rlib` so the workspace can
+# build and test it like any other crate.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+memfork-core.workspace = true
+memfork = { path = "../memfork", version = "0.1.0" }
+serde_json.workspace = true
+pyo3 = { version = "0.29", features = ["abi3-py39"] }
+
+[features]
+# Set by maturin when it builds the wheel. Off by default so that an ordinary
+# `cargo build --workspace` does not need a Python library to link against:
+# `extension-module` tells pyo3 to leave the symbols to the interpreter, which
+# is right for a wheel and wrong for a test binary.
+extension-module = ["pyo3/extension-module"]
+
+[lints]
+workspace = true

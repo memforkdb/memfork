@@ -1,0 +1,167 @@
+# MemFork client adapter registry (DESIGN §6.1).
+#
+# One entry per MCP client. Adding a client is an entry here plus a fixture
+# test — never new code.
+#
+# `verified` is the date the entry was last checked against `docs`. Nothing in
+# this file was confirmed by running the client; it is what the vendor's own
+# documentation says on that date. Re-check before a release.
+#
+# Each entry has up to two ways in:
+#
+#   [client.cli]   the client's own `mcp add` command. Preferred, because the
+#                  client then writes its own config in its own format and
+#                  MemFork never parses a file it does not own. `status` asks
+#                  the same command whether MemFork is registered, which is the
+#                  only answer that counts: a client may store its servers
+#                  somewhere MemFork does not model, or normalise what it was
+#                  given, and reading its file would then disagree with it.
+#   [client.file]  direct config editing. Used only when the client ships no
+#                  CLI, or its CLI cannot express the requested scope. A client
+#                  with no `user` path is one whose user configuration MemFork
+#                  will not touch at all.
+#
+# In `add`, `{scope}` expands to zero or more flag tokens, `{name}` to the
+# server name, `{command}` to the memfork binary path and `{args}` to its
+# arguments. An expansion that produces nothing drops out of the command line.
+#
+# `remove` is how a registration that points at the wrong MemFork gets
+# corrected: an install moves the binary, and the client keeps launching a path
+# that is gone. A client with no documented `remove` is left alone and the
+# command to run is printed instead, because guessing at a command that edits
+# somebody's configuration is not a thing to do.
+
+[[client]]
+id = "claude-code"
+display = "Claude Code"
+docs = "https://code.claude.com/docs/en/mcp"
+verified = "2026-09-20"
+# The directory this client creates for itself, so "installed but never
+# configured" is not mistaken for "not installed".
+detect_dir = "$HOME/.claude"
+
+[client.cli]
+binary = "claude"
+add = ["mcp", "add", "{scope}", "{name}", "--", "{command}", "{args}"]
+# Asks about one server by name, rather than listing every server and
+# health-checking each by starting it.
+status = ["mcp", "get", "{name}"]
+# The scope flag follows the name here, unlike `add`.
+remove = ["mcp", "remove", "{name}", "{scope}"]
+scope_user = ["--scope", "user"]
+scope_project = ["--scope", "project"]
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+emit_type_stdio = true
+http_url_key = "url"
+project = ".mcp.json"
+# No `user` path on purpose. This client keeps user-scope servers in
+# `~/.claude.json`, together with its OAuth session, per-project trust settings
+# and caches. MemFork neither writes nor reads that file: user scope goes
+# through the `claude` command, and if that command is not on PATH, init writes
+# project scope instead and says why. Leaving the path out of the registry is
+# what makes that structural rather than a rule someone has to remember.
+
+[[client]]
+id = "cursor"
+display = "Cursor"
+docs = "https://cursor.com/docs/context/mcp"
+verified = "2026-09-20"
+# The directory this client creates for itself, so "installed but never
+# configured" is not mistaken for "not installed".
+detect_dir = "$HOME/.cursor"
+# Cursor ships no `mcp add` command, so the config file is the only way in.
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+emit_type_stdio = false
+http_url_key = "url"
+user = "$HOME/.cursor/mcp.json"
+project = ".cursor/mcp.json"
+
+[[client]]
+id = "codex"
+display = "Codex CLI"
+docs = "https://learn.chatgpt.com/docs/extend/mcp?surface=cli"
+verified = "2026-09-20"
+# The directory this client creates for itself, so "installed but never
+# configured" is not mistaken for "not installed".
+detect_dir = "$HOME/.codex"
+
+[client.cli]
+binary = "codex"
+add = ["mcp", "add", "{name}", "--", "{command}", "{args}"]
+remove = ["mcp", "remove", "{name}"]
+# No `mcp get` is documented for this client, so registration is read off the
+# list instead.
+status = ["mcp", "list"]
+# No scope flag is documented: `codex mcp add` writes the user config. Project
+# scope therefore falls back to editing `.codex/config.toml`.
+scope_user = []
+
+[client.file]
+format = "toml"
+server_map = ["mcp_servers"]
+emit_type_stdio = false
+http_url_key = "url"
+user = "$HOME/.codex/config.toml"
+project = ".codex/config.toml"
+
+[[client]]
+id = "gemini-cli"
+display = "Gemini CLI"
+docs = "https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md"
+verified = "2026-09-20"
+# The directory this client creates for itself, so "installed but never
+# configured" is not mistaken for "not installed".
+detect_dir = "$HOME/.gemini"
+
+[client.cli]
+binary = "gemini"
+# No `--` separator: the command and its arguments are positional.
+add = ["mcp", "add", "{scope}", "{name}", "{command}", "{args}"]
+status = ["mcp", "list"]
+remove = ["mcp", "remove", "{scope}", "{name}"]
+scope_user = ["-s", "user"]
+scope_project = ["-s", "project"]
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+emit_type_stdio = false
+# The DESIGN §6.1 quirk: Gemini CLI uses `httpUrl` for streamable HTTP and `url`
+# for SSE, where most clients use `url` for streamable HTTP. Unused until the
+# shared daemon, encoded here so the difference is recorded once.
+http_url_key = "httpUrl"
+user = "$HOME/.gemini/settings.json"
+project = ".gemini/settings.json"
+
+[[client]]
+id = "grok"
+display = "Grok Build"
+docs = "https://docs.x.ai/build/features/mcp-servers"
+verified = "2026-09-20"
+# The directory this client creates for itself, so "installed but never
+# configured" is not mistaken for "not installed".
+detect_dir = "$HOME/.grok"
+
+[client.cli]
+binary = "grok"
+add = ["mcp", "add", "{scope}", "{name}", "--", "{command}", "{args}"]
+status = ["mcp", "list"]
+# No scope flag documented for remove, so none is sent.
+remove = ["mcp", "remove", "{name}"]
+# User scope is the default and takes no flag.
+scope_user = []
+scope_project = ["--scope", "project"]
+
+[client.file]
+format = "toml"
+server_map = ["mcp_servers"]
+emit_type_stdio = false
+http_url_key = "url"
+user = "$HOME/.grok/config.toml"
+project = ".grok/config.toml"

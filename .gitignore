@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+.memfork/
+
+# Python build artefacts from maturin and from an editable install.
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+/dist/
+.pytest_cache/

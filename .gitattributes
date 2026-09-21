@@ -1,0 +1,20 @@
+# DESIGN §7: all text files use LF in the repository and in the working tree.
+* text=auto eol=lf
+
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.txt     text eol=lf
+*.sh      text eol=lf diff=shell
+*.ps1     text eol=crlf
+
+# Golden files are byte-compared across operating systems: never translate them.
+crates/memfork-core/tests/golden/** -text
+
+*.png     binary
+*.gif     binary
+*.jpg     binary
+*.ico     binary

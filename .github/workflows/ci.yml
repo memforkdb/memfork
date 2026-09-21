@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  # DESIGN §8: the same four steps on all three operating systems. Every one of
+  # them must pass on every one of them.
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --all-features
+
+      # The timings that are promised — fork cost, concurrent writers — are
+      # measured on an optimized
+      # build as well, which is how MemFork actually ships.
+      - name: Test (release)
+        run: cargo test --workspace --all-features --release
+
+      # docs.rs publishes these and they cannot be edited afterwards, so a
+      # broken intra-doc link is a defect rather than a nuisance.
+      - name: Documentation
+        run: cargo doc --no-deps --workspace
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73
+        with:
+          tool: cargo-deny
+
+      - name: Licences, advisories, sources
+        run: cargo deny --workspace --all-features check
+
+  # A commit id must be identical on every platform. The
+  # golden file is checked in and compared by each matrix leg above; this job
+  # makes a drift between legs visible as its own failure rather than as three
+  # separate ones.
+  determinism:
+    name: determinism (golden commit ids)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Golden commit ids are unchanged
+        run: cargo test -p memfork-core --test a7_determinism
+      - name: The golden file was not rewritten by the test run
+        run: git diff --exit-code -- crates/memfork-core/tests/golden
+
+  # The release workflow is generated from the config in Cargo.toml. A change
+  # to one and not the other is a release that does something nobody reviewed.
+  release-config:
+    name: release config matches its workflow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      # From its own release, pinned: `install-action` does not carry this
+      # tool, and the version has to be the one the config names.
+      - name: Install dist
+        run: |
+          set -eux
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.33.0/cargo-dist-installer.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: The committed workflow is what this config generates
+        run: dist generate --check
+
+  # DESIGN §7: the repository stores text with LF. A CRLF that slipped past
+  # .gitattributes would change a golden file's bytes on checkout.
+  line-endings:
+    name: line endings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: No CRLF in tracked text files
+        run: |
+          if git grep -I --line-number $'\r$' -- . ':!*.ps1'; then
+            echo "::error::tracked text files contain CRLF; see .gitattributes"
+            exit 1
+          fi
+
+
+  # The minimum supported Rust version is a promise in Cargo.toml; a newer
+  # feature slipping into the code would break someone pinned to it.
+  #
+  # The two crates promise different minimums on purpose. `memfork-core` is
+  # what people embed, so it stays low; the binary depends on `rmcp`, the
+  # official MCP SDK, which needs more. Each is checked against its own.
+  msrv:
+    name: msrv (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: memfork-core
+            manifest: Cargo.toml
+          - crate: memfork
+            manifest: crates/memfork/Cargo.toml
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Read the crate's declared rust-version
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' "${{ matrix.manifest }}" | tr -d ' ' | cut -d'"' -f2)
+          echo "checking ${{ matrix.crate }} against Rust $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      # Library and binary targets only: the dev-dependency tree carries its
+      # own, higher minimums and is not part of the promise to consumers.
+      - run: cargo check -p ${{ matrix.crate }} --all-features

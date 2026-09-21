@@ -1,0 +1,42 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "memfork"
+description = "Git for agent state, in process: fork, merge, discard and rewind an agent's memory."
+readme = "README.md"
+requires-python = ">=3.9"
+# The licence text lives once, at the root of the repository.
+license = "Apache-2.0"
+authors = [{ name = "MemFork contributors" }]
+keywords = ["agent", "memory", "database", "branching", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Software Development :: Libraries",
+]
+# The version comes from Cargo.toml, so the wheel and the binary can never
+# claim different ones.
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/memforkdb/memfork"
+Repository = "https://github.com/memforkdb/memfork"
+Issues = "https://github.com/memforkdb/memfork/issues"
+
+# `pip install memfork` puts this on the path. It is the same command the
+# standalone binary offers, running the same code.
+[project.scripts]
+memfork = "memfork.__main__:main"
+
+[tool.maturin]
+module-name = "memfork._memfork"
+python-source = "python"
+manifest-path = "Cargo.toml"
+features = ["pyo3/extension-module"]
+# One wheel per platform covers every Python from 3.9 up.
+bindings = "pyo3"
