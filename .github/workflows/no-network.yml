@@ -97,8 +97,10 @@ jobs:
         # Loopback must pass and the outside must not, for root and only root.
         run: |
           python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &
-          sleep 1
-          if sudo curl -sS --max-time 5 -o /dev/null http://127.0.0.1:8765/; then echo "root: loopback passes"; else echo "root: LOOPBACK BLOCKED"; fi
+          # Retried: the server takes a moment to bind, and a probe that gave
+          # up first once reported loopback blocked in a run where every real
+          # loopback connection worked.
+          if sudo curl -sS --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 -o /dev/null http://127.0.0.1:8765/; then echo "root: loopback passes"; else echo "root: LOOPBACK BLOCKED"; fi
           if sudo curl -sS --max-time 10 -o /dev/null https://github.com/; then echo "root: OUTSIDE REACHABLE"; else echo "root: outside blocked"; fi
           if curl -sS --max-time 10 -o /dev/null https://github.com/; then echo "runner: outside reachable"; else echo "runner: OUTSIDE BLOCKED"; fi
           kill %1 || true
