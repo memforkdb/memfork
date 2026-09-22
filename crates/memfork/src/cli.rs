@@ -155,6 +155,10 @@ pub enum Command {
         #[arg(skip)]
         #[serde(default)]
         source_hashes: Option<std::collections::BTreeMap<String, Option<String>>>,
+        /// Write it even though it looks like a credential: the rule id the
+        /// refusal named. Only for something that is not a secret.
+        #[arg(long = "allow-secret", value_name = "RULE")]
+        allow_secret: Option<String>,
     },
 
     /// Read a key.
@@ -230,6 +234,10 @@ pub enum Command {
         /// from after everything else on this one is gone.
         #[arg(long)]
         lesson: Option<String>,
+        /// Write it even though it looks like a credential: the rule id the
+        /// refusal named. Only for something that is not a secret.
+        #[arg(long = "allow-secret", value_name = "RULE")]
+        allow_secret: Option<String>,
     },
 
     /// Find entries by words in their keys and values, best match first.
@@ -252,6 +260,10 @@ pub enum Command {
         /// The project. Defaults to the one this directory belongs to.
         #[arg(long, global = true, value_name = "NAME")]
         namespace: Option<String>,
+        /// Write it even though it looks like a credential: the rule id the
+        /// refusal named. Only for something that is not a secret.
+        #[arg(long = "allow-secret", global = true, value_name = "RULE")]
+        allow_secret: Option<String>,
     },
 
     /// List the facts in a project, and whether their source files have

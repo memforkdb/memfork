@@ -139,8 +139,10 @@ pub fn execute_in(
             meta,
             sources,
             source_hashes,
+            allow_secret,
         } if !sources.is_empty() => {
-            let mut args = json!({ "key": key, "value": value, "sources": sources });
+            let mut args = json!({ "key": key, "value": value, "sources": sources,
+                                   "allow_secret": allow_secret });
             if let Some(i) = importance {
                 args["importance"] = json!(i);
             }
@@ -178,12 +180,13 @@ pub fn execute_in(
         Command::Discard {
             name,
             lesson: Some(lesson),
+            allow_secret,
         } => {
             let result = ctx.tool(
                 db,
                 branch,
                 "memfork_discard",
-                json!({ "name": name, "lesson": lesson }),
+                json!({ "name": name, "lesson": lesson, "allow_secret": allow_secret }),
             )?;
             let key = result["lesson"]["key"].as_str().unwrap_or("");
             let parent = result["lesson"]["branch"].as_str().unwrap_or("");
@@ -227,7 +230,11 @@ pub fn execute_in(
             ))
         }
 
-        Command::Task { action, namespace } => {
+        Command::Task {
+            action,
+            namespace,
+            allow_secret,
+        } => {
             let mut args = match action {
                 TaskAction::Add { title, id, detail } => {
                     json!({"action": "add", "title": title, "id": id, "detail": detail})
@@ -242,6 +249,9 @@ pub fn execute_in(
             };
             if let Some(ns) = namespace {
                 args["namespace"] = json!(ns);
+            }
+            if let Some(allow) = allow_secret {
+                args["allow_secret"] = json!(allow);
             }
             let result = ctx.tool(db, branch, "memfork_task", args)?;
             Ok(Outcome::new(
@@ -315,8 +325,25 @@ pub fn execute_in(
             embedding,
             ttl_commits,
             meta,
+            allow_secret,
             ..
         } => {
+            let pairs = meta
+                .iter()
+                .map(|pair| parse_meta(pair).map_err(ExecError::Usage))
+                .collect::<Result<Vec<_>, _>>()?;
+            let allow = crate::secrets::Allow::parse(allow_secret.as_deref())
+                .map_err(|r| ExecError::Usage(r.to_string()))?;
+            crate::secrets::check_all(
+                [
+                    ("key".to_owned(), key.as_str()),
+                    ("value".to_owned(), value.as_str()),
+                ]
+                .into_iter()
+                .chain(pairs.iter().map(|(k, v)| (format!("meta.{k}"), v.as_str()))),
+                &allow,
+            )
+            .map_err(|r| ExecError::Usage(r.to_string()))?;
             let mut v = Value::new(value.clone());
             if let Some(i) = importance {
                 v = v.with_importance(*i);
@@ -685,7 +712,9 @@ pub fn target(command: &Command, branch: &str) -> (Option<String>, Option<String
         Command::At { key, prefix, .. } => (key.clone().or_else(|| prefix.clone()), on),
         Command::Fork { name, .. } | Command::Discard { name, .. } => (None, Some(name.clone())),
         Command::Find { prefix, .. } => (prefix.clone(), on),
-        Command::Task { action, namespace } => {
+        Command::Task {
+            action, namespace, ..
+        } => {
             let ns = namespace.as_deref().unwrap_or("");
             let id = match action {
                 TaskAction::Claim { id, .. }

@@ -80,6 +80,7 @@ pub mod persist;
 pub mod proxy;
 pub mod render;
 pub mod run;
+pub mod secrets;
 pub mod serve;
 pub mod shared;
 pub mod sidecar;

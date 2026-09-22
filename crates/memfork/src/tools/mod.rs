@@ -59,6 +59,16 @@ fn branch_arg() -> (&'static str, serde_json::Value) {
     )
 }
 
+fn allow_secret_arg() -> (&'static str, serde_json::Value) {
+    (
+        "allow_secret",
+        string(
+            "Only after a write was refused as looking like a credential and it is \
+             not one: the rule id the refusal named (several separated by commas).",
+        ),
+    )
+}
+
 /// Every tool, in a stable order.
 ///
 /// Built fresh rather than kept in a static, because the schemas are owned
@@ -128,6 +138,7 @@ pub fn all() -> Vec<ToolDef> {
                              back it says whether those files have changed since.",
                         ),
                     ),
+                    allow_secret_arg(),
                     branch_arg(),
                 ],
                 &["key", "value"],
@@ -299,6 +310,7 @@ pub fn all() -> Vec<ToolDef> {
                              everything else on this one is gone.",
                         ),
                     ),
+                    allow_secret_arg(),
                 ],
                 &["name"],
             ),
@@ -429,6 +441,7 @@ pub fn all() -> Vec<ToolDef> {
                             &["open", "claimed", "done", "unfinished", "all"],
                         ),
                     ),
+                    allow_secret_arg(),
                     namespace_arg(),
                     branch_arg(),
                 ],
@@ -462,6 +475,7 @@ pub fn all() -> Vec<ToolDef> {
                         "questions",
                         string_array("Open questions that need someone's answer."),
                     ),
+                    allow_secret_arg(),
                     namespace_arg(),
                     branch_arg(),
                 ],

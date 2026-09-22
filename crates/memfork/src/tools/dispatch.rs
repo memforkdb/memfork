@@ -32,6 +32,9 @@ pub enum ToolError {
     BadArguments(String),
     /// The engine refused the operation.
     Engine(memfork_core::Error),
+    /// The write carried something shaped like a credential, and was not
+    /// stored. The message never contains what matched.
+    Secret(crate::secrets::Refused),
 }
 
 impl std::fmt::Display for ToolError {
@@ -46,6 +49,7 @@ impl std::fmt::Display for ToolError {
             }
             ToolError::BadArguments(m) => write!(f, "{m}"),
             ToolError::Engine(e) => write!(f, "{e}"),
+            ToolError::Secret(r) => write!(f, "{r}"),
         }
     }
 }
@@ -281,6 +285,18 @@ impl Session {
         *self.branch.lock().unwrap_or_else(|e| e.into_inner()) = name;
     }
 
+    /// Refuse a write that carries something shaped like a credential,
+    /// unless the caller named its rule in `allow_secret`.
+    fn refuse_secrets<'a>(
+        &self,
+        args: &JsonObject,
+        fields: impl IntoIterator<Item = (String, &'a str)>,
+    ) -> Result<(), ToolError> {
+        let allow = crate::secrets::Allow::parse(opt_str(args, "allow_secret")?)
+            .map_err(ToolError::Secret)?;
+        crate::secrets::check_all(fields, &allow).map_err(ToolError::Secret)
+    }
+
     /// Run one tool call and return its result as JSON.
     ///
     /// Every result carries `current_branch`, added here rather than by each
@@ -330,14 +346,21 @@ impl Session {
             _ => Some(text("branch").unwrap_or_else(|| before.to_owned())),
         };
         // A handoff chooses its own key, so that one comes from the result.
-        let key = text("key").or_else(|| text("prefix")).or_else(|| {
-            outcome
-                .as_ref()
-                .ok()
-                .and_then(|r| r.get("key"))
-                .and_then(Json::as_str)
-                .map(str::to_owned)
-        });
+        // A write refused for holding a secret is reported without its key,
+        // which may be where the secret was.
+        let refused = matches!(outcome, Err(ToolError::Secret(_)));
+        let key = (!refused)
+            .then(|| text("key"))
+            .flatten()
+            .or_else(|| text("prefix"))
+            .or_else(|| {
+                outcome
+                    .as_ref()
+                    .ok()
+                    .and_then(|r| r.get("key"))
+                    .and_then(Json::as_str)
+                    .map(str::to_owned)
+            });
         let namespace = match name {
             "memfork_handoff" | "memfork_resume" | "memfork_task" => {
                 text("namespace").unwrap_or_else(|| self.namespace())
@@ -356,11 +379,16 @@ impl Session {
             },
             other => other.trim_start_matches("memfork_").to_owned(),
         };
-        let detail = result.and_then(|r| {
-            r.get("held_by")
-                .and_then(Json::as_str)
-                .map(|h| format!("held by {h}"))
-        });
+        let detail = match outcome {
+            Err(ToolError::Secret(crate::secrets::Refused::Secret(found))) => {
+                Some(format!("secret refused: {}", found.rule))
+            }
+            _ => result.and_then(|r| {
+                r.get("held_by")
+                    .and_then(Json::as_str)
+                    .map(|h| format!("held by {h}"))
+            }),
+        };
         let ok =
             outcome.is_ok() && !result.is_some_and(|r| r.get("claimed") == Some(&json!(false)));
         events.publish(Event {
@@ -398,7 +426,15 @@ impl Session {
         match name {
             "memfork_put" => {
                 let key = req_str(args, "key")?;
-                let mut value = Value::new(req_str(args, "value")?.to_owned());
+                let given = req_str(args, "value")?;
+                let meta = opt_meta(args, "meta")?;
+                self.refuse_secrets(
+                    args,
+                    [("key".to_owned(), key), ("value".to_owned(), given)]
+                        .into_iter()
+                        .chain(meta.iter().map(|(k, v)| (format!("meta.{k}"), v.as_str()))),
+                )?;
+                let mut value = Value::new(given.to_owned());
                 if let Some(i) = opt_f32(args, "importance")? {
                     value = value.with_importance(i);
                 }
@@ -408,7 +444,7 @@ impl Session {
                 if let Some(t) = opt_u64(args, "ttl_commits")? {
                     value = value.with_ttl_commits(t);
                 }
-                for (k, v) in opt_meta(args, "meta")? {
+                for (k, v) in meta {
                     if k.starts_with(RESERVED_META_PREFIX) {
                         return Err(ToolError::BadArguments(format!(
                             "`meta.{k}` is reserved: keys starting with \
@@ -682,6 +718,7 @@ impl Session {
                 // fails, the lesson is still true, and nothing is lost.
                 let lesson = match opt_str(args, "lesson")? {
                     Some(raw) => {
+                        self.refuse_secrets(args, [("lesson".to_owned(), raw)])?;
                         if !self.db.has_branch(name) {
                             return Err(ToolError::Engine(memfork_core::Error::NoSuchBranch(
                                 name.to_owned(),
@@ -807,6 +844,23 @@ impl Session {
                     blockers: opt_str_array(args, "blockers")?,
                     questions: opt_str_array(args, "questions")?,
                 };
+                let lists = [
+                    ("done", &note.done),
+                    ("next", &note.next),
+                    ("blockers", &note.blockers),
+                    ("questions", &note.questions),
+                ];
+                self.refuse_secrets(
+                    args,
+                    std::iter::once(("summary".to_owned(), note.summary.as_str())).chain(
+                        lists.into_iter().flat_map(|(name, items)| {
+                            items
+                                .iter()
+                                .enumerate()
+                                .map(move |(i, s)| (format!("{name}[{i}]"), s.as_str()))
+                        }),
+                    ),
+                )?;
                 let written =
                     handoff::write(&self.db, &branch, &ns, &note, self.writer().as_deref())?;
                 Ok(json!({
@@ -881,19 +935,28 @@ impl Session {
         };
         let who = self.who();
         match action {
-            "add" => board
-                .add(
-                    &self.db,
-                    branch,
-                    &ns,
-                    crate::board::NewTask {
-                        id: opt_str(args, "id")?,
-                        title: opt_str(args, "title")?.unwrap_or(""),
-                        detail: opt_str(args, "detail")?,
-                    },
-                    self.writer().as_deref(),
-                )
-                .map_err(bad),
+            "add" => {
+                let title = opt_str(args, "title")?.unwrap_or("");
+                let detail = opt_str(args, "detail")?;
+                self.refuse_secrets(
+                    args,
+                    std::iter::once(("title".to_owned(), title))
+                        .chain(detail.map(|d| ("detail".to_owned(), d))),
+                )?;
+                board
+                    .add(
+                        &self.db,
+                        branch,
+                        &ns,
+                        crate::board::NewTask {
+                            id: opt_str(args, "id")?,
+                            title,
+                            detail,
+                        },
+                        self.writer().as_deref(),
+                    )
+                    .map_err(bad)
+            }
             "claim" => {
                 let seconds =
                     opt_u64(args, "lease_seconds")?.unwrap_or(crate::board::DEFAULT_LEASE_SECONDS);

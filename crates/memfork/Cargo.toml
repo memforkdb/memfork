@@ -57,6 +57,9 @@ anstyle-query = "1.1"
 terminal_size = "0.4"
 # Local time for `memfork watch`, from the system's time zone on every OS.
 jiff = "0.2"
+# The secret detector's rules are regular expressions kept as data. The
+# lite engine: no dependencies of its own, and no Unicode tables to carry.
+regex-lite = "0.1"
 # The exact diff `memfork init --project --dry-run` prints.
 similar = { version = "2", default-features = false, features = ["text"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync", "time", "net", "process"] }

@@ -191,6 +191,20 @@ impl ServerHandler for MemforkServer {
                 "tool": request.name,
             }))
             .into()),
+
+            // A write that looked like it held a credential. The agent should
+            // see why, fix it and try again, so this is a tool-level error too;
+            // it names the rule and the place, never the text.
+            Err(ToolError::Secret(refused)) => {
+                let mut body = json!({
+                    "error": refused.to_string(),
+                    "tool": request.name,
+                });
+                if let crate::secrets::Refused::Secret(found) = &refused {
+                    body["secret"] = found.to_json();
+                }
+                Ok(CallToolResult::structured_error(body).into())
+            }
         }
     }
 }
