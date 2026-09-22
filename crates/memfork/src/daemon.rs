@@ -54,7 +54,9 @@ pub enum DaemonError {
          version {ours}.\n\
          Two versions must not share one store: the formats they write need not \
          match, and guessing is how data gets corrupted.\n\
-         Run `memfork stop` to shut the running one down, then try again."
+         Run `memfork stop` to shut the running one down, then try again. If you \
+         upgraded with pip or cargo, any tool still running the old `memfork mcp` \
+         keeps the old version until that tool is restarted."
     )]
     VersionMismatch {
         /// The version that is running.

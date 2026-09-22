@@ -497,6 +497,18 @@ pub enum Command {
     /// than refusing to talk to the old one.
     Stop,
 
+    /// Print a completion script for a shell, to source or install.
+    ///
+    /// For example `memfork completions bash > ~/.local/share/bash-completion/completions/memfork`,
+    /// `memfork completions zsh > "${fpath[1]}/_memfork"`,
+    /// `memfork completions fish > ~/.config/fish/completions/memfork.fish`,
+    /// or in PowerShell `memfork completions powershell | Out-String | Invoke-Expression`.
+    Completions {
+        /// The shell: bash, zsh, fish, powershell or elvish.
+        #[arg(value_parser = ["bash", "zsh", "fish", "powershell", "elvish"])]
+        shell: String,
+    },
+
     /// Show what the daemon is doing as it happens: which client did what,
     /// to which key or branch, including handoffs and resumes.
     ///
@@ -639,6 +651,7 @@ impl Command {
                 | Command::Watch { .. }
                 | Command::Init { .. }
                 | Command::Doctor { .. }
+                | Command::Completions { .. }
         )
     }
 
@@ -672,6 +685,7 @@ impl Command {
             Command::Serve { .. } => "serve",
             Command::Init { .. } => "init",
             Command::Doctor { .. } => "doctor",
+            Command::Completions { .. } => "completions",
             Command::CrashWriter { .. } => "crash-writer",
             Command::Stop => "stop",
             Command::Watch { .. } => "watch",

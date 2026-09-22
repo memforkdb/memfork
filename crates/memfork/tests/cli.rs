@@ -348,3 +348,30 @@ fn into_a_pipe_listings_print_whole_values_with_or_without_full() {
     let doc = run_json(&format!("put k '{long}'\nls --full\n"));
     assert_eq!(doc[1]["keys"][0]["value"], long.as_str());
 }
+
+#[test]
+fn completions_come_out_of_the_same_definition_for_every_shell() {
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let out = memfork().args(["completions", shell]).assert().success();
+        let script = String::from_utf8_lossy(&out.get_output().stdout).into_owned();
+        assert!(script.contains("memfork"), "{shell}: {script}");
+        // Every subcommand, including the ones added since, is in the script.
+        for sub in ["doctor", "completions", "watch", "plan", "task"] {
+            assert!(
+                script.contains(sub),
+                "{shell} completion knows nothing of `{sub}`"
+            );
+        }
+        assert!(
+            !script.contains("\u{1b}["),
+            "{shell}: a completion script carried colour"
+        );
+    }
+    memfork()
+        .args(["completions", "nushell"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "bash, zsh, fish, powershell, elvish",
+        ));
+}

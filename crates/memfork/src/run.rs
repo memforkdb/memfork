@@ -153,6 +153,7 @@ pub fn run(cli: Cli) -> ExitCode {
                     ..
                 } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
                 Command::Doctor { verbose } => run_doctor(&mut stdout, &cli.global, *verbose),
+                Command::Completions { shell } => run_completions(&mut stdout, shell),
                 Command::Plan {
                     action: PlanAction::Templates,
                     ..
@@ -1575,6 +1576,18 @@ fn past_tense(verb: &str) -> &'static str {
 }
 
 /// Report what this install is and what it is talking to.
+/// Print a shell's completion script, generated from the same definition the
+/// command line is parsed with, so the two cannot drift.
+fn run_completions(out: &mut impl Write, shell: &str) -> Result<(), ExecError> {
+    use clap::{CommandFactory, ValueEnum};
+    let shell = clap_complete::Shell::from_str(shell, true)
+        .map_err(|_| ExecError::Usage(format!("no completion script for `{shell}`")))?;
+    let mut command = Cli::command();
+    let mut script = Vec::new();
+    clap_complete::generate(shell, &mut command, "memfork", &mut script);
+    out.write_all(&script).map_err(io_err)
+}
+
 fn run_doctor(out: &mut impl Write, global: &GlobalArgs, verbose: bool) -> Result<(), ExecError> {
     let flags = doctor_flags(global);
     if global.json {

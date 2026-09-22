@@ -795,7 +795,8 @@ pub fn execute_in(
         | Command::Serve { .. }
         | Command::Stop
         | Command::Watch { .. }
-        | Command::Doctor { .. } => Err(ExecError::Usage(format!(
+        | Command::Doctor { .. }
+        | Command::Completions { .. } => Err(ExecError::Usage(format!(
             "`memfork {}` is not an operation on a database",
             command.name()
         ))),
