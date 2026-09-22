@@ -405,6 +405,30 @@ const Brain = (() => {
     return `${n} ${n === 1 ? "thing" : "things"} your agents did not have to learn twice`;
   }
 
+  // The Autopilot panel: forks open on a session, forks kept for a person,
+  // memory branches whose git branch is gone (with why, and the two ways
+  // out), then the journal, newest first. Every value is text. Empty string
+  // when there is nothing to show.
+  function autopilotRows(a) {
+    if (!a) return "";
+    const rows = [];
+    for (const f of a.open || []) {
+      rows.push(`<div class="row"><svg class="icon" aria-hidden="true"><use href="#i-autopilot"/></svg><div class="body"><div class="v">fork open: ${esc(f.fork)}</div><div class="s">from ${esc(f.parent)} before “${esc(f.action)}” (rule: ${esc(f.rule)})${f.client ? ` · ${esc(f.client)}` : ""}</div></div><span class="st cl"><span class="d"></span>open</span></div>`);
+    }
+    for (const name of a.kept_forks || []) {
+      rows.push(`<div class="row am"><svg class="icon" aria-hidden="true"><use href="#i-autopilot"/></svg><div class="body"><div class="v">fork kept: ${esc(name)}</div><div class="s">no check judged it · merge it, or discard it with a lesson</div></div><span class="st dim"><span class="d"></span>kept</span></div>`);
+    }
+    for (const o of a.orphans || []) {
+      const cmds = (o.merge_then_discard || []).map(esc).join(", then ");
+      rows.push(`<div class="row am"><svg class="icon" aria-hidden="true"><use href="#i-autopilot"/></svg><div class="body"><div class="v">no git branch: ${esc(o.branch)}</div><div class="s">${esc(o.why)}</div><div class="s mono">${cmds}</div><div class="s mono">or ${esc(o.discard)}</div></div><span class="st stale"><span class="d"></span>orphan</span></div>`);
+    }
+    const journal = (a.journal || []).slice(-8).reverse();
+    for (const j of journal) {
+      rows.push(`<div class="row vi"><svg class="icon" aria-hidden="true"><use href="#i-autopilot"/></svg><div class="body"><div class="v">${esc(j.kind)}${j.branch ? ` · ${esc(j.branch)}` : ""}</div><div class="s">${esc(j.detail)}</div></div></div>`);
+    }
+    return rows.join("");
+  }
+
   // The nearest visible node in a direction, for the keyboard.
   function nearest(nodes, from, dir, pos) {
     let best = null, bestScore = Infinity;
@@ -424,7 +448,7 @@ const Brain = (() => {
   return {
     esc, tokens, plural, short, family, readToken, makeSession, streamEvents,
     COLX, COLOR, COLUMN, hashY, makeGraph, loadGraph, spaceColumn, addLocal, addEdge, removeNode,
-    visible, applyEvent, announce, headline, nearest,
+    visible, applyEvent, announce, headline, nearest, autopilotRows,
   };
 })();
 
@@ -804,6 +828,8 @@ function boot(document, window) {
       const since = b.since_commits != null ? ` · since last look: ${b.since_commits} commits` : "";
       return `<div class="row vi"><svg class="icon" aria-hidden="true"><use href="#i-brief"/></svg><div class="body"><div class="v">to ${Brain.esc(b.to)} · ${b.bytes} B · about ${Brain.tokens(b.bytes)} tokens</div><div class="s">${Brain.esc(carried || "empty project: a hint to start")}${Brain.esc(cut)}${Brain.esc(since)}</div></div></div>`;
     }).join("") : '<span class="empty">None yet.</span>';
+
+    $("auto").innerHTML = Brain.autopilotRows(s.autopilot) || '<span class="empty">Nothing yet. Autopilot is off until a repository switches it on.</span>';
 
     if (s.attention) renderAttention(s.attention);
     $("foot-store").textContent = `store ${f.store_bytes >= 1e6 ? (f.store_bytes / 1e6).toFixed(1) + " MB" : f.store_bytes >= 1e3 ? Math.round(f.store_bytes / 1e3) + " kB" : f.store_bytes + " B"} · ${f.commits_retained.toLocaleString()} commits retained · history from seq ${f.history_from_seq}`;

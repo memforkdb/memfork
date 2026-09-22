@@ -4,6 +4,7 @@
 //! of it changing either.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use hyper::StatusCode;
 use memfork_core::{Entry, Op, WRITTEN_BY};
@@ -274,6 +275,14 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
     };
     let branches: Vec<String> = db.branches().into_iter().map(|b| b.name).collect();
 
+    // Autopilot: what it did, and what it left for a person.
+    let autopilot = crate::autopilot::engine::Context {
+        db: db.clone(),
+        shared: Arc::clone(side),
+        events: Some(Arc::clone(&context.events)),
+    }
+    .status_of(&ns);
+
     Ok(json!({
         "version": crate::VERSION,
         "port": context.port,
@@ -292,6 +301,7 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
         "facts": facts,
         "lessons": lessons,
         "briefings": served,
+        "autopilot": autopilot,
         "footer": {
             "store_bytes": store_bytes,
             "commits_retained": db.commit_count(),
@@ -411,6 +421,38 @@ pub fn attention(context: &Context, query: &Query) -> Result<Json, Failure> {
                 }));
             }
         }
+    }
+
+    // Autopilot: a fork it kept for a person, and memory whose git branch is
+    // gone. Listed with the way out; never done by MemFork.
+    let autopilot = crate::autopilot::engine::Context {
+        db: db.clone(),
+        shared: Arc::clone(side),
+        events: Some(Arc::clone(&context.events)),
+    }
+    .status_of(&ns);
+    for fork in autopilot["kept_forks"].as_array().into_iter().flatten() {
+        let name = fork.as_str().unwrap_or("?");
+        attention.push(json!({
+            "kind": "autopilot_fork_kept",
+            "title": "A fork autopilot kept",
+            "detail": format!("{name} · no check judged it: merge it, or discard it with a lesson"),
+            "keys": [],
+        }));
+    }
+    for orphan in autopilot["orphans"].as_array().into_iter().flatten() {
+        let name = orphan["branch"].as_str().unwrap_or("?");
+        attention.push(json!({
+            "kind": "orphan_branch",
+            "title": "Memory branch with no git branch",
+            "detail": format!(
+                "{name} · {} · {}, then {}",
+                orphan["why"].as_str().unwrap_or(""),
+                orphan["merge_then_discard"][0].as_str().unwrap_or(""),
+                orphan["merge_then_discard"][1].as_str().unwrap_or("")
+            ),
+            "keys": [],
+        }));
     }
 
     Ok(json!({

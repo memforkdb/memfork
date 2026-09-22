@@ -241,9 +241,78 @@ fn status_word(r: &ClientReport) -> &'static str {
     }
 }
 
+/// Autopilot for the repository this command runs in, if it runs in one.
+/// Asks the daemon when one is running; never starts one.
+fn autopilot() -> Option<crate::autopilot::status::Report> {
+    let cwd = std::env::current_dir().ok()?;
+    let root = crate::namespace::repository_root(&cwd)?;
+    Some(crate::autopilot::status::report(&root, None))
+}
+
+/// The autopilot section: what is open, kept or orphaned, with the way out
+/// for each. Nothing here is ever done by MemFork on its own.
+fn autopilot_section(report: &crate::autopilot::status::Report) -> String {
+    let mut out = String::from("Autopilot\n");
+    out.push_str(&format!("  state         {}\n", report.summary()));
+    let Some(daemon) = &report.daemon else {
+        out.push_str("  daemon        not running; forks and orphans are listed while one is\n");
+        return out;
+    };
+    for fork in daemon["open"].as_array().into_iter().flatten() {
+        out.push_str(&format!(
+            "  open fork     {} before `{}` (rule: {})\n",
+            fork["fork"].as_str().unwrap_or("?"),
+            fork["action"].as_str().unwrap_or("?"),
+            fork["rule"].as_str().unwrap_or("?")
+        ));
+    }
+    let kept: Vec<&str> = daemon["kept_forks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_str)
+        .collect();
+    if !kept.is_empty() {
+        out.push_str(&format!(
+            "  kept forks    {}: `memfork merge <fork>` or `memfork discard <fork> --lesson \"...\"`\n",
+            kept.join(", ")
+        ));
+    }
+    let orphans = report.orphans();
+    if orphans.is_empty() {
+        out.push_str("  orphans       none\n");
+    }
+    for orphan in orphans {
+        out.push_str(&format!(
+            "  orphan        {} ({})\n",
+            orphan["branch"].as_str().unwrap_or("?"),
+            orphan["why"].as_str().unwrap_or("")
+        ));
+        for command in orphan["merge_then_discard"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            out.push_str(&format!(
+                "                  {}\n",
+                command.as_str().unwrap_or("")
+            ));
+        }
+        out.push_str(&format!(
+            "                or {}\n",
+            orphan["discard"].as_str().unwrap_or("")
+        ));
+    }
+    out
+}
+
 /// The lines every report starts with: what this is, where memory is, and
 /// what is serving it.
-fn header(home: Option<&str>, storage: &Storage) -> String {
+fn header(
+    home: Option<&str>,
+    storage: &Storage,
+    autopilot: Option<&crate::autopilot::status::Report>,
+) -> String {
     let mut out = String::new();
     out.push_str(&format!("memfork {}\n", env!("CARGO_PKG_VERSION")));
     // The path on its own. Printing the whole command line here made the
@@ -273,6 +342,13 @@ fn header(home: Option<&str>, storage: &Storage) -> String {
     out.push_str(&format!("  data dir      {}\n", storage.describe_dir()));
     out.push_str(&format!("  daemon        {}\n", storage.describe_daemon()));
     out.push_str(&format!("  brain         {}\n", storage.describe_brain()));
+    out.push_str(&format!(
+        "  autopilot     {}\n",
+        autopilot.map_or_else(
+            || "not in a repository; autopilot is per repository".to_owned(),
+            |r| r.summary()
+        )
+    ));
     out.push_str(&format!("  policy        {}\n", policy_line()));
     out
 }
@@ -365,8 +441,22 @@ fn closing(reports: &[ClientReport]) -> String {
 pub fn short() -> String {
     let home = clients::home_dir();
     let storage = storage();
-    let mut out = header(home.as_deref(), &storage);
+    let autopilot = autopilot();
+    let mut out = header(home.as_deref(), &storage, autopilot.as_ref());
     out.push('\n');
+    // Forks left open and branches git has dropped are worth a person's
+    // look even in the short report; the rest of the section is verbose.
+    if let Some(report) = &autopilot {
+        let daemon_has_something = report.daemon.as_ref().is_some_and(|d| {
+            !report.orphans().is_empty()
+                || d["open"].as_array().is_some_and(|a| !a.is_empty())
+                || d["kept_forks"].as_array().is_some_and(|a| !a.is_empty())
+        });
+        if daemon_has_something {
+            out.push_str(&autopilot_section(report));
+            out.push('\n');
+        }
+    }
     let reports = gather(home.as_deref());
     out.push_str("Clients\n");
     let width = reports.iter().map(|r| r.display.len()).max().unwrap_or(0);
@@ -393,7 +483,8 @@ pub fn short() -> String {
 pub fn text() -> String {
     let home = clients::home_dir();
     let storage = storage();
-    let mut out = header(home.as_deref(), &storage);
+    let autopilot = autopilot();
+    let mut out = header(home.as_deref(), &storage, autopilot.as_ref());
     out.push_str(&format!(
         "  engine        memfork-core {}\n",
         memfork_core::VERSION
@@ -410,6 +501,11 @@ pub fn text() -> String {
 
     out.push_str(&policy_section());
     out.push('\n');
+
+    if let Some(report) = &autopilot {
+        out.push_str(&autopilot_section(report));
+        out.push('\n');
+    }
 
     let reports = gather(home.as_deref());
     out.push_str("Clients\n");
@@ -484,6 +580,7 @@ pub fn json() -> Json {
             "allowed": crate::policy::allows(crate::policy::Feature::Brain),
             "url": storage().owner.as_ref().and_then(|o| o.port.map(|port| format!("http://127.0.0.1:{port}/brain"))),
         },
+        "autopilot": autopilot().map(|r| r.to_json()),
         "persistence": {
             "enabled": true,
             "note": DURABILITY_NOTE,

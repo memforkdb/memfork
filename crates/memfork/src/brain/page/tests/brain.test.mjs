@@ -276,3 +276,23 @@ test("the keyboard moves to the nearest node in a direction", () => {
   assert.equal(Brain.nearest(nodes, nodes[3], "up", pos).id, "b");
   assert.equal(Brain.nearest(nodes, nodes[0], "left", pos), null);
 });
+
+test("the autopilot panel shows forks, orphans with the way out, and the journal as text", () => {
+  assert.equal(Brain.autopilotRows(null), "");
+  assert.equal(Brain.autopilotRows({ open: [], kept_forks: [], orphans: [], journal: [] }), "");
+  const html = Brain.autopilotRows({
+    open: [{ fork: "autopilot/main/1", parent: "main", action: "npx prisma migrate dev", rule: "migration", client: "Claude Code" }],
+    kept_forks: ["autopilot/main/2"],
+    orphans: [{ branch: "feature/<x>", why: "git branch deleted, or squash-merged: memory was not merged", merge_then_discard: ["memfork merge feature/<x> --branch main", "memfork discard feature/<x> --lesson \"<what it taught>\""], discard: "memfork discard feature/<x> --lesson \"<what it taught>\"" }],
+    journal: [{ kind: "follow", branch: "feature/x", detail: "memory forked `feature/x` from `main` with git" }, { kind: "fork", branch: "autopilot/main/1", detail: "<b>bold</b>" }],
+  });
+  assert.ok(html.includes("fork open: autopilot/main/1"));
+  assert.ok(html.includes("rule: migration"));
+  assert.ok(html.includes("fork kept: autopilot/main/2"));
+  assert.ok(html.includes("squash-merged"));
+  assert.ok(html.includes("memfork merge feature/&lt;x&gt; --branch main, then memfork discard"));
+  assert.ok(!html.includes("<b>bold</b>"), "a journal detail rendered as markup");
+  assert.ok(html.includes("&lt;b&gt;bold&lt;/b&gt;"));
+  // Newest journal entry first.
+  assert.ok(html.indexOf("fork · autopilot/main/1") < html.indexOf("follow · feature/x"));
+});
