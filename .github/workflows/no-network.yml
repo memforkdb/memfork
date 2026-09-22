@@ -89,7 +89,16 @@ jobs:
           printf 'pass out quick on lo0 all\nblock out quick proto { tcp udp } user root\n' \
             | sudo pfctl -a com.apple/memfork-nonet -f -
           sudo pfctl -E || true
-          sudo pfctl -a com.apple/memfork-nonet -sr
+          sudo pfctl -a com.apple/memfork-nonet -vsr
+      - name: Check the block as root, before anything else runs under it
+        # Loopback must pass and the outside must not, for root and only root.
+        run: |
+          python3 -m http.server 8765 --bind 127.0.0.1 >/dev/null 2>&1 &
+          sleep 1
+          if sudo curl -sS --max-time 5 -o /dev/null http://127.0.0.1:8765/; then echo "root: loopback passes"; else echo "root: LOOPBACK BLOCKED"; fi
+          if sudo curl -sS --max-time 10 -o /dev/null https://github.com/; then echo "root: OUTSIDE REACHABLE"; else echo "root: outside blocked"; fi
+          if curl -sS --max-time 10 -o /dev/null https://github.com/; then echo "runner: outside reachable"; else echo "runner: OUTSIDE BLOCKED"; fi
+          kill %1 || true
       - name: Run everything as root, the blocked user
         run: sudo --preserve-env=MEMFORK_FORBID_PER_USER_DATA_DIR,HOME,PATH bash scripts/no-network.sh
       - name: Lift the block
