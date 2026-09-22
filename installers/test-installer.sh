@@ -19,7 +19,11 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-work=$(mktemp -d)
+# MEMFORK_TEST_WORK fixes the working directory, for a caller that has to
+# name the installed binary's path in advance (the no-network workflow's
+# firewall rules do).
+work="${MEMFORK_TEST_WORK:-$(mktemp -d)}"
+mkdir -p "$work"
 trap 'cleanup' EXIT
 
 port=0
@@ -132,6 +136,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         # Everything GitHub serves under a release lives flat in one directory,
         # whatever the URL shape.
         return os.path.join(directory, os.path.basename(path.split("?")[0]))
+
+    def do_HEAD(self):
+        if self.path.endswith("/releases/latest"):
+            self.send_response(302)
+            self.send_header("Location", self.path[: -len("/latest")] + "/tag/v0.0.0-test")
+            self.end_headers()
+            return
+        super().do_HEAD()
+
+    def do_GET(self):
+        if self.path.endswith("/releases/latest"):
+            return self.do_HEAD()
+        # `releases/latest/download/<file>` is the shape that mixed versions on
+        # 0.2.1. The stand-in answers it with junk, so an installer that ever
+        # asks for it fails its checksum rather than passing by luck.
+        if "/releases/latest/download/" in self.path:
+            body = b"stale edge cache: not the release the page shows\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
     def log_message(self, *a):
         pass
@@ -383,6 +410,23 @@ if [ "$kind" = tar ]; then
         { cat "$work/progress.log"; fail "no progress bar was drawn when asked for"; }
 fi
 ok "with progress on, it downloads, checks and installs the same"
+
+# ---- "latest" is resolved once, then pinned --------------------------------
+
+# With no version pinned and no download base, the installer must ask which
+# release is the latest exactly once and download that version by name. The
+# stand-in serves junk under `releases/latest/download/`, so any use of that
+# shape fails the checksum.
+(
+    unset MEMFORK_VERSION MEMFORK_DOWNLOAD_BASE
+    export MEMFORK_GITHUB_BASE="$base"
+    run_installer "$work/latest.log"
+) || { cat "$work/latest.log"; fail "installing 'latest' failed"; }
+grep -q "Latest release is v0.0.0-test" "$work/latest.log" ||
+    { cat "$work/latest.log"; fail "the installer did not say which release 'latest' resolved to"; }
+grep -qi "checksum verified" "$work/latest.log" ||
+    { cat "$work/latest.log"; fail "the pinned download was not checked"; }
+ok "'latest' is resolved to one version and downloaded by that name"
 
 # ---- a download that is not what it claims ---------------------------------
 

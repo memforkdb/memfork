@@ -7,7 +7,8 @@
 # nothing outside your home directory. MEMFORK_VERSION pins a release,
 # MEMFORK_INSTALL_DIR chooses where it goes, MEMFORK_TARGET picks a build
 # other than this machine's, and MEMFORK_DOWNLOAD_BASE points somewhere other
-# than GitHub.
+# than GitHub. MEMFORK_GITHUB_BASE stands in for https://github.com itself, for
+# a GitHub Enterprise mirror or the installer tests.
 #
 # Why this is not the installer `dist` generates: an older MemFork may be
 # running a daemon over your memory, and it has to be stopped before its
@@ -22,6 +23,7 @@
 set -eu
 
 REPO="memforkdb/memfork"
+GITHUB="${MEMFORK_GITHUB_BASE:-https://github.com}"
 VERSION="${MEMFORK_VERSION:-latest}"
 INSTALL_DIR="${MEMFORK_INSTALL_DIR:-$HOME/.memfork/bin}"
 
@@ -65,6 +67,26 @@ detect_target() {
     esac
 }
 
+# Turn "latest" into the one version it means right now, and use that exact
+# version for every download that follows.
+#
+# GitHub's `releases/latest/download/<file>` is a redirect answered per
+# request, and a release being published, or a stale edge cache, can answer
+# two requests with two versions: an archive from one release and a checksum
+# from another, or an older build than the release page shows. That happened
+# on 0.2.1. So the version is resolved once, from the redirect
+# `releases/latest` sends, and never again.
+resolve_latest() {
+    _r_final=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$GITHUB/$REPO/releases/latest") ||
+        die "could not ask $GITHUB which release is the latest"
+    _r_tag=${_r_final##*/tag/}
+    case "$_r_tag" in
+        v[0-9]*) ;;
+        *) die "could not work out the latest release from $_r_final; set MEMFORK_VERSION to a release tag, such as v0.3.0" ;;
+    esac
+    printf '%s\n' "$_r_tag"
+}
+
 download_url() {
     # MEMFORK_DOWNLOAD_BASE points somewhere other than GitHub: a mirror, a
     # cache inside a network that cannot reach it, or the stand-in release the
@@ -72,10 +94,8 @@ download_url() {
     # rewrite the script, and then they would not be testing this script.
     if [ -n "${MEMFORK_DOWNLOAD_BASE:-}" ]; then
         printf '%s/%s\n' "${MEMFORK_DOWNLOAD_BASE%/}" "$1"
-    elif [ "$VERSION" = latest ]; then
-        printf 'https://github.com/%s/releases/latest/download/%s\n' "$REPO" "$1"
     else
-        printf 'https://github.com/%s/releases/download/%s/%s\n' "$REPO" "$VERSION" "$1"
+        printf '%s/%s/releases/download/%s/%s\n' "$GITHUB" "$REPO" "$VERSION" "$1"
     fi
 }
 
@@ -151,6 +171,11 @@ main() {
     target=$(detect_target)
     archive="memfork-$target.tar.xz"
 
+    if [ -z "${MEMFORK_DOWNLOAD_BASE:-}" ] && [ "$VERSION" = latest ]; then
+        VERSION=$(resolve_latest)
+        say "Latest release is $VERSION."
+    fi
+
     tmp=$(mktemp -d 2>/dev/null || mktemp -d -t memfork)
     trap 'rm -rf "$tmp"' EXIT INT TERM
 
@@ -205,6 +230,8 @@ main() {
     say "Next:"
     say "  memfork init      register MemFork with the MCP clients you have"
     say "  memfork doctor    check what is installed and what is talking to it"
+    say ""
+    say "Shell completions: memfork completions bash|zsh|fish, to source or install."
     say ""
     say "To uninstall:"
     say "  memfork stop"

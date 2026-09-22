@@ -9,7 +9,8 @@
     package manager, nothing outside your profile. MEMFORK_VERSION pins a
     release, MEMFORK_INSTALL_DIR chooses where it goes, MEMFORK_TARGET picks a
     build other than this machine's, and MEMFORK_DOWNLOAD_BASE points somewhere
-    other than GitHub.
+    other than GitHub. MEMFORK_GITHUB_BASE stands in for https://github.com
+    itself, for a GitHub Enterprise mirror or the installer tests.
 
     Why this is not the installer `dist` generates: Windows will not let a
     running executable be replaced, and an older MemFork may have a daemon
@@ -35,6 +36,7 @@
     $ErrorActionPreference = 'Stop'
 
     $Repo = 'memforkdb/memfork'
+    $GitHub = if ($env:MEMFORK_GITHUB_BASE) { $env:MEMFORK_GITHUB_BASE.TrimEnd('/') } else { 'https://github.com' }
     $Version = if ($env:MEMFORK_VERSION) { $env:MEMFORK_VERSION } else { 'latest' }
     $InstallDir = if ($env:MEMFORK_INSTALL_DIR) {
         $env:MEMFORK_INSTALL_DIR
@@ -74,6 +76,39 @@
         }
     }
 
+    # Turn "latest" into the one version it means right now, and use that
+    # exact version for every download that follows.
+    #
+    # GitHub's `releases/latest/download/<file>` is a redirect answered per
+    # request, and a release being published, or a stale edge cache, can
+    # answer two requests with two versions: an archive from one release and
+    # a checksum from another, or an older build than the release page shows.
+    # That happened on 0.2.1. So the version is resolved once, from the
+    # redirect `releases/latest` sends, and never again.
+    function Resolve-LatestVersion {
+        $url = "$GitHub/$Repo/releases/latest"
+        try {
+            [Net.ServicePointManager]::SecurityProtocol =
+                [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            $request = [System.Net.HttpWebRequest]::Create($url)
+            $request.Method = 'HEAD'
+            $request.AllowAutoRedirect = $false
+            $response = $request.GetResponse()
+            try {
+                $location = [string]$response.Headers['Location']
+            } finally {
+                $response.Dispose()
+            }
+        } catch {
+            Stop-WithMessage "could not ask $GitHub which release is the latest ($($_.Exception.Message))"
+        }
+        $tag = $location -replace '^.*/tag/', ''
+        if (-not ($tag -match '^v[0-9]')) {
+            Stop-WithMessage "could not work out the latest release from '$location'; set MEMFORK_VERSION to a release tag, such as v0.3.0"
+        }
+        return $tag
+    }
+
     function Get-DownloadUrl([string]$Name) {
         # MEMFORK_DOWNLOAD_BASE points somewhere other than GitHub: a mirror, a
         # cache inside a network that cannot reach it, or the stand-in release
@@ -81,10 +116,7 @@
         if ($env:MEMFORK_DOWNLOAD_BASE) {
             return "$($env:MEMFORK_DOWNLOAD_BASE.TrimEnd('/'))/$Name"
         }
-        if ($Version -eq 'latest') {
-            return "https://github.com/$Repo/releases/latest/download/$Name"
-        }
-        return "https://github.com/$Repo/releases/download/$Version/$Name"
+        return "$GitHub/$Repo/releases/download/$Version/$Name"
     }
 
     # A progress bar is for a person watching a console: never into a pipe or
@@ -299,6 +331,10 @@
     try {
         $target = Get-Target
         $archive = "memfork-$target.zip"
+        if (-not $env:MEMFORK_DOWNLOAD_BASE -and $Version -eq 'latest') {
+            $Version = Resolve-LatestVersion
+            Write-Step "Latest release is $Version."
+        }
         $temp = Join-Path ([IO.Path]::GetTempPath()) ("memfork-" + [Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $temp | Out-Null
 
@@ -336,6 +372,8 @@
         Write-Host 'Next:'
         Write-Host '  memfork init      register MemFork with the MCP clients you have'
         Write-Host '  memfork doctor    check what is installed and what is talking to it'
+        Write-Host ''
+        Write-Host 'Shell completions: memfork completions powershell | Out-String | Invoke-Expression'
         Write-Host ''
         Write-Host 'To uninstall:'
         Write-Host '  memfork stop'
