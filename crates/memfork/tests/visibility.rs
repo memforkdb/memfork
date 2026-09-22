@@ -466,3 +466,80 @@ fn the_status_word_is_connected_everywhere() {
         }
     }
 }
+
+#[test]
+fn a_discover_probe_before_initialize_is_answered_and_the_session_stays_legacy() {
+    // One client probes `server/discover` on the same connection before it
+    // sends a legacy `initialize`, and then goes on without per-request
+    // metadata. The probe must be answered with discovery, and everything
+    // after it must work exactly as it does for a client that never probed.
+    // Both a well-formed probe and a bare one are tried: the SDK would
+    // refuse the bare one and close, and treat the well-formed one as the
+    // start of an inline session that then rejects plain requests.
+    let well_formed = r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"probing-client","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+    let bare = r#"{"jsonrpc":"2.0","id":0,"method":"server/discover","params":{}}"#;
+    for probe_line in [well_formed, bare] {
+        let sandbox = Sandbox::new();
+        let mut child = sandbox
+            .command()
+            .args(["mcp", "--ephemeral"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let stdin = child.stdin.as_mut().unwrap();
+            writeln!(stdin, "{probe_line}").unwrap();
+            writeln!(stdin, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{{}},"clientInfo":{{"name":"probing-client","version":"1"}}}}}}"#).unwrap();
+            writeln!(
+                stdin,
+                r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+            )
+            .unwrap();
+            writeln!(
+                stdin,
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{}}}}"#
+            )
+            .unwrap();
+            writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"memfork_branches","arguments":{{}}}}}}"#).unwrap();
+        }
+        drop(child.stdin.take());
+        let out = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let lines: Vec<Json> = stdout
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let by_id = |id: u64| lines.iter().find(|l| l["id"] == id);
+        let probe = by_id(0).unwrap_or_else(|| {
+            panic!(
+                "no answer to the probe:
+{stdout}"
+            )
+        });
+        assert!(
+            probe["result"]["supportedVersions"].is_array(),
+            "the probe was not answered with discovery: {probe}"
+        );
+        assert!(
+            probe["result"]["capabilities"]["tools"].is_object(),
+            "{probe}"
+        );
+        assert!(
+            by_id(1).is_some_and(|l| l["result"]["serverInfo"]["name"] == "memfork"),
+            "initialize after the probe failed:
+{stdout}"
+        );
+        assert!(
+            by_id(2).is_some_and(|l| l["result"]["tools"].is_array()),
+            "a plain tools/list after the probe failed:
+{stdout}"
+        );
+        assert!(
+            by_id(3).is_some_and(|l| l["result"]["structuredContent"].is_object()),
+            "a plain tool call after the probe failed:
+{stdout}"
+        );
+    }
+}

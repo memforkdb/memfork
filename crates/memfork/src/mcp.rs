@@ -23,6 +23,7 @@ use rmcp::model::{
     Tool,
 };
 use rmcp::service::RequestContext;
+use rmcp::transport::IntoTransport;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::json;
 
@@ -242,8 +243,10 @@ impl ServerHandler for MemforkServer {
 /// Anything written to stdout would corrupt the protocol stream, so every
 /// diagnostic in this path goes to stderr.
 pub async fn serve_stdio(session: Arc<Session>) -> Result<(), String> {
-    let service = MemforkServer::new(session)
-        .serve(rmcp::transport::stdio())
+    let server = MemforkServer::new(session);
+    let transport = Discoverable::new(rmcp::transport::stdio().into_transport(), server.get_info());
+    let service = server
+        .serve(transport)
         .await
         .map_err(|e| format!("cannot start the MCP server: {e}"))?;
     service
@@ -251,6 +254,86 @@ pub async fn serve_stdio(session: Arc<Session>) -> Result<(), String> {
         .await
         .map_err(|e| format!("the MCP server stopped with an error: {e}"))?;
     Ok(())
+}
+
+/// A transport that answers `server/discover` itself, before the SDK sees it.
+///
+/// One client probes a server with `server/discover` (a 2026-07-28 request)
+/// on the same connection and then shakes hands the older way, with
+/// `initialize`, and goes on with plain requests. The SDK treats a discover
+/// as the opening of an inline session and from then on refuses any request
+/// without per-request metadata — including the plain `tools/list` that
+/// client sends next — so the client can connect and never use a tool. Here
+/// the probe is answered with the same discovery result the SDK would give,
+/// and the SDK sees a connection that starts with `initialize`, which is the
+/// session the client is actually in.
+pub struct Discoverable<T> {
+    inner: T,
+    info: ServerConfig,
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Discoverable<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Discoverable")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> Discoverable<T> {
+    /// Wrap a transport, answering probes with `info`.
+    pub fn new(inner: T, info: ServerConfig) -> Self {
+        Discoverable { inner, info }
+    }
+}
+
+impl<T> rmcp::transport::Transport<RoleServer> for Discoverable<T>
+where
+    T: rmcp::transport::Transport<RoleServer> + Send,
+{
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::model::ServerJsonRpcMessage,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<rmcp::model::ClientJsonRpcMessage> {
+        loop {
+            let message = self.inner.receive().await?;
+            let probe = match &message {
+                rmcp::model::JsonRpcMessage::Request(request)
+                    if matches!(
+                        request.request,
+                        rmcp::model::ClientRequest::DiscoverRequest(_)
+                    ) =>
+                {
+                    Some(request.id.clone())
+                }
+                _ => None,
+            };
+            let Some(id) = probe else {
+                return Some(message);
+            };
+            let result = rmcp::model::DiscoverResult::from_server_info(
+                rmcp::model::ProtocolVersion::KNOWN_VERSIONS.to_vec(),
+                self.info.clone(),
+            );
+            let answer = rmcp::model::ServerJsonRpcMessage::response(
+                rmcp::model::ServerResult::DiscoverResult(result),
+                id,
+            );
+            if self.inner.send(answer).await.is_err() {
+                return None;
+            }
+        }
+    }
+
+    fn close(&mut self) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
 }
 
 #[cfg(test)]
