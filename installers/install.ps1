@@ -83,7 +83,7 @@
     # request, and a release being published, or a stale edge cache, can
     # answer two requests with two versions: an archive from one release and
     # a checksum from another, or an older build than the release page shows.
-    # That happened on 0.2.1. So the version is resolved once, from the
+    # That happened on an earlier release. So the version is resolved once, from the
     # redirect `releases/latest` sends, and never again.
     function Resolve-LatestVersion {
         $url = "$GitHub/$Repo/releases/latest"

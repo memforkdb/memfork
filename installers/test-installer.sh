@@ -30,7 +30,7 @@ port=0
 server_pid=""
 
 cleanup() {
-    [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null || true
+    if [ -n "$server_pid" ]; then kill "$server_pid" 2>/dev/null || true; fi
     # Anything this test installed may have started a daemon; stop it rather
     # than leave one holding a temporary directory.
     if [ -x "$work/install/memfork" ]; then
@@ -149,7 +149,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.endswith("/releases/latest"):
             return self.do_HEAD()
         # `releases/latest/download/<file>` is the shape that mixed versions on
-        # 0.2.1. The stand-in answers it with junk, so an installer that ever
+        # an earlier release. The stand-in answers it with junk, so an installer that ever
         # asks for it fails its checksum rather than passing by luck.
         if "/releases/latest/download/" in self.path:
             body = b"stale edge cache: not the release the page shows\n"

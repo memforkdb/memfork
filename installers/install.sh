@@ -74,10 +74,12 @@ detect_target() {
 # request, and a release being published, or a stale edge cache, can answer
 # two requests with two versions: an archive from one release and a checksum
 # from another, or an older build than the release page shows. That happened
-# on 0.2.1. So the version is resolved once, from the redirect
+# on an earlier release. So the version is resolved once, from the redirect
 # `releases/latest` sends, and never again.
 resolve_latest() {
-    _r_final=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$GITHUB/$REPO/releases/latest") ||
+    # A HEAD request, not followed: the answer is the redirect's target, which
+    # names the tag; the page it points at is never fetched.
+    _r_final=$(curl -fsSI -o /dev/null -w '%{redirect_url}' "$GITHUB/$REPO/releases/latest") ||
         die "could not ask $GITHUB which release is the latest"
     _r_tag=${_r_final##*/tag/}
     case "$_r_tag" in

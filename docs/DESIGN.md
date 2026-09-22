@@ -1008,7 +1008,7 @@ thinking is done by agents, as tasks.
   arm64 targets build on native runners rather than being cross-compiled.
 - **[v0.14] "latest" is resolved once.** GitHub's `releases/latest/download/<file>`
   is a redirect answered per request; a release being published, or a stale
-  edge cache, answered two requests with two versions on 0.2.1 — an archive
+  edge cache, answered two requests with two versions on an earlier release — an archive
   from one release and a checksum from another. Both installers now ask
   `releases/latest` once, read the tag from its redirect, say which version
   that was, and download every file by that exact tag. The installer harness
