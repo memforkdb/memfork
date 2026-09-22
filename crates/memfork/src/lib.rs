@@ -62,6 +62,7 @@
 
 #[cfg(feature = "brain")]
 pub mod agent;
+pub mod autopilot;
 pub mod board;
 #[cfg(feature = "brain")]
 pub mod brain;

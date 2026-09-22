@@ -9,6 +9,7 @@ include = [
     "src/**/*.rs",
     "src/clients/clients.toml",
     "src/secret_rules.toml",
+    "src/autopilot/rules.toml",
     "src/prompts.toml",
     "src/plan_templates/*.toml",
     "src/brain/page/*.html",

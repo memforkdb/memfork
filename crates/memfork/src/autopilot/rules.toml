@@ -1,0 +1,62 @@
+# What counts as a risky shell command, for autopilot's automatic fork.
+#
+# Each rule is a name, a family and a regular expression matched against the
+# whole command line an agent is about to run. A match forks memory before the
+# command runs; nothing here blocks, rewrites or delays it. The patterns are
+# case-insensitive. `memfork autopilot rules` prints this list, and `memfork
+# autopilot check "<command>"` says which rule a command matches.
+#
+# A project adds its own patterns and switches rules off by name in its
+# `memfork-autopilot.toml`.
+
+# ---- migrations -------------------------------------------------------------
+
+[[rule]]
+name = "migration"
+family = "migrations"
+pattern = '(^|[\s;&|])(alembic\s+(upgrade|downgrade)|prisma\s+migrate|knex\s+migrate|sequelize\s+db:migrate|typeorm\s+migration:run|sqlx\s+migrate\s+run|diesel\s+migration\s+run|flyway\s+migrate|liquibase\s+update|dbmate\s+(up|down)|goose\s+(up|down)|migrate\s+(up|down)|(rails|rake)\s+db:(migrate|rollback|reset|drop)|php\s+artisan\s+migrate|manage\.py\s+migrate|django-admin\s+migrate|ef\s+database\s+update|dotnet\s+ef\s+database\s+update)'
+example = "npx prisma migrate dev"
+
+# ---- destructive file operations ---------------------------------------------
+
+[[rule]]
+name = "recursive-delete"
+family = "destructive file operations"
+pattern = '(^|[\s;&|])(rm\s+(-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r)[a-z]*\s|rm\s+-r\b|rmdir\s+/s|rd\s+/s|del\s+/s|remove-item\s+.*-recurse|git\s+clean\s+-[a-z]*[fx]|find\s+.*\s-delete\b|find\s+.*-exec\s+rm\b)'
+example = "rm -rf build"
+
+[[rule]]
+name = "overwrite-in-place"
+family = "destructive file operations"
+pattern = '(^|[\s;&|])(dd\s+.*of=|mkfs\.|format\s+[a-z]:|shred\b|truncate\s+-s\s*0)'
+example = "dd if=/dev/zero of=disk.img"
+
+# ---- history rewriting -------------------------------------------------------
+
+[[rule]]
+name = "history-rewrite"
+family = "history rewriting"
+pattern = '(^|[\s;&|])git\s+(rebase\b|reset\s+--hard|push\s+.*(--force\b|-f\b|--force-with-lease)|filter-branch|filter-repo|commit\s+.*--amend|reflog\s+expire|gc\s+--prune|checkout\s+--\s|restore\s+(--staged\s+)?\.|stash\s+drop|branch\s+-D)'
+example = "git push --force origin main"
+
+# ---- dependency changes ------------------------------------------------------
+
+[[rule]]
+name = "dependency-change"
+family = "dependency changes"
+pattern = '(^|[\s;&|])(npm\s+(install|i|add|uninstall|remove|rm|update|up)\b|pnpm\s+(add|install|i|remove|rm|update|up)\b|yarn\s+(add|remove|upgrade|up)\b|bun\s+(add|remove|install|update)\b|pip3?\s+(install|uninstall)\b|poetry\s+(add|remove|update|lock)\b|uv\s+(add|remove|sync|lock|pip\s+install)\b|pipenv\s+(install|uninstall|update)\b|cargo\s+(add|remove|rm|update)\b|go\s+(get|mod\s+tidy)\b|bundle\s+(add|remove|update)\b|gem\s+(install|uninstall)\b|composer\s+(require|remove|update)\b|mix\s+deps\.get|dotnet\s+(add|remove)\s+package|nuget\s+(install|update)\b|brew\s+(install|uninstall|upgrade)\b|apt(-get)?\s+(install|remove|purge|upgrade)\b)'
+example = "npm install left-pad"
+
+# ---- database commands -------------------------------------------------------
+
+[[rule]]
+name = "database-shell"
+family = "database commands"
+pattern = '(^|[\s;&|])(psql\b|mysql\b|mariadb\b|sqlite3\b|mongosh\b|mongo\b|redis-cli\b|cqlsh\b|clickhouse-client\b|sqlcmd\b|dropdb\b|createdb\b|pg_restore\b|mysqladmin\b)'
+example = "psql -c 'delete from orders'"
+
+[[rule]]
+name = "destructive-sql"
+family = "database commands"
+pattern = '(^|[\s;&|(\x27"])(drop\s+(table|database|schema|index|view)|truncate\s+(table\s+)?[a-z_]|delete\s+from\s+[a-z_"`\[]|alter\s+table\s+\S+\s+drop)'
+example = "echo 'DROP TABLE users' | some-tool"
