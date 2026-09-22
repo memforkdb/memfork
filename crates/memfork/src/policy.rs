@@ -297,15 +297,21 @@ pub struct Error {
 /// so all three answers are tested wherever the tests run.
 pub fn machine_path(os: Os, env: &impl Env) -> Option<PathBuf> {
     let base = match os {
-        Os::Windows => PathBuf::from(
-            env.get("ProgramData")
-                .or_else(|| env.get("PROGRAMDATA"))
-                .or_else(|| env.get("ALLUSERSPROFILE"))?,
-        ),
-        Os::MacOs => PathBuf::from("/Library/Application Support"),
-        Os::Linux => PathBuf::from("/etc"),
+        Os::Windows => env
+            .get("ProgramData")
+            .or_else(|| env.get("PROGRAMDATA"))
+            .or_else(|| env.get("ALLUSERSPROFILE"))?,
+        Os::MacOs => "/Library/Application Support".to_owned(),
+        Os::Linux => "/etc".to_owned(),
     };
-    Some(base.join(DIR_NAME).join(FILE_NAME))
+    // Joined as text with the named OS's separator, not with `PathBuf::join`,
+    // which would use the running OS's: the tests render every platform's
+    // path from any one of them.
+    let sep = os.separator();
+    Some(PathBuf::from(format!(
+        "{}{sep}{DIR_NAME}{sep}{FILE_NAME}",
+        base.trim_end_matches(['/', '\\'])
+    )))
 }
 
 /// Read one file's text, `None` if it does not exist.
