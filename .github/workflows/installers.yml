@@ -12,7 +12,7 @@ name: Installers
 
 on:
   push:
-    branches: [main]
+    branches: [main, MemFork-OG]
     tags-ignore: ["**"]
   pull_request:
   workflow_dispatch:
