@@ -70,6 +70,11 @@ pub fn string_enum(description: &str, values: &[&str]) -> Value {
     json!({ "type": "string", "description": description, "enum": values })
 }
 
+/// A true-or-false property.
+pub fn boolean(description: &str) -> Value {
+    json!({ "type": "boolean", "description": description })
+}
+
 /// A fractional number property.
 pub fn number(description: &str) -> Value {
     json!({ "type": "number", "description": description })

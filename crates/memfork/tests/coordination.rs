@@ -601,7 +601,7 @@ fn a_budgeted_briefing_never_exceeds_its_budget_and_is_the_same_every_time() {
     );
 }
 
-const PINNED_BRIEFINGS: &str = "1dc9e307af0941cfbb39f700d95298e7cbfc93084a01a8fe4e7a8e20e8e33ebc";
+const PINNED_BRIEFINGS: &str = "86a7c1cb39bcde95e214d3f075f5208659792a45642af65a23e2839da8dede92";
 
 #[test]
 fn checking_facts_never_pushes_a_briefing_over_its_budget() {

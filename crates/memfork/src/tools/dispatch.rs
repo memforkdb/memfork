@@ -285,6 +285,29 @@ impl Session {
         *self.branch.lock().unwrap_or_else(|e| e.into_inner()) = name;
     }
 
+    /// Note the head of the branch a call acted on as what this client has
+    /// now seen, for the next briefing's `since_last`. Beside the store, so
+    /// it never reaches an id.
+    fn remember_seen(&self, args: &JsonObject, before: &str) {
+        let Some(me) = self.writer() else {
+            return;
+        };
+        let branch = opt_str(args, "branch")
+            .ok()
+            .flatten()
+            .map_or_else(|| before.to_owned(), str::to_owned);
+        let ns = self
+            .namespace_arg(args)
+            .unwrap_or_else(|_| self.namespace());
+        if let Ok(head) = self.db.head(&branch) {
+            if let Ok(commit) = self.db.commit(head) {
+                self.shared
+                    .sidecar
+                    .saw(&ns, &me, &branch, &head.to_hex(), commit.seq);
+            }
+        }
+    }
+
     /// Refuse a write that carries something shaped like a credential,
     /// unless the caller named its rule in `allow_secret`.
     fn refuse_secrets<'a>(
@@ -308,6 +331,9 @@ impl Session {
         let before = self.branch();
         let outcome = self.dispatch(name, args);
         self.report(name, args, &before, &outcome);
+        if outcome.is_ok() {
+            self.remember_seen(args, &before);
+        }
         let mut result = outcome?;
         // Facts are checked where the files are. Here only if this process
         // can see them; otherwise the proxy does it on the way out.
@@ -895,10 +921,16 @@ impl Session {
 
             "memfork_resume" => {
                 let ns = self.namespace_arg(args)?;
+                let me = self.writer();
                 let ask = handoff::Ask {
                     task: opt_str(args, "task")?.map(str::to_owned),
                     budget: opt_usize(args, "budget")?,
                     current_branch: Some(self.branch()),
+                    since: me
+                        .as_deref()
+                        .and_then(|me| self.shared.sidecar.last_seen(&ns, me, &branch)),
+                    since_only: opt_bool(args, "since_last_only")?.unwrap_or(false),
+                    me,
                 };
                 let brief =
                     handoff::briefing_with(&self.db, &branch, &ns, &ask, Some(&self.shared))?;
@@ -1185,6 +1217,16 @@ fn req_u64(args: &JsonObject, field: &str) -> Result<u64, ToolError> {
     match args.get(field) {
         Some(v) => as_u64(field, v),
         None => Err(missing(field, "a whole number")),
+    }
+}
+
+fn opt_bool(args: &JsonObject, field: &str) -> Result<Option<bool>, ToolError> {
+    match args.get(field) {
+        None | Some(Json::Null) => Ok(None),
+        Some(Json::Bool(b)) => Ok(Some(*b)),
+        Some(other) => Err(ToolError::BadArguments(format!(
+            "`{field}` must be true or false, got {other}"
+        ))),
     }
 }
 

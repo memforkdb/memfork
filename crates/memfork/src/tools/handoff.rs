@@ -148,6 +148,224 @@ pub struct Ask {
     /// The asking session's current branch, which every tool result carries.
     /// Given here so the briefing counts it against the budget.
     pub current_branch: Option<String>,
+    /// The head the asking client last saw on this branch, and its number,
+    /// for what has changed since.
+    pub since: Option<(String, u64)>,
+    /// Only what has changed since, when there is a record to go by.
+    pub since_only: bool,
+    /// Who is asking, so their own handoffs are not news to them.
+    pub me: Option<String>,
+}
+
+/// Most items in each list of what changed since the asker last looked.
+pub const MAX_SINCE_ITEMS: usize = 10;
+
+/// What changed in a project since a client last looked: its header, and
+/// lists that can be trimmed to fit a budget.
+struct Since {
+    header: Map<String, Json>,
+    lists: Vec<(&'static str, Vec<Json>)>,
+    omitted: std::collections::BTreeMap<&'static str, usize>,
+}
+
+impl Since {
+    fn unavailable(reason: &str) -> Self {
+        let mut header = Map::new();
+        header.insert("available".to_owned(), json!(false));
+        header.insert("reason".to_owned(), json!(reason));
+        Since {
+            header,
+            lists: Vec::new(),
+            omitted: std::collections::BTreeMap::new(),
+        }
+    }
+
+    fn available(&self) -> bool {
+        self.header.get("available") == Some(&json!(true))
+    }
+
+    fn render(&self) -> Json {
+        let mut out = self.header.clone();
+        for (name, items) in &self.lists {
+            out.insert((*name).to_owned(), json!(items));
+        }
+        if self.omitted.values().any(|n| *n > 0) {
+            out.insert("omitted".to_owned(), json!(self.omitted));
+        }
+        Json::Object(out)
+    }
+
+    /// Drop the last item of the first list that has one, in the order the
+    /// lists matter least: facts, then decisions, tasks, lessons, handoffs.
+    fn give_up_one(&mut self) -> bool {
+        for wanted in [
+            "facts",
+            "decisions",
+            "tasks",
+            "lessons",
+            "handoffs_by_others",
+        ] {
+            if let Some((name, items)) = self.lists.iter_mut().find(|(n, _)| *n == wanted) {
+                if items.pop().is_some() {
+                    *self.omitted.entry(name).or_insert(0) += 1;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+/// A task's status and holder, for telling what happened to it.
+fn task_state(entry: &Entry) -> (String, Option<String>, Option<String>, String) {
+    let v: Json = serde_json::from_slice(&entry.value).unwrap_or(Json::Null);
+    let text = |k: &str| v.get(k).and_then(Json::as_str).map(str::to_owned);
+    (
+        text("status").unwrap_or_else(|| "open".to_owned()),
+        text("holder"),
+        text("done_by"),
+        text("title").unwrap_or_else(|| String::from_utf8_lossy(&entry.value).into_owned()),
+    )
+}
+
+/// What changed in `ns` on `branch` since `ask.since`, if that commit is
+/// still in the branch's history.
+fn since_last(
+    db: &Db,
+    branch: &str,
+    ns: &str,
+    ask: &Ask,
+    shared: &crate::shared::Shared,
+    truncated: &mut bool,
+) -> Result<Since, memfork_core::Error> {
+    let Some((commit, seq)) = &ask.since else {
+        return Ok(Since::unavailable(
+            "no record of this client on this branch yet; this is the whole briefing",
+        ));
+    };
+    let then = match db.at(branch, *seq) {
+        Ok(view) if view.commit_id().to_hex() == *commit => view,
+        _ => {
+            return Ok(Since::unavailable(
+                "the commit this client last saw is no longer in this branch's history; \
+                 this is the whole briefing",
+            ))
+        }
+    };
+    let head_seq = db.commit(db.head(branch)?)?.seq;
+    let prefix = format!("{ns}{}", namespace::SEPARATOR);
+    let before: std::collections::BTreeMap<String, std::sync::Arc<Entry>> =
+        then.list(&prefix, None).into_iter().collect();
+    let now = db.list(branch, &prefix, None)?;
+    let changed = |key: &str, entry: &Entry| match before.get(key) {
+        None => Some("new"),
+        Some(old) if old.value != entry.value || old.meta != entry.meta => Some("changed"),
+        Some(_) => None,
+    };
+    let family = |f: &str| namespace::prefix(ns, f);
+    let (decision, lesson, handoff, task) = (
+        family("decision"),
+        family("lesson"),
+        family("handoff"),
+        family("task"),
+    );
+    let mut decisions = Vec::new();
+    let mut lessons_new = Vec::new();
+    let mut handoffs = Vec::new();
+    let mut tasks = Vec::new();
+    let mut facts = Vec::new();
+    for (key, entry) in &now {
+        let change = changed(key, entry);
+        let by = entry.meta.get(WRITTEN_BY).cloned();
+        if key.starts_with(&decision) {
+            if let Some(change) = change {
+                decisions.push(json!({
+                    "key": key,
+                    "change": change,
+                    "value": clip(&String::from_utf8_lossy(&entry.value), truncated),
+                    "by": by,
+                }));
+            }
+        } else if key.starts_with(&lesson) {
+            if change == Some("new") {
+                lessons_new.push(crate::lessons::view(key, entry));
+            }
+        } else if key.starts_with(&handoff) {
+            if change == Some("new") && by.is_some() && by != ask.me {
+                let note: Json = serde_json::from_slice(&entry.value).unwrap_or(Json::Null);
+                let summary = note["summary"].as_str().map_or_else(
+                    || String::from_utf8_lossy(&entry.value).into_owned(),
+                    str::to_owned,
+                );
+                handoffs.push(json!({
+                    "key": key,
+                    "by": by,
+                    "summary": clip(&summary, truncated),
+                }));
+            }
+        } else if key.starts_with(&task) {
+            let Some(change) = change else { continue };
+            let (status, holder, done_by, title) = task_state(entry);
+            let old = before.get(key.as_str()).map(|e| task_state(e));
+            let what = match (&old, status.as_str()) {
+                (None, _) => "added".to_owned(),
+                (Some((was, ..)), "done") if was != "done" => {
+                    format!("finished by {}", done_by.as_deref().unwrap_or("someone"))
+                }
+                (Some((_, was_holder, ..)), _) if *was_holder != holder => match &holder {
+                    Some(h) => format!("claimed by {h}"),
+                    None => "released".to_owned(),
+                },
+                _ => change.to_owned(),
+            };
+            tasks.push(json!({
+                "id": key.strip_prefix(&task).unwrap_or(key),
+                "key": key,
+                "title": clip(&title, truncated),
+                "change": what,
+            }));
+        } else if crate::facts::sources_of(&entry.meta).is_some() {
+            let mut fact = item_json(key, entry, truncated);
+            fact["change"] = json!(change.unwrap_or("unchanged"));
+            with_fact_fields(&mut fact, key, entry, &shared.sidecar);
+            facts.push((change.is_some(), entry.last_access_seq, fact));
+        }
+    }
+    // Facts: the changed ones first, then the rest, each with its verdict as
+    // checked on the way out, so one gone stale since shows as stale.
+    facts.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let facts: Vec<Json> = facts.into_iter().map(|(_, _, f)| f).collect();
+
+    let mut omitted = std::collections::BTreeMap::new();
+    let mut cap = |name: &'static str, mut list: Vec<Json>| {
+        let over = list.len().saturating_sub(MAX_SINCE_ITEMS);
+        if over > 0 {
+            list.truncate(MAX_SINCE_ITEMS);
+            omitted.insert(name, over);
+        }
+        (name, list)
+    };
+    let lists = vec![
+        cap("handoffs_by_others", handoffs),
+        cap("decisions", decisions),
+        cap("lessons", lessons_new),
+        cap("tasks", tasks),
+        cap("facts", facts),
+    ];
+    let mut header = Map::new();
+    header.insert("available".to_owned(), json!(true));
+    header.insert("since_commit".to_owned(), json!(commit));
+    header.insert("commits".to_owned(), json!(head_seq.saturating_sub(*seq)));
+    let nothing = lists
+        .iter()
+        .filter(|(n, _)| *n != "facts")
+        .all(|(_, l)| l.is_empty());
+    header.insert("nothing_new".to_owned(), json!(nothing));
+    Ok(Since {
+        header,
+        lists,
+        omitted,
+    })
 }
 
 /// The smallest budget a briefing accepts: room for its own frame, a handoff
@@ -381,14 +599,27 @@ pub fn briefing_with(
     take(Kind::Fact, "facts", &facts, MAX_FACTS, &mut truncated);
     take(Kind::Task, "tasks", &tasks, MAX_TASKS, &mut truncated);
 
+    // What changed since this client last looked, for a session asking.
+    let since = match shared {
+        Some(s) => Some(since_last(db, branch, ns, ask, s, &mut truncated)?),
+        None => None,
+    };
+    let since_only = ask.since_only && since.as_ref().is_some_and(Since::available);
+    if since_only {
+        items.clear();
+        omitted.clear();
+    }
     let mut brief = Brief {
         ns: ns.to_owned(),
         branch: branch.to_owned(),
         task: ask.task.clone(),
         current_branch: ask.current_branch.clone(),
+        since,
+        since_only,
         budget,
         handoff: latest
             .as_ref()
+            .filter(|_| !since_only)
             .map(|(number, key, entry)| HandoffView::read(*number, key, entry, &mut truncated)),
         earlier_handoffs: handoff_count.saturating_sub(usize::from(latest.is_some())),
         items,
@@ -478,6 +709,8 @@ struct Brief {
     branch: String,
     task: Option<String>,
     current_branch: Option<String>,
+    since: Option<Since>,
+    since_only: bool,
     budget: usize,
     handoff: Option<HandoffView>,
     earlier_handoffs: usize,
@@ -514,6 +747,9 @@ impl Brief {
                 Kind::Task => "tasks",
             };
             *self.omitted.entry(name).or_insert(0) += 1;
+            return true;
+        }
+        if self.since.as_mut().is_some_and(Since::give_up_one) {
             return true;
         }
         if let Some(h) = &mut self.handoff {
@@ -556,39 +792,29 @@ impl Brief {
         if let Some(task) = &self.task {
             map.insert("task".to_owned(), json!(task));
         }
-        map.insert(
-            "latest_handoff".to_owned(),
-            self.handoff
-                .as_ref()
-                .map_or(Json::Null, HandoffView::render),
-        );
-        map.insert("earlier_handoffs".to_owned(), json!(self.earlier_handoffs));
-        map.insert("lessons".to_owned(), json!(self.of(Kind::Lesson)));
-        map.insert(
-            "recent_decisions".to_owned(),
-            json!(self.of(Kind::Decision)),
-        );
-        map.insert("facts".to_owned(), json!(self.of(Kind::Fact)));
-        map.insert("open_tasks".to_owned(), json!(self.of(Kind::Task)));
-        let left_out: usize = self.omitted.values().sum();
-        if left_out > 0 {
-            let mut omitted = Map::new();
-            for (name, count) in &self.omitted {
-                omitted.insert((*name).to_owned(), json!(count));
-            }
-            omitted.insert(
-                "hint".to_owned(),
-                json!(format!(
-                    "memfork_search with text, or memfork_list with a prefix such \
-                     as `{ns}:decision:`, shows the rest."
-                )),
-            );
-            map.insert("omitted".to_owned(), Json::Object(omitted));
+        if let Some(since) = &self.since {
+            map.insert("since_last".to_owned(), since.render());
         }
+        let left_out: usize = self.omitted.values().sum();
+        if self.since_only {
+            map.insert(
+                "hint".to_owned(),
+                json!(
+                    "Only what changed since you last looked; call memfork_resume without \
+                       since_last_only for the whole briefing."
+                ),
+            );
+        } else {
+            self.render_whole(&mut map, left_out);
+        }
+        let since_cut = self
+            .since
+            .as_ref()
+            .is_some_and(|s| s.omitted.values().any(|n| *n > 0));
         let handoff_cut = self.handoff.as_ref().is_some_and(HandoffView::cut);
         map.insert(
             "truncated".to_owned(),
-            json!(self.truncated || handoff_cut || left_out > 0),
+            json!(self.truncated || handoff_cut || since_cut || left_out > 0),
         );
         map.insert(
             "budget".to_owned(),
@@ -603,6 +829,39 @@ impl Brief {
             map.insert("current_branch".to_owned(), json!(branch));
         }
         Json::Object(map)
+    }
+
+    /// The whole briefing's sections, when it is not only what changed.
+    fn render_whole(&self, map: &mut Map<String, Json>, left_out: usize) {
+        let ns = &self.ns;
+        map.insert(
+            "latest_handoff".to_owned(),
+            self.handoff
+                .as_ref()
+                .map_or(Json::Null, HandoffView::render),
+        );
+        map.insert("earlier_handoffs".to_owned(), json!(self.earlier_handoffs));
+        map.insert("lessons".to_owned(), json!(self.of(Kind::Lesson)));
+        map.insert(
+            "recent_decisions".to_owned(),
+            json!(self.of(Kind::Decision)),
+        );
+        map.insert("facts".to_owned(), json!(self.of(Kind::Fact)));
+        map.insert("open_tasks".to_owned(), json!(self.of(Kind::Task)));
+        if left_out > 0 {
+            let mut omitted = Map::new();
+            for (name, count) in &self.omitted {
+                omitted.insert((*name).to_owned(), json!(count));
+            }
+            omitted.insert(
+                "hint".to_owned(),
+                json!(format!(
+                    "memfork_search with text, or memfork_list with a prefix such \
+                     as `{ns}:decision:`, shows the rest."
+                )),
+            );
+            map.insert("omitted".to_owned(), Json::Object(omitted));
+        }
     }
 }
 

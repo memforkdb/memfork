@@ -30,6 +30,9 @@ const VERSION: u32 = 1;
 /// Most fact records kept; the oldest go first.
 pub const MAX_FACT_RECORDS: usize = 50_000;
 
+/// Most "last seen" records kept, across every project, client and branch.
+pub const MAX_SEEN_RECORDS: usize = 10_000;
+
 /// Counters for one client in one project.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,6 +69,14 @@ struct FactRecord {
     hashes: Hashes,
 }
 
+/// Where a client last was on a branch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SeenRecord {
+    commit: String,
+    seq: u64,
+    order: u64,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Data {
@@ -74,6 +85,8 @@ struct Data {
     stats: BTreeMap<String, BTreeMap<String, Counters>>,
     facts: BTreeMap<String, FactRecord>,
     next_order: u64,
+    /// project -> client -> branch -> the head that client last saw there
+    seen: BTreeMap<String, BTreeMap<String, BTreeMap<String, SeenRecord>>>,
 }
 
 /// The side structure, and where it is kept.
@@ -173,6 +186,71 @@ impl Sidecar {
             }
         }
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Remember that `client` has seen `branch` of `project` as of `commit`,
+    /// number `seq`. Keeps the newest [`MAX_SEEN_RECORDS`].
+    pub fn saw(&self, project: &str, client: &str, branch: &str, commit: &str, seq: u64) {
+        let mut data = self.data();
+        let unchanged = data
+            .seen
+            .get(project)
+            .and_then(|c| c.get(client))
+            .and_then(|b| b.get(branch))
+            .is_some_and(|r| r.commit == commit);
+        if unchanged {
+            return;
+        }
+        let order = data.next_order;
+        data.next_order += 1;
+        data.seen
+            .entry(project.to_owned())
+            .or_default()
+            .entry(client.to_owned())
+            .or_default()
+            .insert(
+                branch.to_owned(),
+                SeenRecord {
+                    commit: commit.to_owned(),
+                    seq,
+                    order,
+                },
+            );
+        let total: usize = data
+            .seen
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(BTreeMap::len)
+            .sum();
+        if total > MAX_SEEN_RECORDS {
+            let oldest = data
+                .seen
+                .iter()
+                .flat_map(|(p, clients)| {
+                    clients.iter().flat_map(move |(c, branches)| {
+                        branches
+                            .iter()
+                            .map(move |(b, r)| (r.order, p.clone(), c.clone(), b.clone()))
+                    })
+                })
+                .min();
+            if let Some((_, p, c, b)) = oldest {
+                if let Some(branches) = data.seen.get_mut(&p).and_then(|cs| cs.get_mut(&c)) {
+                    branches.remove(&b);
+                }
+            }
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The head `client` last saw on `branch` of `project`, and its number.
+    pub fn last_seen(&self, project: &str, client: &str, branch: &str) -> Option<(String, u64)> {
+        self.data()
+            .seen
+            .get(project)
+            .and_then(|c| c.get(client))
+            .and_then(|b| b.get(branch))
+            .map(|r| (r.commit.clone(), r.seq))
     }
 
     /// The hashes a fact was written with, if they were kept.

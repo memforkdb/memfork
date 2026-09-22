@@ -14,8 +14,8 @@ pub mod schema;
 pub mod vendor;
 
 use schema::{
-    free_object, integer, no_arguments, number, number_array, object, object_array, string,
-    string_array, string_enum, JsonObject,
+    boolean, free_object, integer, no_arguments, number, number_array, object, object_array,
+    string, string_array, string_enum, JsonObject,
 };
 
 /// One tool: its name, what it is for, and the shape of its arguments.
@@ -377,7 +377,9 @@ pub fn all() -> Vec<ToolDef> {
                  or take over from another agent, before deciding anything, so you \
                  continue from what was already decided and done instead of starting \
                  over. Say what you are about to do in `task` to get what is most \
-                 relevant to it, and cap its size with `budget`. If more is stored \
+                 relevant to it, and cap its size with `budget`. It starts with what \
+                 changed since you last looked (`since_last`); coming back to a project \
+                 you know, pass `since_last_only` to get just that. If more is stored \
                  it says so and where to look. A project with nothing stored returns \
                  `empty: true`. {BRANCH_NOTE}"
             ),
@@ -390,8 +392,15 @@ pub fn all() -> Vec<ToolDef> {
                     (
                         "budget",
                         integer(
-                            "Most bytes the briefing may take, 512 to 65536. Defaults to 6144. \
+                            "Most bytes the briefing may take, 1024 to 65536. Defaults to 6144. \
                              Tokens are roughly bytes divided by four.",
+                        ),
+                    ),
+                    (
+                        "since_last_only",
+                        boolean(
+                            "Only what changed since you last looked. With no record of you \
+                             here, the whole briefing comes back instead.",
                         ),
                     ),
                     namespace_arg(),
