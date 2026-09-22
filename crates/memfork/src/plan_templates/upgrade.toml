@@ -1,0 +1,25 @@
+description = "Upgrade a dependency: read what changed, bump it, fix what broke, prove it still works"
+
+# Fill in each empty `accept` once with a command that exits 0 when that task
+# is done, such as your build and test commands. An empty one is never run.
+
+[[task]]
+id = "read"
+title = "Read the release notes between the two versions"
+detail = "Record each breaking change that affects this project as a decision or a fact."
+
+[[task]]
+id = "bump"
+title = "Change the version and update the lock file"
+depends_on = ["read"]
+
+[[task]]
+id = "repair"
+title = "Fix what the upgrade broke"
+depends_on = ["bump"]
+
+[[task]]
+id = "verify"
+title = "Build and run everything on the new version"
+depends_on = ["repair"]
+accept = ""

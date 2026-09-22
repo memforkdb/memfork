@@ -502,3 +502,82 @@ async fn watch_shows_a_task_becoming_ready_and_plan_show_groups_the_board() {
     assert!(seen.contains(&"ready shop:task:two".to_owned()), "{seen:?}");
     a.cancel().await.unwrap();
 }
+
+#[test]
+fn a_template_becomes_a_plan_file_that_checks_and_writes() {
+    let _turn = ONE_AT_A_TIME.blocking_lock();
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox);
+    let own = sandbox.data().join("plans");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(
+        own.join("release.toml"),
+        "description = \"cut a release\"\n[[task]]\nid = \"tag\"\ntitle = \"tag it\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        sandbox
+            .command()
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+
+    let listed = run(&["--json", "plan", "templates"]);
+    let listed: Json = serde_json::from_slice(&listed.stdout).unwrap();
+    let names: Vec<&str> = listed["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["feature", "bugfix", "refactor", "upgrade", "tests", "release"]
+    );
+
+    let made = run(&["plan", "new", "--template", "bugfix"]);
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    assert!(repo.join("memfork-plan.toml").exists());
+    let again = run(&["plan", "new", "--template", "feature"]);
+    assert!(
+        !again.status.success(),
+        "a plan file was overwritten without --force"
+    );
+    assert!(String::from_utf8_lossy(&again.stderr).contains("--force"));
+
+    let checked = run(&["plan", "check"]);
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert!(String::from_utf8_lossy(&checked.stdout).contains("4 tasks, no cycle"));
+
+    let wrote = run(&["--json", "plan", "write"]);
+    assert!(
+        wrote.status.success(),
+        "{}",
+        String::from_utf8_lossy(&wrote.stderr)
+    );
+    let wrote: Json = serde_json::from_slice(&wrote.stdout).unwrap();
+    assert_eq!(wrote["result"]["ready"], json!(["reproduce"]), "{wrote}");
+
+    // Its acceptance commands are still empty, so finishing needs none.
+    for id in ["reproduce", "test", "fix"] {
+        assert!(run(&["task", "claim", id]).status.success());
+        let done = run(&["task", "done", id]);
+        assert!(
+            done.status.success(),
+            "{id}: {}",
+            String::from_utf8_lossy(&done.stderr)
+        );
+    }
+    let unknown = run(&["plan", "new", "--template", "nope", "other.toml"]);
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("feature, bugfix"));
+}

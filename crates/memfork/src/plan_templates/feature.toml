@@ -1,0 +1,32 @@
+description = "Ship a feature: agree what it does, build and test it, document it, check it end to end"
+
+# Fill in each empty `accept` once with a command that exits 0 when that task
+# is done, such as your test command. An empty one is never run.
+
+[[task]]
+id = "design"
+title = "Agree what the feature does, including its edge cases"
+detail = "Record the behaviour and the reason for it as a decision, so every agent builds the same thing."
+
+[[task]]
+id = "build"
+title = "Build the smallest change that delivers it"
+detail = "Fork memory before anything risky, and discard with a lesson if an approach does not work."
+depends_on = ["design"]
+
+[[task]]
+id = "tests"
+title = "Write tests for the behaviour and each edge case"
+depends_on = ["design"]
+accept = ""
+
+[[task]]
+id = "docs"
+title = "Document it where its users will look"
+depends_on = ["build"]
+
+[[task]]
+id = "verify"
+title = "Run everything and try the feature end to end"
+depends_on = ["build", "tests"]
+accept = ""

@@ -286,7 +286,10 @@ pub fn execute_in(
                     plan_file,
                     ..
                 } => json!({"action": "plan", "tasks": tasks, "plan_file": plan_file}),
-                PlanAction::Write { .. } | PlanAction::Check { .. } => {
+                PlanAction::Write { .. }
+                | PlanAction::Check { .. }
+                | PlanAction::New { .. }
+                | PlanAction::Templates => {
                     return Err(ExecError::Usage(
                         "a plan file is read where it is, before the command is sent; \
                          run `memfork plan` from the project"

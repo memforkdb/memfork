@@ -75,8 +75,101 @@ pub struct PlanTask {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PlanFile {
+    /// What the plan is for, in a line; templates have one.
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     task: Vec<PlanTask>,
+}
+
+/// The templates `memfork plan new` ships with, as (name, file).
+const BUILT_IN: &[(&str, &str)] = &[
+    ("feature", include_str!("plan_templates/feature.toml")),
+    ("bugfix", include_str!("plan_templates/bugfix.toml")),
+    ("refactor", include_str!("plan_templates/refactor.toml")),
+    ("upgrade", include_str!("plan_templates/upgrade.toml")),
+    ("tests", include_str!("plan_templates/tests.toml")),
+];
+
+/// The directory in the data directory where a person's own templates go.
+pub const TEMPLATES_DIR: &str = "plans";
+
+/// A plan to start from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Template {
+    /// What `--template` takes.
+    pub name: String,
+    /// What it is for, in a line.
+    pub description: String,
+    /// The plan file, exactly as it will be written.
+    pub text: String,
+    /// Where it came from: `built-in`, or the file it was read from.
+    pub source: String,
+    /// Why it cannot be used, for a person's own file that does not parse.
+    pub problem: Option<String>,
+}
+
+/// Every template: the built-in ones, then a person's own from
+/// `<data dir>/plans/*.toml` in name order. One of theirs with a built-in
+/// name takes its place.
+pub fn templates(data_dir: Option<&Path>) -> Vec<Template> {
+    let describe = |text: &str| -> (String, Option<String>) {
+        match toml::from_str::<PlanFile>(text) {
+            Ok(file) => {
+                let checked =
+                    check_shape(&file.task).and_then(|()| check_alone(&file.task).map(|_| ()));
+                (file.description.unwrap_or_default(), checked.err())
+            }
+            Err(e) => (String::new(), Some(format!("does not parse: {e}"))),
+        }
+    };
+    let mut out: Vec<Template> = BUILT_IN
+        .iter()
+        .map(|(name, text)| {
+            let (description, problem) = describe(text);
+            Template {
+                name: (*name).to_owned(),
+                description,
+                text: (*text).to_owned(),
+                source: "built-in".to_owned(),
+                problem,
+            }
+        })
+        .collect();
+    let Some(dir) = data_dir.map(|d| d.join(TEMPLATES_DIR)) else {
+        return out;
+    };
+    let mut own: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+                .collect()
+        })
+        .unwrap_or_default();
+    own.sort();
+    for path in own {
+        let Some(name) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let Ok(text) = read_file(&path) else {
+            continue;
+        };
+        let (description, problem) = describe(&text);
+        let template = Template {
+            name: name.clone(),
+            description,
+            text,
+            source: path.display().to_string(),
+            problem,
+        };
+        match out.iter_mut().find(|t| t.name == name) {
+            Some(existing) => *existing = template,
+            None => out.push(template),
+        }
+    }
+    out
 }
 
 /// An acceptance command as a task holds it: trimmed, and `None` when empty,
@@ -502,6 +595,63 @@ mod tests {
             accept: None,
             timeout_seconds: None,
         }
+    }
+
+    #[test]
+    fn every_built_in_template_is_a_short_valid_plan_with_a_command_to_fill_in() {
+        let all = templates(None);
+        assert_eq!(all.len(), 5);
+        for t in &all {
+            assert_eq!(t.problem, None, "{}", t.name);
+            assert!(!t.description.is_empty(), "{} has no description", t.name);
+            let tasks = parse(&t.text).expect("parses");
+            assert!(
+                (4..=6).contains(&tasks.len()),
+                "{} has {} tasks",
+                t.name,
+                tasks.len()
+            );
+            assert!(
+                check_alone(&tasks).expect("no cycle").is_empty(),
+                "{}",
+                t.name
+            );
+            assert!(
+                t.text.contains("accept = \"\""),
+                "{} has nothing to fill in",
+                t.name
+            );
+            // An empty command is never run.
+            assert!(tasks.iter().all(|task| task.accept.is_none()), "{}", t.name);
+            crate::secrets::check(&t.name, &t.text, &crate::secrets::Allow::default())
+                .expect("no secret-shaped text");
+        }
+    }
+
+    #[test]
+    fn a_persons_own_template_is_listed_and_can_replace_a_built_in_one() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let dir = data.path().join(TEMPLATES_DIR);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("release.toml"),
+            "description = \"cut a release\"\n[[task]]\nid = \"tag\"\ntitle = \"tag it\"\n",
+        )
+        .expect("w");
+        std::fs::write(
+            dir.join("bugfix.toml"),
+            "description = \"ours\"\n[[task]]\nid = \"a\"\ntitle = \"a\"\n",
+        )
+        .expect("w");
+        std::fs::write(dir.join("broken.toml"), "[[task]\n").expect("w");
+        let all = templates(Some(data.path()));
+        let names: Vec<&str> = all.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["feature", "bugfix", "refactor", "upgrade", "tests", "broken", "release"]
+        );
+        assert_eq!(all[1].description, "ours");
+        assert!(all[5].problem.is_some());
     }
 
     #[test]

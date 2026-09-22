@@ -510,6 +510,21 @@ pub enum PlanAction {
     /// Show the board as a plan: what is ready, what is blocked and by what,
     /// who holds what, and what is done.
     Show,
+    /// Start a plan file from a template, to fill in and then write.
+    New {
+        /// Which template; `memfork plan templates` lists them.
+        #[arg(long)]
+        template: String,
+        /// Where to write it. Defaults to memfork-plan.toml at the top of
+        /// the project.
+        file: Option<String>,
+        /// Replace a file that is already there.
+        #[arg(long)]
+        force: bool,
+    },
+    /// List the templates `memfork plan new` can start from: the built-in
+    /// ones and any of your own in the data directory's `plans` folder.
+    Templates,
 }
 
 /// What `memfork task` does.

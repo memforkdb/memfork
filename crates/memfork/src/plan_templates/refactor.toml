@@ -1,0 +1,26 @@
+description = "Refactor safely: a green baseline, tests around the code, small steps, the same behaviour after"
+
+# Fill in each empty `accept` once with a command that exits 0 when that task
+# is done, such as your test command. An empty one is never run.
+
+[[task]]
+id = "baseline"
+title = "Make sure everything passes before touching anything"
+accept = ""
+
+[[task]]
+id = "cover"
+title = "Add tests around the code you will change, where it has too few"
+depends_on = ["baseline"]
+
+[[task]]
+id = "change"
+title = "Change the structure in small steps, keeping behaviour the same"
+detail = "Fork memory first; merge if it worked, discard with a lesson if it did not."
+depends_on = ["cover"]
+
+[[task]]
+id = "verify"
+title = "Run everything again: nothing a user can see may have changed"
+depends_on = ["change"]
+accept = ""

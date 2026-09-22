@@ -141,6 +141,19 @@ pub fn run(cli: Cli) -> ExitCode {
                 } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
                 Command::Doctor => run_doctor(&mut stdout, cli.global.json),
                 Command::Plan {
+                    action: PlanAction::Templates,
+                    ..
+                } => run_plan_templates(&mut stdout, &cli.global),
+                Command::Plan {
+                    action:
+                        PlanAction::New {
+                            template,
+                            file,
+                            force,
+                        },
+                    ..
+                } => run_plan_new(&mut stdout, &cli.global, template, file.as_deref(), *force),
+                Command::Plan {
                     action: PlanAction::Check { file },
                     allow_secret,
                     ..
@@ -429,6 +442,112 @@ fn lexical(path: &std::path::Path) -> std::path::PathBuf {
         }
     }
     out
+}
+
+/// `memfork plan templates`.
+fn run_plan_templates(out: &mut impl Write, global: &GlobalArgs) -> Result<(), ExecError> {
+    let all = crate::plans::templates(data_dir(global).ok().as_deref());
+    if global.json {
+        let list: Vec<serde_json::Value> = all
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "source": t.source,
+                    "problem": t.problem,
+                })
+            })
+            .collect();
+        writeln!(
+            out,
+            "{}",
+            json!({"op": "plan templates", "templates": list})
+        )
+        .map_err(io_err)?;
+        return Ok(());
+    }
+    let width = all
+        .iter()
+        .map(|t| t.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for t in &all {
+        let pad = " ".repeat(width - t.name.chars().count());
+        let line = match (&t.problem, t.source.as_str()) {
+            (Some(problem), source) => {
+                format!("{}{pad}  cannot be used: {problem} ({source})", t.name)
+            }
+            (None, "built-in") => format!("{}{pad}  {}", t.name, t.description),
+            (None, source) => format!("{}{pad}  {}  ({source})", t.name, t.description),
+        };
+        writeln!(out, "{line}").map_err(io_err)?;
+    }
+    writeln!(
+        out,
+        "start one with `memfork plan new --template <name>`; add your own as .toml files in {}",
+        data_dir(global)
+            .map(|d| d.join(crate::plans::TEMPLATES_DIR).display().to_string())
+            .unwrap_or_else(|_| "the data directory's plans folder".to_owned())
+    )
+    .map_err(io_err)
+}
+
+/// `memfork plan new`: a template, written as a plan file to fill in.
+fn run_plan_new(
+    out: &mut impl Write,
+    global: &GlobalArgs,
+    name: &str,
+    file: Option<&str>,
+    force: bool,
+) -> Result<(), ExecError> {
+    let all = crate::plans::templates(data_dir(global).ok().as_deref());
+    let Some(template) = all.iter().find(|t| t.name == name) else {
+        return Err(ExecError::Usage(format!(
+            "there is no template `{name}`; the templates are: {}",
+            all.iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    };
+    if let Some(problem) = &template.problem {
+        return Err(ExecError::Usage(format!(
+            "the template `{name}` cannot be used: {problem} ({})",
+            template.source
+        )));
+    }
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let path = match file {
+        Some(f) => lexical(&cwd.join(f)),
+        None => project_root().join(crate::plans::DEFAULT_FILE),
+    };
+    if path.exists() && !force {
+        return Err(ExecError::Usage(format!(
+            "{} is already there; write elsewhere, or pass --force to replace it",
+            path.display()
+        )));
+    }
+    std::fs::write(&path, &template.text)
+        .map_err(|e| ExecError::Usage(format!("cannot write {}: {e}", path.display())))?;
+    let tasks = crate::plans::parse(&template.text)
+        .map(|t| t.len())
+        .unwrap_or(0);
+    if global.json {
+        writeln!(
+            out,
+            "{}",
+            json!({"op": "plan new", "template": name, "file": path.display().to_string(), "tasks": tasks})
+        )
+        .map_err(io_err)?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "wrote {} from the `{name}` template: {tasks} tasks\n  fill in each empty `accept` with a command that exits 0 when that task is done, then run `memfork plan write`",
+        path.display()
+    )
+    .map_err(io_err)
 }
 
 /// `memfork plan check`: a plan file on its own, written nowhere.
