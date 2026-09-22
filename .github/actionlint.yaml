@@ -1,0 +1,5 @@
+# actionlint's built-in list of GitHub-hosted runner labels lags GitHub's own.
+# These are real labels the workflows use.
+self-hosted-runner:
+  labels:
+    - windows-11-arm
