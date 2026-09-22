@@ -87,6 +87,48 @@ pub struct Session {
     root: Option<std::path::PathBuf>,
 }
 
+/// The record the side structure keeps of a briefing: who it went to, how
+/// big it was, and which keys it carried.
+fn briefing_record(
+    brief: &Json,
+    branch: &str,
+    to: &str,
+    bytes: u64,
+    seq: u64,
+) -> crate::sidecar::Briefing {
+    let mut keys = Vec::new();
+    let handoff = brief["handoff"]["key"].as_str().map(str::to_owned);
+    keys.extend(handoff.clone());
+    for list in ["lessons", "decisions", "facts", "tasks"] {
+        for item in brief[list].as_array().into_iter().flatten() {
+            if let Some(key) = item["key"].as_str() {
+                keys.push(key.to_owned());
+            }
+        }
+    }
+    let omitted = brief["omitted"]
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, v)| v.as_u64().map(|n| (k.clone(), n)))
+                .filter(|(_, n)| *n > 0)
+                .collect()
+        })
+        .unwrap_or_default();
+    crate::sidecar::Briefing {
+        order: 0,
+        seq,
+        branch: branch.to_owned(),
+        to: to.to_owned(),
+        bytes,
+        keys,
+        handoff,
+        since_commits: brief["since"]["commits"].as_u64(),
+        omitted,
+        task: brief["task"].as_str().map(str::to_owned),
+    }
+}
+
 /// Record what checking facts found, wherever it was checked: counted for
 /// `client` in `ns`, and one `fact` event each for `memfork watch`.
 pub fn record_checked(
@@ -999,11 +1041,28 @@ impl Session {
                     .map(|(k, e)| (k.len() + e.value.len()) as u64)
                     .sum();
                 let lessons_served = brief["lessons"].as_array().map_or(0, Vec::len) as u64;
+                // What it carried, for the Brain and for counting a handoff
+                // picked up: beside the store, so it never reaches an id.
+                let picked_up = match self.writer() {
+                    Some(me) => {
+                        let seq = self
+                            .db
+                            .head(&branch)
+                            .and_then(|h| self.db.commit(h))
+                            .map_or(0, |c| c.seq);
+                        self.shared
+                            .sidecar
+                            .note_briefing(&ns, briefing_record(&brief, &branch, &me, size, seq))
+                            && brief["handoff"]["by"].as_str() != Some(me.as_str())
+                    }
+                    None => false,
+                };
                 self.count(|c| {
                     c.briefings += 1;
                     c.briefing_bytes += size;
                     c.memory_bytes += memory;
                     c.lessons_served += lessons_served;
+                    c.handoffs_picked_up += u64::from(picked_up);
                 });
                 Ok(brief)
             }

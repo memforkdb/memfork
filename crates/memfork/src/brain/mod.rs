@@ -18,6 +18,8 @@
 //! `memfork brain` prints the page's address with the read token in the URL
 //! fragment, which a browser never sends to the server, and opens it.
 
+pub mod graph;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -54,7 +56,7 @@ pub const STATIC: &[(&str, &str, &str)] = &[
 /// Every route that answers with data, by the name after `/brain/`. Each
 /// answers `GET` only, needs a token, and reads; there is no other kind, and
 /// a test walks this list to prove it.
-pub const ROUTES: &[&str] = &["summary"];
+pub const ROUTES: &[&str] = &["summary", "graph"];
 
 /// The families of key the page knows, as `<project>:<family>:<rest>`.
 pub const FAMILIES: &[&str] = &["decision", "fact", "task", "lesson", "handoff", "note"];
@@ -111,6 +113,7 @@ pub async fn handle(request: Request<Incoming>, context: Context) -> Response<Bo
     let query = Query::parse(request.uri().query());
     let answer = tokio::task::spawn_blocking(move || match name.as_str() {
         "summary" => summary(&context, &query),
+        "graph" => graph_route(&context, &query),
         _ => Err((StatusCode::NOT_FOUND, "no such route".to_owned())),
     })
     .await;
@@ -268,6 +271,24 @@ fn namespace_of(context: &Context, query: &Query, branch: &str) -> Result<String
         .into_iter()
         .next()
         .unwrap_or_else(|| crate::namespace::FALLBACK.to_owned()))
+}
+
+/// The memory graph of a project on a branch, now or at a past point, laid
+/// out.
+fn graph_route(context: &Context, query: &Query) -> Result<Json, Failure> {
+    let branch = branch_of(context, query)?;
+    let ns = namespace_of(context, query, &branch)?;
+    let at = query.number("at")?;
+    let graph = graph::build(
+        &context.db,
+        &branch,
+        &ns,
+        at,
+        &context.side,
+        &context.events.connected(),
+    )
+    .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(graph::to_json(&graph))
 }
 
 /// What the page needs first: where it is looking, who is connected, what

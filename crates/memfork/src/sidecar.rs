@@ -36,6 +36,9 @@ pub const MAX_SEEN_RECORDS: usize = 10_000;
 /// Most stale facts remembered per project.
 pub const MAX_STALE_KEPT: usize = 1000;
 
+/// Most briefings remembered per project, newest kept.
+pub const MAX_BRIEFINGS_KEPT: usize = 100;
+
 /// Counters for one client in one project.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -64,6 +67,36 @@ pub struct Counters {
     pub claim_conflicts: u64,
     /// Text searches run.
     pub finds: u64,
+    /// Handoffs left by another session and carried to this client in a
+    /// briefing for the first time: work picked up rather than re-explained.
+    pub handoffs_picked_up: u64,
+}
+
+/// One briefing that was served, as the Brain shows it: to whom, how big,
+/// and what it carried. Kept beside the store, never in it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Briefing {
+    /// Its place among every record, for order.
+    pub order: u64,
+    /// The branch's sequence number when it was served.
+    pub seq: u64,
+    /// The branch it described.
+    pub branch: String,
+    /// The client it was served to.
+    pub to: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// The keys it carried: the handoff, lessons, decisions, facts, tasks.
+    pub keys: Vec<String>,
+    /// The handoff it carried, if one.
+    pub handoff: Option<String>,
+    /// How many commits the since-last-look part covered, if it was there.
+    pub since_commits: Option<u64>,
+    /// What was left out to fit, by list.
+    pub omitted: BTreeMap<String, u64>,
+    /// The task it was ranked for, if one.
+    pub task: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -94,6 +127,8 @@ struct Data {
     maintenance: BTreeMap<String, Maintenance>,
     /// project -> the facts last found stale, by key
     stale: BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// project -> the briefings served, oldest first
+    briefings: BTreeMap<String, Vec<Briefing>>,
 }
 
 /// A project's self-maintenance, as far as the side file keeps it.
@@ -293,6 +328,38 @@ impl Sidecar {
         self.dirty.store(true, Ordering::Relaxed);
     }
 
+    /// Remember a briefing that was served. Keeps the newest
+    /// [`MAX_BRIEFINGS_KEPT`] per project. Returns whether the handoff it
+    /// carried, if any, was new to that client: written by somebody else and
+    /// in none of the briefings this client was served before.
+    pub fn note_briefing(&self, project: &str, mut briefing: Briefing) -> bool {
+        let mut data = self.data();
+        briefing.order = data.next_order;
+        data.next_order += 1;
+        let list = data.briefings.entry(project.to_owned()).or_default();
+        let picked_up = briefing.handoff.as_ref().is_some_and(|handoff| {
+            !list
+                .iter()
+                .any(|b| b.to == briefing.to && b.handoff.as_ref() == Some(handoff))
+        });
+        list.push(briefing);
+        if list.len() > MAX_BRIEFINGS_KEPT {
+            let excess = list.len() - MAX_BRIEFINGS_KEPT;
+            list.drain(..excess);
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+        picked_up
+    }
+
+    /// The briefings served in `project`, oldest first.
+    pub fn briefings(&self, project: &str) -> Vec<Briefing> {
+        self.data()
+            .briefings
+            .get(project)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The facts in `project` last found stale.
     pub fn stale_facts(&self, project: &str) -> Vec<String> {
         self.data()
@@ -466,5 +533,32 @@ mod tests {
         assert_eq!(all["total"]["briefings"], 7);
         assert_eq!(all["projects"]["a"]["y"]["briefings"], 2);
         assert_eq!(side.stats(Some("b"))["total"]["briefings"], 4);
+    }
+    #[test]
+    fn briefings_are_kept_bounded_and_a_handoff_is_picked_up_once_per_client() {
+        let side = Sidecar::in_memory();
+        let brief = |to: &str, handoff: Option<&str>| Briefing {
+            to: to.to_owned(),
+            branch: "main".to_owned(),
+            handoff: handoff.map(str::to_owned),
+            keys: handoff.map(str::to_owned).into_iter().collect(),
+            ..Briefing::default()
+        };
+        assert!(!side.note_briefing("shop", brief("codex", None)));
+        assert!(side.note_briefing("shop", brief("codex", Some("shop:handoff:00000001"))));
+        assert!(!side.note_briefing("shop", brief("codex", Some("shop:handoff:00000001"))));
+        assert!(side.note_briefing("shop", brief("claude", Some("shop:handoff:00000001"))));
+        assert!(side.note_briefing("shop", brief("codex", Some("shop:handoff:00000002"))));
+        let kept = side.briefings("shop");
+        assert_eq!(kept.len(), 5);
+        assert!(kept.windows(2).all(|w| w[0].order < w[1].order));
+        assert!(side.briefings("other").is_empty());
+
+        for i in 0..(MAX_BRIEFINGS_KEPT + 7) {
+            side.note_briefing("big", brief(&format!("c{i}"), None));
+        }
+        let big = side.briefings("big");
+        assert_eq!(big.len(), MAX_BRIEFINGS_KEPT);
+        assert_eq!(big[0].to, "c7", "the oldest were not the ones dropped");
     }
 }

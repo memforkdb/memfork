@@ -537,3 +537,238 @@ fn regex_like_handler(line: &str) -> bool {
         !name.is_empty() && rest[name.len()..].starts_with('=')
     })
 }
+
+// ---- the graph ---------------------------------------------------------------
+
+/// A store with one of everything, written the way agents write it.
+fn furnish(sandbox: &Sandbox) {
+    let script = [
+        vec![
+            "put",
+            "shop:fact:auth-entry",
+            "auth lives in src/auth",
+            "--source",
+            "src/auth/login.rs",
+        ],
+        vec![
+            "put",
+            "shop:decision:payments",
+            "hosted checkout; rests on fact:auth-entry",
+        ],
+        vec!["task", "add", "design the schema", "--id", "schema"],
+        vec![
+            "task",
+            "add",
+            "checkout page",
+            "--id",
+            "checkout",
+            "--depends-on",
+            "schema",
+        ],
+        vec!["fork", "try-refunds"],
+        vec![
+            "put",
+            "--branch",
+            "try-refunds",
+            "shop:note:cards",
+            "store the cards",
+        ],
+        vec![
+            "discard",
+            "try-refunds",
+            "--lesson",
+            "storing cards breaks decision:payments",
+        ],
+    ];
+    std::fs::create_dir_all(sandbox.root().join("src").join("auth")).unwrap();
+    std::fs::write(
+        sandbox.root().join("src").join("auth").join("login.rs"),
+        "fn login() {}\n",
+    )
+    .unwrap();
+    for line in script {
+        let output = sandbox
+            .command()
+            .env(memfork::namespace::NAMESPACE_ENV, "shop")
+            .args(&line)
+            .output()
+            .expect("ran");
+        assert!(
+            output.status.success(),
+            "`memfork {}` failed: {}",
+            line.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn graph_of(sandbox: &Sandbox, query: &str) -> Json {
+    let (port, _, read) = tokens(
+        &sandbox
+            .wait_for_daemon(Duration::from_secs(20))
+            .expect("a daemon"),
+    );
+    let a = ask(
+        port,
+        Method::GET,
+        &format!("/brain/graph{query}"),
+        None,
+        Some(&read),
+    );
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    a.json()
+}
+
+#[test]
+fn the_graph_holds_the_relations_the_engine_knows_and_is_the_same_after_a_restart() {
+    let sandbox = Sandbox::new();
+    started(&sandbox);
+    furnish(&sandbox);
+    let first = graph_of(&sandbox, "?ns=shop");
+    assert_eq!(first["columns"].as_array().unwrap().len(), 7);
+    let ids: Vec<&str> = first["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n[0].as_str().unwrap())
+        .collect();
+    for expected in [
+        "shop:fact:auth-entry",
+        "shop:decision:payments",
+        "shop:task:schema",
+        "shop:task:checkout",
+        "shop:lesson:00000001",
+        "file:src/auth/login.rs",
+        "agent:memfork-cli",
+    ] {
+        assert!(ids.contains(&expected), "no node {expected} in {ids:?}");
+    }
+    let edges: Vec<(String, String, String)> = first["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            let n = |i: &Json| {
+                first["nodes"][i.as_u64().unwrap() as usize][0]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
+            (n(&e[0]), n(&e[1]), e[2].as_str().unwrap().to_owned())
+        })
+        .collect();
+    let has = |a: &str, b: &str, k: &str| edges.iter().any(|(x, y, z)| x == a && y == b && z == k);
+    assert!(
+        has(
+            "file:src/auth/login.rs",
+            "shop:fact:auth-entry",
+            "source of"
+        ),
+        "{edges:?}"
+    );
+    assert!(
+        has("shop:fact:auth-entry", "shop:decision:payments", "cited by"),
+        "{edges:?}"
+    );
+    assert!(
+        has("shop:task:schema", "shop:task:checkout", "depends on"),
+        "{edges:?}"
+    );
+    assert!(
+        has("shop:lesson:00000001", "shop:decision:payments", "about"),
+        "{edges:?}"
+    );
+    // Every node has a column and a height, in the column order promised.
+    let columns: Vec<u64> = first["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n[3].as_u64().unwrap())
+        .collect();
+    assert!(columns.windows(2).all(|w| w[0] <= w[1]), "{columns:?}");
+
+    // The same store, another daemon: the same picture, coordinate for
+    // coordinate.
+    stop(&sandbox);
+    started_again(&sandbox);
+    let second = graph_of(&sandbox, "?ns=shop");
+    assert_eq!(first["nodes"], second["nodes"]);
+    assert_eq!(first["edges"], second["edges"]);
+
+    // The past: fewer nodes, none from after the point asked for.
+    let past = graph_of(&sandbox, "?ns=shop&at=2");
+    assert_eq!(past["at"], 2);
+    assert!(past["nodes"].as_array().unwrap().len() < first["nodes"].as_array().unwrap().len());
+    assert!(past["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|n| n[5].as_u64().unwrap() <= 2));
+}
+
+/// Start a daemon for a sandbox that already has a store, without writing.
+fn started_again(sandbox: &Sandbox) -> Endpoint {
+    let output = sandbox.command().args(["branches"]).output().expect("ran");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    sandbox
+        .wait_for_daemon(Duration::from_secs(20))
+        .expect("a daemon")
+}
+
+#[test]
+fn stores_written_by_earlier_versions_draw_as_graphs() {
+    // Every fixture store there is, whichever versions wrote them.
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures");
+    let mut versions: Vec<String> = std::fs::read_dir(&fixtures)
+        .unwrap()
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()?
+                .strip_prefix("store-")
+                .map(str::to_owned)
+        })
+        .collect();
+    versions.sort();
+    assert!(
+        versions.len() >= 2,
+        "expected the fixture stores, found {versions:?}"
+    );
+    for version in &versions {
+        let sandbox = Sandbox::new();
+        let fixture = fixtures.join(format!("store-{version}")).join("data");
+        for name in ["memfork.snapshot", "memfork.wal"] {
+            std::fs::copy(fixture.join(name), sandbox.data().join(name)).unwrap();
+        }
+        started_again(&sandbox);
+        let (port, _, read) = tokens(&sandbox.wait_for_daemon(Duration::from_secs(20)).unwrap());
+        let summary = ask(port, Method::GET, "/brain/summary", None, Some(&read));
+        assert_eq!(
+            summary.status,
+            StatusCode::OK,
+            "{version}: {}",
+            summary.body
+        );
+        let ns = summary.json()["namespace"].as_str().unwrap().to_owned();
+        let graph = ask(
+            port,
+            Method::GET,
+            &format!("/brain/graph?ns={ns}"),
+            None,
+            Some(&read),
+        );
+        assert_eq!(graph.status, StatusCode::OK, "{version}: {}", graph.body);
+        let graph = graph.json();
+        assert!(
+            !graph["nodes"].as_array().unwrap().is_empty(),
+            "{version}: an old store drew no nodes for {ns}"
+        );
+        assert_eq!(graph["columns"].as_array().unwrap().len(), 7);
+    }
+}
