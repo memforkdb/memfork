@@ -487,9 +487,10 @@ fn kill_tree(child: &mut std::process::Child) {
             .stderr(Stdio::null())
             .status();
     } else {
-        // The group this child leads; `kill` takes a negative id for that.
+        // The group this child leads: `kill` takes a negative id for that,
+        // after `--` so it is not read as a signal.
         let _ = Command::new("/bin/kill")
-            .args(["-KILL", &format!("-{pid}")])
+            .args(["-KILL", "--", &format!("-{pid}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -499,8 +500,14 @@ fn kill_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-/// Keep reading `from` on a thread, holding only its last bytes.
-fn tail_of(mut from: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+/// How long to wait for a stopped command's output to drain: something it
+/// started and that outlived it may hold the pipe open for good.
+const DRAIN: Duration = Duration::from_secs(2);
+
+/// Keep reading `from` on a thread, holding only its last bytes; they arrive
+/// on the channel when the stream ends.
+fn tail_of(mut from: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut kept: Vec<u8> = Vec::new();
         let mut buffer = [0u8; 8192];
@@ -513,8 +520,9 @@ fn tail_of(mut from: impl std::io::Read + Send + 'static) -> std::thread::JoinHa
                 kept.drain(..kept.len() - OUTPUT_TAIL_BYTES);
             }
         }
-        kept
-    })
+        let _ = tx.send(kept);
+    });
+    rx
 }
 
 /// Run an acceptance command in `root`, within `timeout`.
@@ -555,8 +563,20 @@ pub fn run(root: &Path, command: &str, timeout: Duration) -> Acceptance {
             }
         }
     };
-    let mut bytes = out.and_then(|h| h.join().ok()).unwrap_or_default();
-    bytes.extend(err.and_then(|h| h.join().ok()).unwrap_or_default());
+    // A command that finished has closed its streams; one that was stopped
+    // may have left something holding them, so that wait is bounded.
+    let wait = |rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>| -> Vec<u8> {
+        rx.and_then(|rx| {
+            if timed_out {
+                rx.recv_timeout(DRAIN).ok()
+            } else {
+                rx.recv().ok()
+            }
+        })
+        .unwrap_or_default()
+    };
+    let mut bytes = wait(out);
+    bytes.extend(wait(err));
     if bytes.len() > OUTPUT_TAIL_BYTES {
         bytes.drain(..bytes.len() - OUTPUT_TAIL_BYTES);
     }
