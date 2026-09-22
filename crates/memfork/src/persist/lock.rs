@@ -26,6 +26,17 @@
 //! guessing, no start-time comparison, and the same answer on all three
 //! platforms. An endpoint file left behind by a dead owner is then deleted.
 //!
+//! **Asking is taking, for a moment.** [`owner`] finds out whether anyone
+//! holds the lock by trying to take it, and lets go at once. A process that
+//! asks while a daemon is starting can therefore hold the lock at the very
+//! instant the daemon tries for it. So [`DirLock::acquire`] keeps trying for
+//! up to [`PROBE_GRACE`] before it concludes the directory is owned — a
+//! question holds the lock for microseconds, an owner for as long as it runs,
+//! and an owner publishes an endpoint file, which ends the wait at once — and
+//! [`owner`] removes a stale endpoint file only while it still holds the
+//! lock, so it can never remove the file of a daemon that started a moment
+//! after it let go.
+//!
 //! On permissions, the two platforms are not equal and this does not pretend
 //! otherwise. On Unix the endpoint file is created `0600`. On Windows setting
 //! an explicit ACL needs `unsafe` Win32 calls, which this phase does not
@@ -36,6 +47,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +56,10 @@ pub const LOCK_FILE: &str = "memfork.lock";
 
 /// The file that holds the facts, and is never locked.
 pub const ENDPOINT_FILE: &str = "memfork.endpoint";
+
+/// How long [`DirLock::acquire`] keeps trying a lock that is held, in case
+/// the holder is only [`owner`] asking, before saying the directory is owned.
+pub const PROBE_GRACE: Duration = Duration::from_secs(1);
 
 /// What a running MemFork process publishes about itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,9 +162,24 @@ impl DirLock {
             .open(&path)
             .map_err(io(format!("cannot open {}", path.display())))?;
 
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(_) => {
+        // A held lock may only be somebody asking whether it is held; that
+        // lets go within microseconds, an owner does not. An owner also says
+        // so in the endpoint file, which a question never writes: once that
+        // is there, stop at once, so a process that was going to lose cannot
+        // take over the moment the owner it lost to stops.
+        let deadline = Instant::now() + PROBE_GRACE;
+        let taken = loop {
+            match file.try_lock() {
+                Ok(()) => break true,
+                Err(_) if Instant::now() < deadline && read_endpoint(dir).is_none() => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break false,
+            }
+        };
+        match taken {
+            true => {}
+            false => {
                 // Someone else holds it. Say who, if they said.
                 let existing = read_endpoint(dir);
                 return Err(LockError::InUse {
@@ -271,8 +302,10 @@ pub fn owner(dir: &Path) -> Option<Endpoint> {
     match file.try_lock() {
         Ok(()) => {
             // It was free: nobody owns it, and any endpoint file is stale.
-            let _ = file.unlock();
+            // Removed while the lock is still held, so the file of a daemon
+            // that takes the lock the moment this lets go is never touched.
             let _ = std::fs::remove_file(dir.join(ENDPOINT_FILE));
+            let _ = file.unlock();
             None
         }
         // Held by someone. Only now is the endpoint file worth believing.
@@ -293,6 +326,69 @@ pub fn new_token() -> Result<String, LockError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn losing_to_an_owner_that_has_said_so_gives_up_at_once() {
+        // The wait is for questions, not owners: a process that loses to a
+        // published owner must not linger and take over when that owner stops.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let owner = DirLock::acquire(dir.path()).expect("first acquire");
+        owner
+            .publish(&Endpoint::for_this_process())
+            .expect("published");
+        let started = Instant::now();
+        let loser = {
+            let path = dir.path().to_path_buf();
+            std::thread::spawn(move || DirLock::acquire(&path).map(|_| ()))
+        };
+        let lost = loser.join().expect("loser");
+        assert!(matches!(lost, Err(LockError::InUse { .. })), "{lost:?}");
+        assert!(
+            started.elapsed() < PROBE_GRACE / 2,
+            "the loser waited {:?} for an owner that had said so",
+            started.elapsed()
+        );
+        drop(owner);
+    }
+
+    #[test]
+    fn asking_who_owns_a_directory_never_stops_a_daemon_taking_it() {
+        // One thread asks as fast as it can while another takes the lock,
+        // publishes and lets go, over and over: every take must succeed, and
+        // a published endpoint must stay published while its owner holds on.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+        std::fs::write(path.join(LOCK_FILE), b"").expect("lock file");
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asker = {
+            let path = path.clone();
+            let stop = std::sync::Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut asked = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = owner(&path);
+                    asked += 1;
+                }
+                asked
+            })
+        };
+        for round in 0..200 {
+            let held = DirLock::acquire(&path)
+                .unwrap_or_else(|e| panic!("round {round}: a question kept the owner out: {e}"));
+            let mut endpoint = Endpoint::for_this_process();
+            endpoint.port = Some(1);
+            held.publish(&endpoint).expect("published");
+            for _ in 0..20 {
+                assert!(
+                    read_endpoint(&path).is_some(),
+                    "round {round}: a question removed a held endpoint"
+                );
+            }
+            drop(held);
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(asker.join().expect("asker") > 0);
+    }
 
     #[test]
     fn the_lock_keeps_a_second_owner_out_and_names_the_first() {
