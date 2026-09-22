@@ -125,6 +125,9 @@ pub fn run(cli: Cli) -> ExitCode {
                     &style,
                 ),
                 Command::Watch { count } => run_watch(&mut stdout, &cli.global, *count, &style),
+                Command::Brain { no_open } => {
+                    run_brain(&mut stdout, &cli.global, *no_open, choice, &style)
+                }
                 Command::Tools { format } => run_tools(&mut stdout, format),
                 Command::Call { tool, arguments } => {
                     run_call(&mut stdout, tool, arguments, &cli.global, choice)
@@ -1617,6 +1620,73 @@ fn run_doctor(out: &mut impl Write, global: &GlobalArgs, verbose: bool) -> Resul
         }
         Ok(())
     }
+}
+
+/// `memfork brain`: find or start the daemon, print the page's address with
+/// the read token in its fragment, and open it.
+#[cfg(feature = "brain")]
+fn run_brain(
+    out: &mut impl Write,
+    global: &GlobalArgs,
+    no_open: bool,
+    choice: ColorChoice,
+    style: &Style,
+) -> Result<(), ExecError> {
+    use crate::policy::{self, Feature};
+    if !policy::allows(Feature::Brain) {
+        return Err(ExecError::Usage(policy::refusal(Feature::Brain)));
+    }
+    let dir = data_dir(global)?;
+    let endpoint = daemon_for(&dir, choice)?;
+    let url = crate::brain::url(&endpoint).ok_or_else(|| {
+        ExecError::Usage(
+            "the running daemon published no read token, so it is older than this \
+             command; run `memfork stop`, then try again"
+                .to_owned(),
+        )
+    })?;
+    if global.json {
+        writeln!(
+            out,
+            "{}",
+            json!({ "url": url, "port": endpoint.port, "opened": !no_open })
+        )
+        .map_err(io_err)?;
+    } else {
+        writeln!(out, "{url}").map_err(io_err)?;
+        writeln!(
+            out,
+            "{}",
+            style.dim(if no_open {
+                "open that address in a browser; it carries this daemon's read token, \
+                 which dies with the daemon"
+            } else {
+                "opening it in your browser; the address carries this daemon's read \
+                 token, which dies with the daemon"
+            })
+        )
+        .map_err(io_err)?;
+    }
+    if !no_open {
+        crate::brain::open_in_browser(&url).map_err(ExecError::Usage)?;
+    }
+    Ok(())
+}
+
+/// The same command in a build made without the Brain: it says so.
+#[cfg(not(feature = "brain"))]
+fn run_brain(
+    _out: &mut impl Write,
+    _global: &GlobalArgs,
+    _no_open: bool,
+    _choice: ColorChoice,
+    _style: &Style,
+) -> Result<(), ExecError> {
+    Err(ExecError::Usage(
+        "this build of MemFork was made without the Brain (the `brain` cargo feature). \
+         Install a release build, or build with the default features, to use it."
+            .to_owned(),
+    ))
 }
 
 /// Duplicates and contradictions in this directory's project, from a daemon

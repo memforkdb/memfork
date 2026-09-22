@@ -10,7 +10,7 @@
 //!
 //! ```toml
 //! # Features. Each defaults to allowed; `false` switches it off machine-wide.
-//! dashboard = false
+//! brain = false
 //! race = false
 //! autopilot = false
 //! maintenance_tasks = false
@@ -64,8 +64,9 @@ pub const EXTRA_ENV: &str = "MEMFORK_POLICY_FILE";
 /// A feature the policy can switch off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Feature {
-    /// `memfork ui`, the local dashboard.
-    Dashboard,
+    /// The Brain: `memfork brain` and `memfork demo`, and the page the
+    /// daemon serves for them.
+    Brain,
     /// `memfork race`, which runs agents unattended.
     Race,
     /// Autopilot: memory following the git branch, and automatic forks.
@@ -81,7 +82,7 @@ pub enum Feature {
 impl Feature {
     /// Every feature, in the order the file and the report list them.
     pub const ALL: [Feature; 6] = [
-        Feature::Dashboard,
+        Feature::Brain,
         Feature::Race,
         Feature::Autopilot,
         Feature::MaintenanceTasks,
@@ -92,7 +93,7 @@ impl Feature {
     /// The key in the file.
     pub fn key(self) -> &'static str {
         match self {
-            Feature::Dashboard => "dashboard",
+            Feature::Brain => "brain",
             Feature::Race => "race",
             Feature::Autopilot => "autopilot",
             Feature::MaintenanceTasks => "maintenance_tasks",
@@ -104,7 +105,7 @@ impl Feature {
     /// The words for it in a sentence.
     pub fn describe(self) -> &'static str {
         match self {
-            Feature::Dashboard => "the dashboard",
+            Feature::Brain => "the Brain",
             Feature::Race => "race",
             Feature::Autopilot => "autopilot",
             Feature::MaintenanceTasks => "maintenance tasks",
@@ -118,7 +119,7 @@ impl Feature {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct File {
-    dashboard: Option<bool>,
+    brain: Option<bool>,
     race: Option<bool>,
     autopilot: Option<bool>,
     maintenance_tasks: Option<bool>,
@@ -130,7 +131,7 @@ struct File {
 impl File {
     fn get(&self, feature: Feature) -> Option<bool> {
         match feature {
-            Feature::Dashboard => self.dashboard,
+            Feature::Brain => self.brain,
             Feature::Race => self.race,
             Feature::Autopilot => self.autopilot,
             Feature::MaintenanceTasks => self.maintenance_tasks,
@@ -497,11 +498,11 @@ mod tests {
 
     #[test]
     fn an_unknown_key_is_an_error_not_a_silence() {
-        let err = parse(Path::new("/etc/memfork/policy.toml"), "dashbord = false\n")
-            .expect_err("refused");
-        assert!(err.why.contains("dashbord"), "{err}");
+        let err =
+            parse(Path::new("/etc/memfork/policy.toml"), "brian = false\n").expect_err("refused");
+        assert!(err.why.contains("brian"), "{err}");
         assert!(err.to_string().contains("administrator"), "{err}");
-        let err = parse(Path::new("p"), "dashboard = \"no\"\n").expect_err("refused");
+        let err = parse(Path::new("p"), "brain = \"no\"\n").expect_err("refused");
         assert!(
             err.why.contains("bool") || err.why.contains("boolean"),
             "{err}"
@@ -526,8 +527,8 @@ mod tests {
             "{why}"
         );
         assert!(why.contains("administrator"), "{why}");
-        let why = p.refusal(Feature::Dashboard);
-        assert!(why.starts_with("The dashboard is"), "{why}");
+        let why = p.refusal(Feature::Brain);
+        assert!(why.starts_with("The Brain is"), "{why}");
     }
 
     #[test]
@@ -544,7 +545,7 @@ mod tests {
         assert!(s.contains("pinned to"), "{s}");
         let j = p.to_json();
         assert_eq!(j["allows"]["race"], false);
-        assert_eq!(j["allows"]["dashboard"], true);
+        assert_eq!(j["allows"]["brain"], true);
         assert_eq!(j["machine_file_present"], true);
         assert_eq!(j["in_force"], true);
     }

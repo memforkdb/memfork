@@ -62,6 +62,78 @@ pub const ROUTES: &[&str] = &["summary", "graph", "entry", "search", "diff"];
 /// The families of key the page knows, as `<project>:<family>:<rest>`.
 pub const FAMILIES: &[&str] = &["decision", "fact", "task", "lesson", "handoff", "note"];
 
+/// Environment variable naming the command that opens the page instead of
+/// the system's default browser: a program and its leading arguments, the
+/// address appended. `none` opens nothing. For tests, and for anyone whose
+/// default browser is not the one they want this in.
+pub const BROWSER_ENV: &str = "MEMFORK_BROWSER";
+
+/// The page's address for a daemon, with its read token in the fragment,
+/// which a browser keeps to itself. `None` for a daemon that published no
+/// read token, which is one older than this build.
+pub fn url(endpoint: &crate::persist::Endpoint) -> Option<String> {
+    let port = endpoint.port?;
+    let token = endpoint.read_token.as_deref()?;
+    Some(format!("http://127.0.0.1:{port}{BRAIN_PATH}#t={token}"))
+}
+
+/// Open `url` in the default browser, or in what [`BROWSER_ENV`] names.
+///
+/// Nothing is waited for: the opener returns at once on every platform, and
+/// a browser that takes a while is not this command's business. The address
+/// goes to the opener as one argument and nowhere else: not to a shell.
+pub fn open_in_browser(url: &str) -> Result<(), String> {
+    let mut command = match std::env::var(BROWSER_ENV) {
+        Ok(custom) if !custom.trim().is_empty() => {
+            if custom.trim() == "none" {
+                return Ok(());
+            }
+            let parts = crate::cli::split_line(&custom)
+                .map_err(|e| format!("{BROWSER_ENV} could not be parsed: {e}"))?;
+            let (program, args) = parts
+                .split_first()
+                .ok_or_else(|| format!("{BROWSER_ENV} names no program"))?;
+            let mut command = std::process::Command::new(program);
+            command.args(args);
+            command
+        }
+        _ => default_opener(),
+    };
+    command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        // No console window flashing up for the `cmd` that runs `start`, and
+        // no pipe of this process kept open by whatever the browser becomes:
+        // a script reading this command's output would wait for that.
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+        crate::daemon::stop_inheriting_std_handles();
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot open a browser ({e}); open the address above yourself"))
+}
+
+/// Each platform's own way of opening an address in the default browser.
+fn default_opener() -> std::process::Command {
+    if cfg!(target_os = "windows") {
+        let mut command = std::process::Command::new("cmd");
+        // `start` takes a window title first; an empty one keeps the address
+        // from being read as the title.
+        command.args(["/c", "start", ""]);
+        command
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    }
+}
+
 /// What a route needs from the daemon.
 #[derive(Debug, Clone)]
 pub struct Context {

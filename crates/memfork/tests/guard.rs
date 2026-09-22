@@ -90,6 +90,7 @@ fn a_persistent_command_without_a_data_directory_refuses_to_start() {
     for args in [
         vec!["mcp"],
         vec!["serve", "--port", "0", "--idle-timeout", "1"],
+        vec!["brain", "--no-open"],
     ] {
         let output = support::memfork()
             .env_remove(memfork::persist::datadir::DATA_DIR_ENV)

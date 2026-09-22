@@ -521,7 +521,7 @@ policy in force and where the file goes on this machine:
 Every key is optional:
 
 ```toml
-dashboard = false          # memfork ui
+brain = false              # memfork brain and memfork demo, the read-only page
 race = false               # memfork race
 autopilot = false          # memory following the git branch, automatic forks
 maintenance_tasks = false  # tasks MemFork adds to tidy a project's memory

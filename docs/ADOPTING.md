@@ -114,7 +114,7 @@ overrides:
 | Linux | `/etc/memfork/policy.toml` |
 
 ```toml
-dashboard = false          # memfork ui
+brain = false              # memfork brain and memfork demo, the read-only page
 race = false               # memfork race, which runs agents unattended
 autopilot = false          # memory following the git branch, automatic forks
 maintenance_tasks = false  # tasks MemFork adds to tidy a project's memory

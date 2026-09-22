@@ -68,7 +68,7 @@ fn doctor_shows_the_policy_in_force_and_where_a_machine_file_would_go() {
     assert!(full.contains("extra file"), "{full}");
     assert!(full.contains("the machine file wins"), "{full}");
     assert!(full.contains("maintenance_tasks off"), "{full}");
-    assert!(full.contains("dashboard     allowed"), "{full}");
+    assert!(full.contains("brain         allowed"), "{full}");
     assert!(full.contains("survives restarts"), "{full}");
     // Each OS's machine location is a real path, named so an administrator
     // knows where to put the file.
@@ -87,7 +87,7 @@ fn doctor_shows_the_policy_in_force_and_where_a_machine_file_would_go() {
     assert_eq!(doc["policy"]["allows"]["maintenance_tasks"], false);
     assert_eq!(doc["policy"]["allows"]["secret_overrides"], false);
     assert_eq!(doc["policy"]["allows"]["race"], false);
-    assert_eq!(doc["policy"]["allows"]["dashboard"], true);
+    assert_eq!(doc["policy"]["allows"]["brain"], true);
     assert_eq!(doc["policy"]["machine_file_present"], false);
     assert!(
         doc["policy"]["machine_file"]

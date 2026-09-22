@@ -1089,3 +1089,184 @@ fn search_is_the_engines_ranked_search_and_a_diff_is_what_a_merge_would_face() {
     );
     assert_eq!(bad.status, StatusCode::NOT_FOUND);
 }
+
+// ---- `memfork brain` ---------------------------------------------------------
+
+#[test]
+fn memfork_brain_starts_the_daemon_and_prints_a_link_with_the_read_token_in_the_fragment() {
+    let sandbox = Sandbox::new();
+    assert!(sandbox.owner().is_none(), "a daemon was already running");
+    let output = sandbox
+        .command()
+        .args(["brain", "--no-open"])
+        .output()
+        .expect("ran");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let endpoint = sandbox
+        .wait_for_daemon(Duration::from_secs(20))
+        .expect("`memfork brain` started no daemon");
+    let (port, full, read) = tokens(&endpoint);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let url = stdout.lines().next().unwrap_or_default();
+    assert_eq!(url, format!("http://127.0.0.1:{port}/brain#t={read}"));
+    assert!(
+        !url.contains('?'),
+        "the token travels in a query string: {url}"
+    );
+    assert!(
+        !stdout.contains(&full),
+        "the daemon's own token was printed"
+    );
+    assert!(stdout.contains("read token"), "{stdout}");
+
+    let json = sandbox
+        .command()
+        .args(["--json", "brain", "--no-open"])
+        .output()
+        .expect("ran");
+    assert!(json.status.success());
+    let doc: Json = serde_json::from_slice(&json.stdout).expect("json");
+    assert_eq!(doc["url"], url);
+    assert_eq!(doc["port"], port);
+    assert_eq!(doc["opened"], false);
+    assert!(!String::from_utf8_lossy(&json.stdout).contains(&full));
+
+    // Doctor points at the page without the token; the link is the command's.
+    let doctor = sandbox.command().args(["doctor"]).output().expect("ran");
+    let text = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        text.contains(&format!("brain         http://127.0.0.1:{port}/brain")),
+        "{text}"
+    );
+    assert!(!text.contains(&read) && !text.contains(&full), "{text}");
+    let doc: Json = serde_json::from_slice(
+        &sandbox
+            .command()
+            .args(["--json", "doctor"])
+            .output()
+            .expect("ran")
+            .stdout,
+    )
+    .expect("json");
+    assert_eq!(
+        doc["brain"]["url"],
+        format!("http://127.0.0.1:{port}/brain")
+    );
+    assert_eq!(doc["brain"]["allowed"], true);
+    assert_eq!(doc["brain"]["built"], true);
+}
+
+#[test]
+fn memfork_brain_opens_the_browser_it_is_told_to_with_the_address_as_one_argument() {
+    let sandbox = Sandbox::new();
+    // The "browser" is another MemFork, storing whatever it was handed in a
+    // second data directory, which is how the test reads the address back
+    // on every operating system without a script.
+    let other = sandbox.root().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    // Single quotes: the path has backslashes on Windows, which double quotes
+    // would read as escapes.
+    let browser = format!(
+        "'{}' --data-dir '{}' put brain:opened",
+        support::memfork_binary().display(),
+        other.display()
+    );
+    let output = sandbox
+        .command()
+        .env(memfork::brain::BROWSER_ENV, &browser)
+        .args(["brain"])
+        .output()
+        .expect("ran");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("cannot open"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let endpoint = sandbox
+        .wait_for_daemon(Duration::from_secs(20))
+        .expect("a daemon");
+    let (port, _, read) = tokens(&endpoint);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut opened = String::new();
+    while std::time::Instant::now() < deadline {
+        let got = sandbox
+            .command()
+            .args([
+                "--data-dir",
+                &other.display().to_string(),
+                "get",
+                "brain:opened",
+            ])
+            .output()
+            .expect("ran");
+        // A key that is not there yet is answered with nothing, not a failure.
+        let text = String::from_utf8_lossy(&got.stdout).trim().to_owned();
+        if got.status.success() && !text.is_empty() {
+            opened = text;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        opened.contains(&format!("http://127.0.0.1:{port}/brain#t={read}")),
+        "the browser was handed: {opened:?}"
+    );
+    let _ = memfork::daemon::stop(&other);
+
+    // `none` opens nothing and still prints the address.
+    let none = sandbox
+        .command()
+        .env(memfork::brain::BROWSER_ENV, "none")
+        .args(["brain"])
+        .output()
+        .expect("ran");
+    assert!(none.status.success());
+    assert!(String::from_utf8_lossy(&none.stdout).contains("/brain#t="));
+}
+
+#[test]
+fn the_machine_policy_can_switch_the_brain_off() {
+    let sandbox = Sandbox::new();
+    let policy = sandbox.root().join("policy.toml");
+    std::fs::write(&policy, "brain = false\n").unwrap();
+    let output = sandbox
+        .command()
+        .env(memfork::policy::EXTRA_ENV, &policy)
+        .args(["brain", "--no-open"])
+        .output()
+        .expect("ran");
+    assert!(
+        !output.status.success(),
+        "the Brain opened under a policy that forbids it"
+    );
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        said.contains("The Brain is switched off by the machine policy"),
+        "{said}"
+    );
+    assert!(
+        sandbox.owner().is_none(),
+        "a refused `memfork brain` started a daemon"
+    );
+
+    let doctor = sandbox
+        .command()
+        .env(memfork::policy::EXTRA_ENV, &policy)
+        .args(["doctor"])
+        .output()
+        .expect("ran");
+    let text = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        text.contains("brain         switched off by the machine policy"),
+        "{text}"
+    );
+}

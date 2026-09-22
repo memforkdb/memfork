@@ -161,7 +161,7 @@ only in the running daemon's memory.
 An administrator can place one file that every MemFork on the machine obeys
 and no user setting overrides: `%ProgramData%\memfork\policy.toml`,
 `/Library/Application Support/memfork/policy.toml` or
-`/etc/memfork/policy.toml`. It can switch off the dashboard, race, autopilot,
+`/etc/memfork/policy.toml`. It can switch off the Brain, race, autopilot,
 maintenance tasks, sampling and secret overrides, and pin the data directory.
 A file that cannot be read stops every command except `memfork doctor`, which
 reports it, rather than run with a rule it does not understand. The README
@@ -170,7 +170,7 @@ which file said so.
 
 ### Not in this version
 
-The dashboard (`memfork ui`), autopilot and `memfork race` are not in this
+Autopilot and `memfork race` are not in this
 release. The policy already knows their names so that a policy written today
 holds when they arrive, and this document gains a section for each as it
 lands, saying exactly what it touches and what it cannot contain.

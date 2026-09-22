@@ -108,7 +108,7 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
 - **A machine-wide policy file.** An administrator places one file
   (`%ProgramData%\memfork\policy.toml`, `/Library/Application
   Support/memfork/policy.toml` or `/etc/memfork/policy.toml`) to switch off the
-  dashboard, race, autopilot, maintenance tasks, sampling or secret overrides
+  Brain, race, autopilot, maintenance tasks, sampling or secret overrides
   for every user, and to pin the data directory. No flag, environment variable
   or project setting overrides it; a file that cannot be read stops everything
   but `memfork doctor`, which shows the policy in force.

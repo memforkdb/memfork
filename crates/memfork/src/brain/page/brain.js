@@ -559,7 +559,7 @@ function boot(document, window) {
     dirty = false;
   }
 
-  // The live layer: what just happened. Pulses, glows, the hovered and the
+  // The moving layer: what just happened. Pulses, glows, the hovered and the
   // focused node, search hits, and nodes fading in.
   let frames = 0, fpsAt = now(), fps = 60;
   function drawLive() {

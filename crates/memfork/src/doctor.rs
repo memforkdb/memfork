@@ -170,6 +170,22 @@ impl Storage {
         }
     }
 
+    /// Where the Brain is, or how to get it.
+    fn describe_brain(&self) -> String {
+        if !cfg!(feature = "brain") {
+            return "not in this build".to_owned();
+        }
+        if !crate::policy::allows(crate::policy::Feature::Brain) {
+            return "switched off by the machine policy".to_owned();
+        }
+        match self.owner.as_ref().and_then(|o| o.port) {
+            Some(port) => format!(
+                "http://127.0.0.1:{port}/brain (`memfork brain` opens it with the read token)"
+            ),
+            None => "`memfork brain` starts the daemon and opens it".to_owned(),
+        }
+    }
+
     fn source_name(&self) -> Option<&'static str> {
         self.source.map(|s| match s {
             crate::persist::Source::Policy => "policy",
@@ -256,6 +272,7 @@ fn header(home: Option<&str>, storage: &Storage) -> String {
     ));
     out.push_str(&format!("  data dir      {}\n", storage.describe_dir()));
     out.push_str(&format!("  daemon        {}\n", storage.describe_daemon()));
+    out.push_str(&format!("  brain         {}\n", storage.describe_brain()));
     out.push_str(&format!("  policy        {}\n", policy_line()));
     out
 }
@@ -462,6 +479,11 @@ pub fn json() -> Json {
             "version": o.memfork_version,
             "version_matches": o.memfork_version.as_deref() == Some(crate::VERSION),
         }))),
+        "brain": {
+            "built": cfg!(feature = "brain"),
+            "allowed": crate::policy::allows(crate::policy::Feature::Brain),
+            "url": storage().owner.as_ref().and_then(|o| o.port.map(|port| format!("http://127.0.0.1:{port}/brain"))),
+        },
         "persistence": {
             "enabled": true,
             "note": DURABILITY_NOTE,

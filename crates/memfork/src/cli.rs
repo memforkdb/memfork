@@ -519,6 +519,19 @@ pub enum Command {
         #[arg(long, value_name = "N")]
         count: Option<usize>,
     },
+
+    /// Open the Brain: a read-only page, served by the daemon on this
+    /// machine only, that shows the memory graph and what the engine did
+    /// with it. Starts the daemon if none is running.
+    ///
+    /// The address it prints carries the daemon's read token after the `#`,
+    /// so the page can read and nothing more. The token dies with the
+    /// daemon; run this again for a fresh link.
+    Brain {
+        /// Print the address and do not open a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 /// What `memfork plan` does.
@@ -649,6 +662,7 @@ impl Command {
                 | Command::Serve { .. }
                 | Command::Stop
                 | Command::Watch { .. }
+                | Command::Brain { .. }
                 | Command::Init { .. }
                 | Command::Doctor { .. }
                 | Command::Completions { .. }
@@ -689,6 +703,7 @@ impl Command {
             Command::CrashWriter { .. } => "crash-writer",
             Command::Stop => "stop",
             Command::Watch { .. } => "watch",
+            Command::Brain { .. } => "brain",
         }
     }
 }

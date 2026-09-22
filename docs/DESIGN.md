@@ -495,7 +495,7 @@ on Windows, `/Library/Application Support/memfork/policy.toml` on macOS,
 `/etc/memfork/policy.toml` on Linux — the system-wide counterpart of the
 per-user data directory (§4.5), resolved the same way, against an explicit OS
 and environment so all three are tested from any one. It is TOML with every
-key optional: `dashboard`, `race`, `autopilot`, `maintenance_tasks`,
+key optional: `brain`, `race`, `autopilot`, `maintenance_tasks`,
 `sampling` and `secret_overrides` are booleans that default to allowed, and
 `data_dir` pins where memory is kept for everyone.
 
@@ -507,7 +507,8 @@ flag naming another is refused with the reason. `allow_secret` is read in one
 place (`secrets::Allow::parse`), which the tools, the command line and plan
 files share, so a policy that forbids overrides forbids them everywhere.
 Maintenance tasks are gated where they are added and `memfork maintain on` is
-refused. The features that do not exist yet — the dashboard, race, autopilot,
+refused. `memfork brain` and `memfork demo` consult it before starting a
+daemon (§5.6). The features that do not exist yet — race, autopilot,
 sampling — are parsed and reported now, so a policy written today keeps
 holding when they land, and each consults `policy::allows` as it arrives.
 

@@ -12,7 +12,7 @@
 #   macOS    a pf rule blocking outbound traffic for a group the script runs as
 #   Windows  outbound block rules on the executables the script runs
 #
-# Features added later — the dashboard, race — extend scripts/no-network.sh
+# Features added later — race — extend scripts/no-network.sh
 # when they land, so this job keeps proving the promise as it grows.
 
 name: No network

@@ -433,6 +433,14 @@ mod windows_handles {
     }
 }
 
+/// Stop this process's standard handles from being inherited by the
+/// children started after this call. Windows only: elsewhere a child gets
+/// the three handles it is given and nothing else.
+#[cfg(windows)]
+pub(crate) fn stop_inheriting_std_handles() {
+    windows_handles::stop_inheriting_std_handles();
+}
+
 /// Post the shutdown request, over a plain socket.
 ///
 /// Written by hand rather than with the HTTP client, because this has to work
