@@ -290,6 +290,16 @@ Subcommands:
   global. `memfork call` goes through the daemon the same way, as an MCP session
   of its own. `memfork log --graph` draws every branch as a tree (§5.2).
 - **[v0.10]** `memfork watch` — the daemon's activity as it happens (§5.3).
+- **[v0.12]** `memfork task add|claim|renew|release|done|list`,
+  `memfork find <text>`, `memfork facts [prefix]`, `memfork lessons` and
+  `memfork stats` — the board (§6.5), text search (§6.6), every fact with its
+  verdict (§6.7), the project's lessons (§6.9) and the counters (§6.8), each
+  with `--json`. `put --source <path>` (repeatable)
+  records a fact and `discard --lesson <text>` leaves a lesson (§6.9). The
+  command line checks facts itself, since it runs where the files are.
+- **[v0.12]** The daemon's `/report` endpoint, behind the same token, takes the
+  fact verdicts a proxy or the command line worked out, for the feed and the
+  counters. It changes no memory.
 - **[v0.3]** `memfork run <script|->` — run a batch of the above subcommands against
   one in-memory database, one command per line, `#` starting a comment, shell-style
   quoting, and an optional per-line `--branch`. Until durability lands (§4.5) a
@@ -439,24 +449,29 @@ version and the clients connected. The status word is "connected", everywhere,
 and a test keeps the other word out of the code and the docs. Watching does not
 count as activity for the daemon's idle timeout, and `watch` waits for a daemon
 rather than starting one. Wall-clock time appears in events and nowhere else in
-the daemon.
+the daemon. **[v0.12]** Also in the feed: `claim` (with who holds it when a
+claim loses), `release`, `done`, `lesson`, and `fact` with `fresh`, `stale` or
+`unverified`. A renewal is not shown: a proxy renews on its own, and the feed
+would fill with it. (Lease expiry, the one other clock reading, is kept in
+memory and never reaches an id.)
 
 ## 6. MCP tools
 All tools take an optional `branch` (default: the session's current branch).
 ```
-memfork_put       key, value, importance?, embedding?, ttl_commits?, meta?
+memfork_put       key, value, importance?, embedding?, ttl_commits?, meta?, sources?
 memfork_get       key
 memfork_delete    key
 memfork_list      prefix?, limit?
-memfork_search    embedding, k?, prefix?
+memfork_search    text | embedding, k?, prefix?      # [v0.12] text
 memfork_fork      name, from?, at_seq?
 memfork_checkout  name                 # sets the session's current branch
 memfork_merge     source, target?, policy?   # fail | ours | theirs
-memfork_discard   name
+memfork_discard   name, lesson?                      # [v0.12] lesson
 memfork_branches
 memfork_log       limit?
 memfork_at        seq, key? | prefix?   # time-travel read
-memfork_resume    namespace?            # [v0.9] briefing: latest handoff, decisions, tasks
+memfork_resume    namespace?, task?, budget?         # [v0.9] briefing; [v0.12] task, budget
+memfork_task      action, id?, title?, detail?, lease_seconds?, status?, namespace?   # [v0.12]
 memfork_handoff   summary, done?, next?, blockers?, questions?, namespace?   # [v0.9]
 memfork_diff      a, b
 ```
@@ -492,7 +507,9 @@ every vendor accepts: `type`, `properties`, `required`, `description`, `enum`, `
 No `$ref`, `oneOf`/`anyOf`/`allOf`, `format`, `pattern`, or nested unions — some
 clients sanitise or reject them. Keep tool count ≤ 16 and names ≤ 48 chars,
 `[a-z0-9_]` only. A CI test validates every schema against this subset.
-**[v0.9]** Fifteen tools.
+**[v0.9]** Fifteen tools. **[v0.12]** Sixteen, with `memfork_task`: the limit
+is reached, so anything added later is a command, or an argument to an existing
+tool, not a new tool.
 
 ### 6.2 Who wrote it
 **[v0.9]** A client names itself in MCP `initialize`, and the session records
@@ -505,6 +522,9 @@ A proxy is the daemon's client, so on its own the daemon would only ever hear
 `capabilities.experimental` field of its own `initialize`, under
 `memfork/session`: the real client's name and the project namespace. Any other
 client simply does not send it, and is recorded by its own `clientInfo.name`.
+**[v0.12]** It also sends a session id, random per proxy, that keys the claims
+the session holds (§6.5). It is never written to the store, so it cannot reach
+an id.
 
 Deletes, forks, merges and discards are not attributed in the store: an entry
 that no longer exists has nowhere to carry a name, and a branch operation has
@@ -536,7 +556,9 @@ explicitly.
 |---|---|
 | `<ns>:handoff:<8 digits>` | one handoff, numbered from 1; numbering is serialised across sessions |
 | `<ns>:decision:<topic>` | a decision and its reason, written with `memfork_put` |
-| `<ns>:task:<id>` | an open task; a JSON value with `"status":"done"` closes it |
+| `<ns>:task:<id>` | an open task; a JSON value with `"status":"done"` closes it; see §6.5 |
+| `<ns>:lesson:<8 digits>` | **[v0.12]** what a discarded attempt taught; see §6.9 |
+| any other `<ns>:` key with `sources` | **[v0.12]** a fact; see §6.7 |
 
 `memfork_handoff` stores `summary`, `done`, `next`, `blockers` and `questions`
 as the next numbered note; earlier notes stay as history. `memfork_resume`
@@ -550,6 +572,30 @@ the next steps last. What it leaves out is counted, with the prefix to list
 for the rest. Nothing in it depends on wall-clock time or map order, so the
 same store gives the same briefing. A project with nothing stored returns
 `empty: true` and says how to start.
+
+**[v0.12] Briefings by budget.** `memfork_resume` also returns up to five
+recent lessons (§6.9) and up to ten facts (§6.7), and takes two arguments.
+`task` says what the caller is about to do: lessons, decisions, facts and tasks
+are then ranked by the text scoring of §6.6 against it before the caps apply,
+and anything left out goes in order of that rank. `budget` is the most bytes of
+JSON the briefing may take, 6 KB if not given, raised to 1024 and lowered to
+64 KiB. The briefing ends with what it cost:
+
+```
+"budget": { "limit_bytes": 4096, "bytes": 1873, "approx_tokens": 469,
+            "estimate": "approx_tokens = bytes / 4, rounded up" }
+```
+
+Bytes are exact: the briefing's own JSON, `current_branch` included. Tokens
+are an estimate, one per four bytes rounded up, because tokenisers differ by
+model and MemFork does not call one; the formula is in the answer so nobody
+takes it for more. The briefing is sized for the larger of how it leaves the
+daemon and how it reaches the agent after its facts are checked (§6.7), and
+whoever checks them restates `bytes`. Over budget it gives things up in the
+order above, then the caller's own `task` echo, then halves the handoff
+summary, so it never exceeds its budget. Nothing in it depends on the clock or
+map order: the same store, task and budget give the same bytes on every OS,
+which a test pins.
 
 ### 6.4 Project instructions
 **[v0.9]** `memfork init --project`, run inside a repository, writes one short
@@ -574,6 +620,126 @@ missing file is created holding only the block; line endings and a byte-order
 mark are kept; a file with broken or repeated markers is refused rather than
 guessed at. `--dry-run` prints the exact unified diff and writes nothing. It
 never runs git.
+
+**[v0.12]** The block adds: say the task when resuming, search memory with
+`text` before asking, claim a task before starting it, store findings with
+their `sources`, and leave a `lesson` when discarding.
+
+### 6.5 The task board
+**[v0.12]** `memfork_task` keeps a project's tasks, so two agents do not do
+the same work. `add` stores `<ns>:task:<id>` — the next free number unless an
+id is given — as `{title, detail?, status: "open", holder: null, claims: 0}`.
+`claim` makes the caller its holder, `renew` extends the claim, `release`
+gives it back, `done` closes it, and `list` shows the tasks with a status
+filter (`open`, `claimed`, `done`, `unfinished`, `all`).
+
+A claim is a lease: `lease_seconds`, 300 by default, 1 to 3600. The lease
+itself — which session holds the task and until when — is kept in memory in
+the daemon, not in the store. A clock reading in a commit would make the same
+operations produce different ids at different times, so the committed entry
+carries only the status, the holder's client name and a count of claims, and a
+restarted daemon starts with every task free. Claiming checks the lease,
+commits `claimed` and takes the lease under one lock, so of two racing claims
+exactly one wins; the loser is told who holds it, for how many more seconds,
+and whether the holder is the same tool in another session
+(`same_client: true`), since two windows of one client are two agents. Renewing
+commits nothing and does not appear in `memfork watch`. Releasing and finishing
+commit, and only the holder may do either while its lease runs.
+
+A proxy renews each claim its session holds at half the lease period for as
+long as it runs, so an agent in a long build keeps its task between calls.
+When the proxy goes, renewals stop and the task is free within one lease
+period. An expired claim reads as `open` wherever a task is shown.
+
+Leases belong to the work, not to a memory branch: they are keyed by the task
+key alone, so a task claimed on `main` is claimed for an agent on a fork too.
+The committed entries fork, merge and discard like any other key.
+
+### 6.6 Finding by text
+**[v0.12]** `memfork_search` takes `text` as well as `embedding` — one of the
+two. Text search needs no model: queries and entries are split into lowercase
+words of letters and digits, and each entry under `prefix` (the whole store if
+none) is scored with integers only, so the order is the same on every OS:
+
+* a word's weight is `1 + floor(log2(N / df))`, where `N` is the number of
+  entries searched and `df` the number containing the word;
+* a word in the key scores `weight × 4 × 2` for a whole-word match, or
+  `weight × 4` for a key word it begins (three letters or more);
+* a word in the value scores `weight × min(occurrences, 6)`;
+* a query of two or more words found together, in order, adds
+  `2 × 8 × the heaviest weight`.
+
+Ties go to the key in byte order. Each hit has its key, score, the writer, and
+a snippet of at most 200 characters around the first match. `k` is 10 by
+default and at most 50.
+
+It is a scan: time grows with the entries searched. Measured by
+`tests/find_scale.rs` in a release build on a Windows 11 laptop, over entries
+of about 60 bytes: 10,000 entries take about 25 ms a query and 100,000 about
+250 ms, whatever the query. A prefix narrows the scan. An index is in §10.
+
+### 6.7 Facts that know when they are stale
+**[v0.12]** A finding about the code — where something lives, how a function
+behaves — goes stale when the code changes. `memfork_put` takes `sources`, a
+list of at most 32 paths relative to the project: `\` becomes `/`, `.` parts
+go, and `..`, absolute paths and empty ones are refused. An entry with sources
+is a fact.
+
+The committed entry carries the paths, under `memfork.sources`, and nothing
+about the files. File hashes in a commit would give the same put a different
+id on every machine and every edit, and make every commit larger. The hashes
+the files had are kept beside the store instead (§6.8), keyed by the blake3 of
+the fact's key, value and paths, so the same fact on any branch finds them.
+
+Hashing happens where the files are. The daemon may serve projects it cannot
+see, so the proxy (or `--ephemeral` server, or the command line) hashes the
+named files with blake3 as it sends the put, and sends the hashes along. When
+an answer names a fact, the daemon adds the recorded hashes, and the proxy
+hashes the files again and replaces them with a verdict before the agent sees
+it:
+
+* `fact: "fresh"` — every file is as it was;
+* `fact: "stale"` with `stale_sources` — one or more changed or went missing;
+* `fact: "unverified"` — nothing was recorded, or checking would cost too much.
+
+The cost is bounded. Of a file over 8 MiB only the first 8 MiB and its length
+are hashed, so a change past that point is seen only if the length changes; a
+single answer reads at most 64 MiB, and facts past that are `unverified`; and a
+file whose size and modification time are unchanged is not read again. The proxy reports each verdict to the daemon (§5, `/report`)
+for `memfork watch` and `memfork stats`.
+
+A fact is refreshed by putting it again, which records the files as they are
+now. The same put with the same sources gives the same commit id on every OS,
+whatever the files contain; a test pins it.
+
+### 6.8 Stats and fact hashes, beside the store
+**[v0.12]** `memfork-sidecar.json`, in the data directory, holds what must
+survive a restart but must not change an id: the recorded fact hashes, at most
+50,000 (the oldest go first), and counters per project and client — briefings
+and their bytes, the bytes of memory they summarised, lessons recorded and
+served, fact verdicts, claims and lost claims, text searches. It is written
+every five seconds when something changed and when the daemon stops, by
+writing a new file and renaming it over the old one. A file that does not
+parse is renamed to `memfork-sidecar.json.unreadable` and a fresh one started,
+with a note on stderr; losing it loses counts and freshness, never memory.
+Leases are not in it (§6.5). `memfork stats` shows it; it is never part of a
+commit, and a store opened read-only never creates it.
+
+### 6.9 Lessons from discarded attempts
+**[v0.12]** A discard throws the attempt away; `lesson` keeps what it taught.
+`memfork_discard` with a one-line `lesson` (at most 300 characters, whitespace
+collapsed) first writes `<ns>:lesson:<8 digits>` on the branch the attempt was
+forked from, as `{lesson, branch, commits}` with importance 0.8, then discards.
+Nothing else from the fork survives.
+
+The parent is found from history, not remembered: of the other branches whose
+history contains the fork point, the one with the fewest commits since it; a
+tie goes to the default branch, then to the name; with none, the default
+branch. Numbering is serialised across sessions. A project keeps its 200 newest
+lessons; writing the 201st deletes the oldest from current memory, not from
+history. `memfork_resume` includes the newest five (or the five that best
+match `task`), and `memfork log --graph` shows the lesson beside the discarded
+branch's stub.
 
 ## 7. Cross-platform requirements
 - Targets: x86_64 + aarch64 for linux-musl, apple-darwin, pc-windows-msvc.
@@ -800,6 +966,31 @@ about rather than by when they were written.
   value is whole, byte for byte, with or without `--full`; `--json` is
   unchanged.
 
+**Agents working together.** **[v0.12]**
+
+- **H1** of two clients claiming one task, exactly one wins and the other is
+  told who holds it; a second session of the same client is refused too and
+  told so; a claim outlives its lease while its proxy runs, with no calls, and
+  is free within one lease period after the proxy dies. Lease expiry is also
+  tested with a clock the test moves.
+- **H2** a lesson left on discard reaches the next agent's briefing on the
+  parent branch, and nothing else from the fork does.
+- **H3** a fact is fresh, stale once its file changes or goes, and fresh again
+  once put again; the verdicts are counted.
+- **H4** the same put with the same sources has the same commit id whatever
+  the files contain, pinned so every OS agrees; the same file named with `\`
+  or `/` is one source.
+- **H5** a budgeted briefing never exceeds its budget, reports its exact size
+  and a token estimate by the stated formula, is byte-identical across runs,
+  and is pinned so every OS agrees; checking its facts cannot push it over.
+- **H6** text search returns at most `k` hits, ranked, the same every time,
+  at 10,000 entries in every run and 100,000 on request.
+- **H7** `watch` shows claim, release, lesson and fact events and no renewals;
+  `log --graph` shows a lesson beside its discard; `task`, `facts`, `find`,
+  `lessons` and `stats` work from the command line with `--json`.
+- **H8** stores written by 0.1.x and 0.2.x open unchanged, read back exactly,
+  and gain no lesson, no new key and no side file by being read.
+
 **The repository itself.**
 
 The engineering rules are kept in `CONTRIBUTING.md`, addressed to any contributor,
@@ -843,6 +1034,18 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.12 — agents working together
+1. **A task board with claims that expire** (§6.5): leases in memory, beside
+   the store, so ids never depend on the clock; a proxy keeps its session's
+   claims alive; `memfork_task` is the sixteenth and last tool (§6.1).
+2. **Search by text** (§6.6), integer-scored, bounded, with measured timings.
+3. **Lessons from discarded attempts** (§6.9), written to the parent branch.
+4. **Facts that know when they are stale** (§6.7): paths in the commit, hashes
+   beside it, checked where the files are.
+5. **Briefings by budget** (§6.3): `task` and `budget`, exact bytes and an
+   estimated token count with its formula.
+6. **Stats beside the store** (§6.8).
 
 ### v0.11 — nothing to trip over
 1. **The daemon may take a minute to start** (§5), overridable, with one line

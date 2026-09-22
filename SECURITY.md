@@ -38,6 +38,19 @@ The daemon that several clients share listens on `127.0.0.1` only, never on a
 network interface, and requires a token that it writes to a file beside the
 lock. A client that cannot read that file cannot talk to the daemon.
 
+Beside the memory, `memfork-sidecar.json` in the same directory holds usage
+counts and the blake3 hashes of files that facts were recorded from, with
+their paths relative to the project. It holds no file contents. Claims on
+tasks are kept only in the running daemon's memory.
+
+To check whether a fact is still true, `memfork mcp` and the command line read
+the files a fact names, inside the project, to hash them. A path that is
+absolute or climbs out with `..` is refused when the fact is stored, at most the
+first 8 MiB of a file is read, and one answer reads at most 64 MiB. Nothing is read
+unless a stored fact names it. The daemon's `/report` endpoint, behind the same
+token, takes only the verdicts (fresh, stale, unverified) to count; it cannot
+change memory.
+
 ## Two things stated plainly
 
 **There is one `unsafe` block.** It is in `crates/memfork/src/daemon.rs`, in

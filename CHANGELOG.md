@@ -7,7 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+Agents working together: a task board with claims, lessons from abandoned
+attempts, facts that know when they are stale, briefings that fit a budget, and
+counts of what MemFork served. Stores written by 0.1.x and 0.2.x open
+unchanged.
+
+### Added
+
+- **`memfork_task`, a task board.** Add a task, claim it, mark it done, release
+  it, list the board. Of two agents claiming one task, one gets it and the
+  other is told who has it, even when both are sessions of the same tool. A
+  claim lasts five minutes by default, up to an hour; `memfork mcp` renews its
+  session's claims for as long as it runs, and a crashed session's claims run
+  out within one lease. Claims are kept by the running server, outside memory's
+  history, so they never change a commit id. This is the sixteenth tool, and the
+  last: MemFork keeps to at most sixteen.
+- **Text search.** `memfork_search` takes `text` as well as `embedding`, with
+  integer scoring that ranks the same on every OS, at most 50 hits, and a
+  snippet for each. `memfork find <text>` on the command line.
+- **Lessons.** `memfork_discard` with a `lesson` keeps one line of what the
+  attempt taught on the branch it came from, as `<project>:lesson:<n>`; the
+  next agent's briefing includes it and `memfork log --graph` shows it beside
+  the discarded branch. `memfork discard --lesson` and `memfork lessons`.
+- **Facts with sources.** `memfork_put` with `sources`, a list of files in the
+  repository, makes the entry a fact. Reads say `fact: fresh` while those files
+  are unchanged and `fact: stale`, with the files, once they change. Files are
+  hashed where they are, by `memfork mcp` or the command line; only the paths
+  enter memory's history, so the same fact has the same id everywhere.
+  `memfork put --source` and `memfork facts`.
+- **Briefings by budget.** `memfork_resume` takes `task`, to put what matches
+  it first, and `budget`, the most bytes it may take (1024 to 65536). It never
+  goes over, and reports its exact size in bytes and an approximate token
+  count, with the formula. It now includes recent lessons and facts.
+- **`memfork stats`**: briefings and their bytes against the memory they
+  summarised, lessons kept and served, facts fresh and stale, claims won and
+  lost, per project and tool. Kept in `memfork-sidecar.json`, outside memory's
+  history.
+- `memfork watch` shows claims, releases, finished tasks, lessons and fact
+  checks. Renewals are not shown.
+- `docs/BENCHMARK.md`: a protocol for measuring MemFork against no MemFork on
+  the same task, with a runner skeleton in `scripts/benchmark/`. No results yet.
+
+### Changed
+
+- The instruction block `memfork init --project` writes now also says: name
+  the task when resuming, search with `text`, claim tasks, store findings with
+  their sources, and leave a lesson when discarding.
 
 ## [0.2.1] - 2026-09-21
 

@@ -136,11 +136,13 @@ branch it came from until one of them changes.
 
 ## What your agent gets
 
-Fifteen tools, in four groups.
+Sixteen tools, in four groups.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/package-dark.svg"><img src="docs/assets/icons/package-light.svg" alt="" width="16"></picture>
 **Remember and recall** — store a value under a key, read it back, list keys by
-prefix, delete, and search by meaning when you supply a vector.
+prefix, delete, find entries by their words, and search by meaning when you
+supply a vector. A finding stored with the files it came from says, when it is
+read, whether those files have changed since.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/git-branch-dark.svg"><img src="docs/assets/icons/git-branch-light.svg" alt="" width="16"></picture>
 **Branch** — fork memory, compare two branches, merge one into another, discard
@@ -151,8 +153,10 @@ one entirely, or switch which branch you are working on.
 history of what changed.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/arrow-right-left-dark.svg"><img src="docs/assets/icons/arrow-right-left-light.svg" alt="" width="16"></picture>
-**Hand over** — pick up a project where the last agent left it, and leave a
-note for the next one when you stop.
+**Hand over** — pick up a project where the last agent left it, in as many
+bytes as you allow, and leave a note for the next one when you stop. Claim a
+task so no other agent starts it, and keep the lesson when an attempt is
+thrown away.
 
 Full descriptions are in [the tool reference](#mcp-tools) below.
 
@@ -243,6 +247,7 @@ between the parts:
 | `shop:decision:<topic>` | a decision and the reason for it |
 | `shop:task:<id>` | an open task; `{"status":"done"}` closes it |
 | `shop:handoff:<n>` | handoff notes, numbered, the newest last |
+| `shop:lesson:<n>` | what a discarded attempt taught, numbered |
 
 Set it yourself with `memfork mcp --namespace <name>` in the client's
 configuration, or with `MEMFORK_NAMESPACE`. The tools that take a key take it
@@ -307,6 +312,67 @@ conversation. A handoff carries only what the agent put into it, and a decision
 that was discussed but never stored is not there for the next one. The block
 above exists to make writing it down the habit.
 
+## Agents working together
+
+When two agents work on one project at the same time, or one after another,
+four things keep them out of each other's way.
+
+**Claim a task before starting it.** `memfork_task` keeps the project's task
+board: `add` a task, `claim` it, `done` when it is finished, `release` to give
+it back, `list` to see the board. Of two agents claiming the same task, one
+gets it and the other is told who has it, including when both are windows of
+the same tool. A claim lasts five minutes unless the agent asks for up to an
+hour, and `memfork mcp` keeps renewing it for as long as the agent's session
+is open, so a long build does not lose it. When a session ends, or crashes, its
+claims run out within one lease and the task is free again. Claims are kept by
+the running MemFork server, not in memory's history: after a restart every task
+is free.
+
+```text
+  agent A  memfork_task claim id 3   -> claimed shop:task:3
+  agent B  memfork_task claim id 3   -> held by claude-code (280s left)
+```
+
+**Keep the lesson when you throw an attempt away.** `memfork_discard` with a
+`lesson` — one line, at most 300 characters — keeps what the attempt taught on
+the branch it was forked from, as `shop:lesson:<n>`, and throws everything else
+away. The next agent's briefing includes it.
+
+```text
+  agent  memfork_fork try-sqlite ... it deadlocks ...
+  agent  memfork_discard try-sqlite  lesson "sqlite locks under our concurrent writers"
+  later, another agent: memfork_resume -> lessons: "sqlite locks under our ..."
+```
+
+**Store findings with their sources.** `memfork_put` with `sources`, a list of
+paths in the repository, makes the entry a fact. MemFork records what those
+files held, and every later read says `fact: fresh` if they are unchanged or
+`fact: stale` with the files that changed. Put the fact again after checking
+it, and it is fresh. The hashing happens in `memfork mcp` on your machine, where
+the files are. Of a file over 8 MiB only the first 8 MiB and its length are
+hashed, and a read stops hashing after 64 MiB, saying `unverified` for the rest. Only the paths are stored in memory's
+history, so the same finding has the same id on every machine.
+
+**Ask for a briefing that fits.** `memfork_resume` takes `task`, what the agent
+is about to do, and puts what matches it first; and `budget`, the most bytes
+the briefing may take (1024 to 65536, 6 KB by default). It never goes over,
+leaving out the least useful things first and counting what it left out. Each
+briefing says how big it is:
+
+```json
+"budget": { "limit_bytes": 2048, "bytes": 1873, "approx_tokens": 469,
+            "estimate": "approx_tokens = bytes / 4, rounded up" }
+```
+
+Bytes are exact. Tokens are an estimate: tokenisers differ between models, and
+MemFork never calls one.
+
+**See what it is doing.** `memfork stats` shows, per project and tool,
+briefings given and their bytes, the bytes of memory they summarised, lessons
+kept and served, facts found fresh or stale, and claims won and lost. The counts
+are kept in `memfork-sidecar.json` in the data directory, outside memory's history.
+`memfork watch` shows claims, lessons and fact checks as they happen.
+
 ## Why not Redis, or a vector database?
 
 | | MemFork | Redis | Vector DBs |
@@ -330,7 +396,11 @@ Said plainly, because finding out later is worse.
 
 - **Search is exact, not approximate.** Every entry with a vector is compared,
   so a million of them is a million comparisons. Fine for tens of thousands;
-  slow beyond that. An index that understands branches is still to come.
+  slow beyond that. An index that understands branches is still to come. Text
+  search reads every entry under the prefix too: about 25 ms for 10,000
+  entries and 250 ms for 100,000 on a laptop.
+- **Words, not meaning, without a vector.** Text search matches words, not
+  synonyms. MemFork never calls a model.
 - **No embedding model.** You supply the vectors; MemFork stores and compares
   them.
 - **One machine.** Not distributed, not replicated. The server is local only.
@@ -344,20 +414,21 @@ Said plainly, because finding out later is worse.
 
 | Tool | What it does |
 |---|---|
-| `memfork_put` | Store a value under a key, with an optional vector and importance |
+| `memfork_put` | Store a value under a key, with an optional vector, importance, and source files that make it a fact |
 | `memfork_get` | Read a key back |
 | `memfork_list` | List keys under a prefix |
 | `memfork_delete` | Forget a key |
-| `memfork_search` | Find the entries nearest a vector |
+| `memfork_search` | Find entries by their words, or the entries nearest a vector |
 | `memfork_fork` | Branch the whole of memory |
 | `memfork_merge` | Merge one branch into another |
-| `memfork_discard` | Throw a branch away |
+| `memfork_discard` | Throw a branch away, keeping a one-line lesson if you give one |
 | `memfork_diff` | What differs between two branches |
 | `memfork_branches` | List branches |
 | `memfork_checkout` | Switch this client's current branch |
 | `memfork_at` | Read a key as it was at an earlier point |
 | `memfork_log` | The history of a branch |
-| `memfork_resume` | A short briefing on a project: latest handoff, recent decisions, open tasks |
+| `memfork_resume` | A briefing on a project within a byte budget: latest handoff, lessons, decisions, facts, open tasks |
+| `memfork_task` | The task board: add, claim, renew, release, finish and list tasks |
 | `memfork_handoff` | Leave a note on where the work stands, for whoever picks it up |
 
 ---
@@ -425,6 +496,12 @@ to the server.
 | `fork`, `merge`, `discard`, `diff`, `branches`, `at`, `log` | branching and history on the shared store |
 | `log --graph` | every branch as a tree: forks, merges, discarded attempts |
 | `watch` | what every client is doing, as it happens |
+| `task add\|claim\|renew\|release\|done\|list` | the task board, from the command line |
+| `find <text>` | text search over the shared store |
+| `facts [prefix]` | every fact, fresh or stale |
+| `lessons` | what discarded attempts taught, newest first |
+| `stats` | briefings, bytes, lessons, facts and claims, per project and tool |
+| `put --source <path>`, `discard --lesson <text>` | store a fact; keep a lesson |
 | `run <file\|->` | a script of the above against one in-memory database |
 | `mcp` | serve MCP over stdio — what clients run |
 | `serve` | run the shared server (started for you when needed) |
