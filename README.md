@@ -367,11 +367,88 @@ briefing says how big it is:
 Bytes are exact. Tokens are an estimate: tokenisers differ between models, and
 MemFork never calls one.
 
+**See what changed while you were away.** Every briefing starts with
+`since_last`: what other agents decided, which tasks they claimed or finished,
+the handoffs they left, and which facts have gone stale since this tool last
+looked at this project. Coming back to a project you know, `memfork_resume`
+with `since_last_only` returns just that, which is far smaller. A tool MemFork
+has not seen here before gets the whole briefing.
+
 **See what it is doing.** `memfork stats` shows, per project and tool,
 briefings given and their bytes, the bytes of memory they summarised, lessons
 kept and served, facts found fresh or stale, and claims won and lost. The counts
 are kept in `memfork-sidecar.json` in the data directory, outside memory's history.
 `memfork watch` shows claims, lessons and fact checks as they happen.
+
+## Plans that agents work in order
+
+A plan is tasks with dependencies, kept on the board, so whichever agents are
+connected — several tools, or several windows of one — pull the next ready task
+instead of being told what to do. Start from a template, fill in the
+acceptance commands, and put it on the board:
+
+```sh
+memfork plan templates                 # feature, bugfix, refactor, upgrade, tests
+memfork plan new --template bugfix     # writes memfork-plan.toml
+memfork plan check                     # shape, ids, no cycles
+memfork plan write                     # onto the board
+memfork plan show                      # ready, claimed, blocked and by what, done
+```
+
+A plan file is plain TOML:
+
+```toml
+[[task]]
+id = "test"
+title = "Write a test that fails because of the bug"
+
+[[task]]
+id = "fix"
+title = "Fix the cause, so the new test passes"
+depends_on = ["test"]
+accept = "cargo test"      # exits 0 when the task is done
+```
+
+An agent asks `memfork_task` for tasks with `status` ready, claims one, does it
+and marks it done. If the task has an acceptance command, marking it done runs
+it in the project, on your machine, with a time limit: passing closes the task,
+failing reopens it with a lesson saying what failed. **A command runs only if
+the repository's plan file holds the same command for that task**, so nothing
+an agent writes into shared memory can make another agent's tool run a
+command. An empty `accept = ""` is never run. Commands run under `sh` on macOS
+and Linux and `cmd` on Windows, so a plan shared across systems uses commands
+that mean the same in both.
+
+## Memory that looks after itself
+
+**Duplicates and contradictions are flagged, never fixed.** Two tools deciding
+the same thing differently on different branches, the same value stored under
+near-identical keys, or two facts from the same files that disagree: the write
+that caused it says so, briefings list them, `memfork flags` shows them all
+and `memfork doctor` counts them. Which one is right is for an agent or you to
+decide.
+
+**When memory needs tidying, MemFork asks for it as a task.** When a project's
+memory grows past 256 KiB, more than twenty handoffs are superseded, more than
+ten facts have gone stale, or more than five things are flagged, MemFork adds
+one maintenance task saying exactly what to tidy. An agent claims it, does the
+work on a fork, and marks it done naming the fork. MemFork checks the result by
+fixed rules — nothing pinned or recent removed, everything removed accounted
+for, the project smaller — and merges it, or discards it with a lesson saying
+which rule it broke. MemFork never calls a model to do this; the agents you
+already use do the thinking. `memfork maintain off` switches it off for a
+project.
+
+**Credentials are refused.** A write that holds something shaped like a
+private key, a well-known token or a password is not stored, and the refusal
+says which rule matched and where, without repeating it. Memory is shared with
+every tool and shown to people, so a key pasted into it has leaked. If it is
+not a secret, write it again naming the rule: `allow_secret`, or
+`--allow-secret` on the command line.
+
+**Prompts.** MemFork offers its routines as MCP prompts — resume, handoff,
+review-decisions, tidy-memory, next-task — which Claude Code, Gemini CLI, VS
+Code and Cline show as slash commands.
 
 ## Why not Redis, or a vector database?
 
@@ -428,7 +505,7 @@ Said plainly, because finding out later is worse.
 | `memfork_at` | Read a key as it was at an earlier point |
 | `memfork_log` | The history of a branch |
 | `memfork_resume` | A briefing on a project within a byte budget: latest handoff, lessons, decisions, facts, open tasks |
-| `memfork_task` | The task board: add, claim, renew, release, finish and list tasks |
+| `memfork_task` | The task board and plans: add, plan, claim, renew, release, finish and list tasks |
 | `memfork_handoff` | Leave a note on where the work stands, for whoever picks it up |
 
 ---
@@ -500,6 +577,9 @@ to the server.
 | `find <text>` | text search over the shared store |
 | `facts [prefix]` | every fact, fresh or stale |
 | `lessons` | what discarded attempts taught, newest first |
+| `plan write\|check\|show\|new\|templates` | plans: tasks with dependencies and acceptance commands |
+| `flags` | duplicates and contradictions worth a look |
+| `maintain on\|off\|status` | whether MemFork adds maintenance tasks to this project |
 | `stats` | briefings, bytes, lessons, facts and claims, per project and tool |
 | `put --source <path>`, `discard --lesson <text>` | store a fact; keep a lesson |
 | `run <file\|->` | a script of the above against one in-memory database |

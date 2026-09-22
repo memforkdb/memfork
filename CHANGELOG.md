@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Agents working together: a task board with claims, lessons from abandoned
-attempts, facts that know when they are stale, briefings that fit a budget, and
-counts of what MemFork served. Stores written by 0.1.x and 0.2.x open
-unchanged.
+Agents working together: a task board with claims, plans agents work in
+order, lessons from abandoned attempts, facts that know when they are stale,
+briefings that fit a budget and say what changed since you last looked,
+duplicates and contradictions flagged, memory that asks to be tidied, and
+credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
 
 ### Added
 
@@ -48,11 +49,52 @@ unchanged.
 - `docs/BENCHMARK.md`: a protocol for measuring MemFork against no MemFork on
   the same task, with a runner skeleton in `scripts/benchmark/`. No results yet.
 
+- **Plans.** Tasks may name the tasks they depend on and an acceptance
+  command; a task is ready when everything it depends on is done. `memfork_task`
+  takes `plan` to write several tasks at once, refusing cycles, and lists
+  `ready` and `blocked` tasks. Marking a task done runs its acceptance command
+  in the project, with a time limit: passing closes it, failing reopens it with
+  a lesson. A command runs only if the repository's plan file holds it, so
+  nothing written into shared memory can run a command on its own. `memfork
+  plan write|check|show`, and `memfork plan new --template` with five
+  templates: feature, bugfix, refactor, upgrade, tests.
+- **What changed since you last looked.** Every briefing starts with
+  `since_last`: decisions, lessons, handoffs by others, tasks that changed
+  hands or finished, and facts gone stale since this tool last looked.
+  `since_last_only` returns just that.
+- **Flags.** Decisions made differently on different branches by different
+  tools, the same value under near-identical keys, and facts from the same
+  files that disagree are reported in the write's answer, in briefings, in
+  watch, in `memfork flags` and in `memfork doctor`, and never resolved by
+  MemFork.
+- **Maintenance tasks.** When a project's memory grows large, handoffs pile
+  up, facts go stale or flags accumulate, MemFork adds one task saying what to
+  tidy. An agent does it on a fork; MemFork checks the result by fixed rules
+  and merges it, or discards it with a lesson. `memfork maintain off` switches
+  it off for a project.
+- **Credentials are refused.** Writes through the tools, the command line and
+  plan files are checked for private keys, well-known token shapes and
+  passwords. A match stores nothing and says which rule matched and where,
+  never what; `allow_secret` (`--allow-secret`) writes a false positive by
+  naming its rule.
+- **MCP prompts** for the routines: resume, handoff, review-decisions,
+  tidy-memory, next-task.
+
+### Fixed
+
+- **A daemon could fail to start while something asked whether one was
+  running.** Asking takes the directory lock for a moment, and a daemon trying
+  for it at that moment exited with "in use"; a stale endpoint could also be
+  removed just after a new daemon published it. Taking the lock now waits out
+  a question, and a question removes a stale endpoint only while it holds the
+  lock.
+
 ### Changed
 
 - The instruction block `memfork init --project` writes now also says: name
   the task when resuming, search with `text`, claim tasks, store findings with
   their sources, and leave a lesson when discarding.
+- MCP sampling is not used: the specification has deprecated it.
 
 ## [0.2.1] - 2026-09-21
 

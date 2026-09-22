@@ -233,6 +233,17 @@ comparison, the same answer on all three platforms. An endpoint file left by a
 dead owner is then deleted. A reader trusts the endpoint file only while the
 lock is held.
 
+**[v0.13] Asking is taking, for a moment.** Whether anybody owns the directory
+is found by trying the lock and letting go at once, so a process that asks
+while a daemon starts can hold the lock at the instant the daemon tries for
+it. Taking the lock therefore keeps trying for up to a second while no
+endpoint file is published — a question holds the lock for microseconds and
+never publishes one, an owner holds it for good and does — and gives up at
+once when one appears, so a process that lost a race never takes over when
+the winner stops. A question removes a stale endpoint file only while it
+still holds the lock. Before this, three daemon starts in thirty exited with
+"in use" while a test asked about the directory as fast as it could.
+
 **[v0.5] File permissions are not equal across platforms, and this says so.**
 The endpoint file is created `0600` on Unix. On Windows an explicit ACL needs
 `unsafe` Win32 calls, and the workspace allows exactly one of those
@@ -297,6 +308,10 @@ Subcommands:
   with `--json`. `put --source <path>` (repeatable)
   records a fact and `discard --lesson <text>` leaves a lesson (§6.9). The
   command line checks facts itself, since it runs where the files are.
+- **[v0.13]** `memfork plan write|check|show|new|templates` (§6.11), `memfork
+  flags` (§6.12), `memfork maintain on|off|status` (§6.13); `task add` takes
+  `--depends-on`, `--accept` and `--timeout`, `task done` runs an acceptance
+  command and takes `--fork`, and every write takes `--allow-secret` (§6.10).
 - **[v0.12]** The daemon's `/report` endpoint, behind the same token, takes the
   fact verdicts a proxy or the command line worked out, for the feed and the
   counters. It changes no memory.
@@ -470,9 +485,11 @@ memfork_discard   name, lesson?                      # [v0.12] lesson
 memfork_branches
 memfork_log       limit?
 memfork_at        seq, key? | prefix?   # time-travel read
-memfork_resume    namespace?, task?, budget?         # [v0.9] briefing; [v0.12] task, budget
-memfork_task      action, id?, title?, detail?, lease_seconds?, status?, namespace?   # [v0.12]
+memfork_resume    namespace?, task?, budget?, since_last_only?   # [v0.9]; [v0.12] task, budget; [v0.13] since_last_only
+memfork_task      action, id?, title?, detail?, depends_on?, accept?, timeout_seconds?,
+                  tasks?, fork?, lease_seconds?, status?, namespace?   # [v0.12]; [v0.13] plans, fork
 memfork_handoff   summary, done?, next?, blockers?, questions?, namespace?   # [v0.9]
+# [v0.13] memfork_put, memfork_handoff, memfork_task and memfork_discard take allow_secret?
 memfork_diff      a, b
 ```
 Tool descriptions must tell the model WHEN to use each tool (e.g. "fork before any
@@ -596,6 +613,22 @@ order above, then the caller's own `task` echo, then halves the handoff
 summary, so it never exceeds its budget. Nothing in it depends on the clock or
 map order: the same store, task and budget give the same bytes on every OS,
 which a test pins.
+
+**[v0.13] What changed since you last looked.** The side file (§6.8) keeps, for
+each project, client and branch, the head that client last saw: it is noted
+after every successful call, outside the commit chain, at most 10,000 records.
+A briefing asked for by a session starts with `since_last`, the difference
+between the project's keys at that commit and now: new and changed decisions,
+new lessons, handoffs by other clients, tasks added, claimed, released or
+finished, and the project's facts with their verdict now, so one gone stale
+since is marked stale. Each list holds ten at most and gives way to the budget
+before the handoff's next steps do. `since_last_only` returns only that, which
+for a returning agent is far smaller than the whole briefing. With no record,
+or when the commit last seen is no longer in the branch's history (the branch
+was discarded and made again), the whole briefing comes back with the reason.
+The record is per client name, so two sessions of one tool share it. When a
+project uses dependencies (§6.11), open tasks say whether they are ready and,
+if not, what they wait for; and flags (§6.12) appear when there are any.
 
 ### 6.4 Project instructions
 **[v0.9]** `memfork init --project`, run inside a repository, writes one short
@@ -740,6 +773,122 @@ lessons; writing the 201st deletes the oldest from current memory, not from
 history. `memfork_resume` includes the newest five (or the five that best
 match `task`), and `memfork log --graph` shows the lesson beside the discarded
 branch's stub.
+
+### 6.10 Secrets stay out of shared memory
+**[v0.13]** Memory is read by every tool on the machine and shown to people, so
+a credential pasted into it has leaked. Every write is checked against rules
+kept as data in `secret_rules.toml`: private key blocks; the shapes of AWS,
+GitHub, GitLab, Slack, Stripe, Google, npm and PyPI tokens, JSON web tokens and
+`sk-` API keys; and a random-looking value given to something named like a
+key, token, secret or password — at least 16 characters, of at least three
+kinds, at least ten different, integer tests only so every OS agrees. Checked:
+`memfork_put` keys, values and metadata; every field of `memfork_handoff`; task
+titles, details and acceptance commands; lessons; plan files, as a whole, so a
+refusal names the line in the file; and the same through the command line.
+
+A match refuses the write and stores nothing. The refusal names the rule, the
+field, and the line and column — never the text — as a tool error the agent
+can act on, and the watch feed reports it without the key, which may be where
+the secret was. A false positive is written by naming its rule in
+`allow_secret` (`--allow-secret`); an id that is not a rule is refused rather
+than ignored. The machine-wide policy file that can forbid overrides is part
+of a later step; the check has the one place it will plug in.
+
+### 6.11 Plans: a pipeline kept as data
+**[v0.13]** A task may name the tasks it depends on (`depends_on`, ids in the
+same project) and an acceptance command (`accept`). A task is ready when
+everything it depends on is done. `list` takes `ready` and `blocked`; watch
+shows a task becoming ready when the last thing in its way is done. The `plan`
+action writes several tasks in one commit; it replaces a task only while it is
+open and unclaimed, and refuses an unknown dependency, one naming another
+project, and a cycle, naming the cycle. Nothing schedules anything: whichever
+agents connect pull ready tasks from the same board, so the pipeline is data,
+not a program.
+
+An acceptance command runs where the project is — the proxy, `--ephemeral`,
+or the command line — when an agent marks its task done, with a timeout (600
+seconds unless the task says, at most 3600), the whole process tree killed if
+it runs over (a process group on macOS and Linux, `taskkill /T` on Windows),
+and the last 4 KiB of its output kept. It runs under the platform's shell, `sh
+-c` or `cmd /C`, so a plan meant for every OS uses commands that mean the same
+in both. Passing closes the task. Failing reopens it, drops the claim, and
+records a lesson naming the task, the command, how it ended and its last line
+of output, unless that line looks like a credential. The daemon will not
+close such a task without a result.
+
+**Which commands run.** A command stored in shared memory would otherwise run
+for whichever agent marks the task done, outside that client's own approval of
+commands, so any agent could plant one for another tool to run. A command runs
+only if the repository's plan file on disk — `memfork-plan.toml` at the top of
+the project, or the file the plan was written from — holds the same command for
+the same task. The file is the trust anchor: changing it is an edit to the
+repository, seen by the client's own approval and by version control. An empty
+`accept` is no command at all, and a task with one needs no result.
+
+`memfork plan write [file]` puts a plan file on the board, `memfork plan check`
+validates one without writing, and `memfork plan show` groups the board into
+ready, claimed, blocked (and by what) and done. `memfork plan new --template
+<name>` starts a file from one of five built-in templates — feature, bugfix,
+refactor, upgrade, tests — each four or five tasks with an empty acceptance
+command to fill in once; `memfork plan templates` lists them, and a person's
+own, as `.toml` files in the data directory's `plans` folder, sit beside them.
+
+### 6.12 Duplicates and contradictions, flagged
+**[v0.13]** Three deterministic checks over a project, never resolved by
+MemFork:
+
+* a decision key holding different values on different branches, written by
+  different clients (one client changing its mind on a fork is not flagged);
+* the same value under near-identical keys in one family — equal once case,
+  `-`, `_`, `.`, spaces and a trailing `s` are set aside, or at most two edits
+  apart for topics of eight characters or more; numbered keys never match;
+* facts resting on exactly the same source files that say different things.
+  Facts that merely share a file are normal and not flagged.
+
+A write that creates one says so in its answer (`similar`, `conflicts`) and as
+a `flag` event; briefings carry up to five when there are any; `memfork flags`
+lists them all; `memfork doctor` counts them for its directory's project when
+a daemon is already running. Bounded: a family over 2,000 entries is not
+compared pair by pair, and a scan returns at most 50.
+
+### 6.13 Memory that keeps itself
+**[v0.13]** MemFork does not think; when a project's memory needs tidying it
+says so as a task. Four triggers, checked when an agent of the project resumes
+or hands off, so only ever while one is connected: memory over 256 KiB; more
+than 20 handoffs superseded by later ones; more than 10 facts last found stale,
+from the verdicts proxies report; more than 5 open flags. Each adds one task,
+written by `memfork`, with exactly what to do and the keys it is about, and
+adds it again only after that task is done and the trigger has cleared.
+`memfork maintain off` switches it off for a project, in the side file.
+
+The agent claims the task, does the work on a fork, and marks it done naming
+the fork in `fork`. MemFork checks the fork by rules alone: it came from the
+task's branch; nothing pinned was removed (importance 1, the latest handoff,
+unfinished tasks); nothing written in the last 50 commits was removed unless
+the task names it; every removed entry is named by a replacement's `replaces`
+metadata or by the task; every new key is in one of the project's families
+(its own, or decision, fact, handoff, lesson, note, task); and the project got
+smaller — or, for stale facts and flags, whose job is to correct rather than
+shrink, no bigger. Pass: merged, and the fork removed. Fail: the fork is
+discarded with a lesson naming the rule, and the task reopened for another
+try. A session left on the fork moves back to the branch.
+
+### 6.14 Prompts, and why not sampling
+**[v0.13]** Five MCP prompts, as data in `prompts.toml` — resume, handoff,
+review-decisions, tidy-memory, next-task — a few imperative lines each, naming
+no model or client, with the session's project filled in and at most one
+optional argument. The proxy answers `prompts/list` and `prompts/get` itself,
+as it does `tools/list`, so offering them starts no daemon. Checked against
+each client's documentation on 2026-09-22: Claude Code, Gemini CLI, VS Code
+and Cline show them as slash commands; Claude Desktop, Cursor, Windsurf and
+Zed say they support prompts without saying how they appear; Codex CLI and Grok
+say nothing.
+
+MCP sampling — asking the client's own model for a summary — is left out. The
+specification deprecated it on 2026-07-28 ("new implementations SHOULD NOT
+adopt it"), the Rust SDK marks it deprecated, and of the ten clients checked
+only VS Code documents supporting it. Nothing in MemFork needed it: the
+thinking is done by agents, as tasks.
 
 ## 7. Cross-platform requirements
 - Targets: x86_64 + aarch64 for linux-musl, apple-darwin, pc-windows-msvc.
@@ -1019,6 +1168,35 @@ registry, `memfork init`, `memfork doctor`, the README. Vendor neutrality
   register it with a client and run the fork, try, discard loop from the README
   alone.
 
+**Plans, maintenance and secrets.** **[v0.13]**
+
+- **I1** asking who owns a data directory, as fast as possible, never stops a
+  daemon taking it or removes the endpoint it publishes; a process that loses
+  to a published owner gives up at once.
+- **I2** every write tool, and the command line, refuses a credential with the
+  rule, field, line and column and never the text, stores nothing, reports it
+  in watch without the key, and takes an override naming the rule.
+- **I3** two clients work a three-task chain in order; a failed acceptance
+  reopens the task with a lesson and a passing one closes it; a command not in
+  the plan file never runs; an empty `accept` needs nothing; a cycle and
+  another project's task are refused; a plan file holding a secret is refused
+  by `plan write`, `plan check` and the `plan` action; watch shows a task
+  becoming ready.
+- **I4** every built-in template is a valid plan of four to six tasks with a
+  command to fill in; one of a person's own is listed and can replace a
+  built-in; `plan new` will not overwrite without `--force`.
+- **I5** a returning agent's briefing shows what others did while it was away
+  and a fact gone stale; `since_last_only` is smaller than the whole; with no
+  record, or a rewritten branch, the whole briefing comes back.
+- **I6** each kind of flag is found, reported in the answer, the feed, the
+  briefing, `memfork flags` and `doctor`, and nothing is resolved.
+- **I7** a maintenance trigger adds one task once; a fork that removes a pinned
+  entry is discarded with a lesson and the task reopened; a proper tidy is
+  merged; switched off, nothing is added. Each rule of the check refuses what
+  it should.
+- **I8** the proxy offers five prompts without starting a daemon, filled in for
+  the project.
+
 Everything above runs on Windows, macOS and Linux in CI, and a change is not
 finished until it passes on all three.
 
@@ -1034,6 +1212,17 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.13 — plans, memory that keeps itself, secrets
+1. **A lock race fixed** (§4.5): asking whether a directory is owned could stop
+   a daemon taking it.
+2. **Secrets stay out** (§6.10), on every write path, with overrides by rule.
+3. **Plans** (§6.11): dependencies, readiness, acceptance commands trusted only
+   from the repository's plan file, and templates.
+4. **What changed since you last looked** (§6.3).
+5. **Flags** for duplicates and contradictions (§6.12).
+6. **Maintenance tasks**, checked by rules before merging (§6.13).
+7. **Prompts**, and sampling left out with the reason (§6.14).
 
 ### v0.12 — agents working together
 1. **A task board with claims that expire** (§6.5): leases in memory, beside

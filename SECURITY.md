@@ -51,6 +51,25 @@ unless a stored fact names it. The daemon's `/report` endpoint, behind the same
 token, takes only the verdicts (fresh, stale, unverified) to count; it cannot
 change memory.
 
+**Acceptance commands.** A plan's task may carry a command that proves it
+done. It runs on your machine, in the project, when an agent marks the task
+done, through `memfork mcp` or the command line — never in the daemon — with a
+time limit, and everything it started is stopped if it runs over. Because
+tasks are kept in memory every tool shares, a command runs only if the
+repository's own plan file (`memfork-plan.toml`, or the file the plan was
+written from) holds the same command for the same task. An agent that writes a
+command into memory cannot make another tool run it; changing the plan file is
+an edit to your repository like any other. A plan file outside the project may
+not carry commands. The command runs with the permissions and environment of
+the client that started `memfork mcp`.
+
+**Credentials.** Every write is checked against rules for private keys,
+well-known token shapes and passwords, and a match is refused. The refusal,
+the watch feed and every log name the rule and the place, never the matched
+text. It is a safety net for mistakes, not a guarantee: a secret in a shape no
+rule knows is stored like anything else. The rules are in
+`crates/memfork/src/secret_rules.toml`.
+
 ## Two things stated plainly
 
 **There is one `unsafe` block.** It is in `crates/memfork/src/daemon.rs`, in
