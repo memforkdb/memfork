@@ -104,6 +104,17 @@ reads = ["CLAUDE.md"]
 docs = "https://code.claude.com/docs/en/memory"
 verified = "2026-09-21"
 
+[client.hooks]
+# Verified against the hooks reference: `hooks.<Event>` lists of matcher
+# groups, `type = "command"` in exec form (`command` plus `args`, no shell),
+# `timeout` in seconds, `async` for a hook that must not hold the agent, and
+# the events PreToolUse, PostToolUse, PostToolUseFailure and Stop. The local
+# settings file is the person's own and the client keeps it out of git.
+format = "claude-code"
+project_local = ".claude/settings.local.json"
+docs = "https://code.claude.com/docs/en/hooks"
+verified = "2026-09-22"
+
 [[client]]
 id = "cursor"
 display = "Cursor"

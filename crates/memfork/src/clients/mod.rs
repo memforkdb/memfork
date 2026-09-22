@@ -14,6 +14,7 @@
 //!    MemFork entry and keeps a timestamped backup.
 
 pub mod edit;
+pub mod hooks;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -139,6 +140,11 @@ pub struct Client {
     /// Where this client reads a repository's instructions from.
     #[serde(default)]
     pub instructions: Option<ClientInstructions>,
+    /// The client's hook system, for autopilot's automatic forks. Absent
+    /// for a client whose hooks are unverified or that has none: autopilot
+    /// then never runs anything through it.
+    #[serde(default)]
+    pub hooks: Option<ClientHooks>,
     /// What could not be confirmed against `docs` on `verified`, in a
     /// sentence: a client name never seen in a shipped build, a path the
     /// documentation does not give for one OS. Shown by `memfork doctor`
@@ -178,6 +184,20 @@ pub struct ClientInstructions {
     /// Paths relative to the repository root, all of which this client reads
     /// unconditionally.
     pub reads: Vec<String>,
+    /// Where these facts came from.
+    pub docs: String,
+    /// The date `docs` was last checked.
+    pub verified: String,
+}
+
+/// A client's hook system, as far as autopilot uses it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ClientHooks {
+    /// The shape its settings take; [`hooks`] writes it.
+    pub format: hooks::Shape,
+    /// The per-project settings file that is the person's own and not
+    /// committed, relative to the repository root with `/` separators.
+    pub project_local: String,
     /// Where these facts came from.
     pub docs: String,
     /// The date `docs` was last checked.

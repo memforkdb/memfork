@@ -64,8 +64,19 @@ impl Daemon {
 
     /// Post JSON and read JSON back, with the status.
     pub async fn post(&self, path: &str, body: &Json) -> Result<(u16, Json), String> {
+        self.post_within(path, body, REQUEST_TIMEOUT).await
+    }
+
+    /// [`Daemon::post`] with a time limit of the caller's: a hook that runs
+    /// before an agent's action gives up sooner than the command line does.
+    pub async fn post_within(
+        &self,
+        path: &str,
+        body: &Json,
+        limit: std::time::Duration,
+    ) -> Result<(u16, Json), String> {
         let request = self.request(hyper::Method::POST, path, body.to_string())?;
-        let response = tokio::time::timeout(REQUEST_TIMEOUT, self.http.request(request))
+        let response = tokio::time::timeout(limit, self.http.request(request))
             .await
             .map_err(|_| "the daemon did not answer in time".to_owned())?
             .map_err(|e| format!("cannot reach the daemon on port {}: {e}", self.port))?;

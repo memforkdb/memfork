@@ -20,7 +20,8 @@ use memfork_core::Db;
 use serde_json::json;
 
 use crate::cli::{
-    split_line, Cli, Command, GlobalArgs, PersistArgs, PlanAction, ScriptLine, TaskAction,
+    split_line, AutopilotAction, Cli, Command, GlobalArgs, PersistArgs, PlanAction, ScriptLine,
+    TaskAction,
 };
 use crate::exec::{execute_in, ExecError, Outcome};
 
@@ -146,6 +147,7 @@ pub fn run(cli: Cli) -> ExitCode {
                     project: true,
                     all,
                     remove,
+                    autopilot,
                     ..
                 } => run_init_project(
                     &mut stdout,
@@ -154,9 +156,24 @@ pub fn run(cli: Cli) -> ExitCode {
                         clients: client,
                         all: *all,
                         remove: *remove,
+                        autopilot: *autopilot,
                     },
                     cli.global.json,
                 ),
+                Command::Autopilot {
+                    action: AutopilotAction::Hook { client },
+                } => {
+                    // Fail open: read stdin, do what can be done, say nothing.
+                    let mut input = String::new();
+                    let _ = std::io::stdin()
+                        .take(crate::autopilot::hook::MAX_INPUT_BYTES as u64)
+                        .read_to_string(&mut input);
+                    let _ = crate::autopilot::hook::run(client, &input);
+                    Ok(())
+                }
+                Command::Autopilot { action } => {
+                    run_autopilot(&mut stdout, action, &cli.global, &style)
+                }
                 Command::Init {
                     dry_run,
                     client,
@@ -1246,6 +1263,217 @@ struct ProjectInit<'a> {
     clients: &'a [String],
     all: bool,
     remove: bool,
+    autopilot: bool,
+}
+
+/// `--autopilot`: the repository's autopilot file, and the hooks of every
+/// chosen client whose hook system the registry has verified. Planned like
+/// the instruction files: one entry per file, the exact diff under
+/// `--dry-run`, nothing else touched.
+fn plan_autopilot(
+    root: &std::path::Path,
+    chosen: &[clients::Client],
+    remove: bool,
+) -> Result<Vec<init::project::FilePlan>, ExecError> {
+    use crate::autopilot::config;
+    use init::project::{Change, FilePlan};
+    if !remove && !crate::policy::allows(crate::policy::Feature::Autopilot) {
+        return Err(ExecError::Usage(crate::policy::refusal(
+            crate::policy::Feature::Autopilot,
+        )));
+    }
+    let mut plans = Vec::new();
+    // The file. Present and usable: left alone, so a person's check command
+    // and rules survive a second run. Broken: replaced, and said.
+    let path = root.join(config::FILE);
+    let before = std::fs::read_to_string(&path).ok();
+    let (change, after) = match (&before, remove) {
+        (None, true) => (Change::Absent, String::new()),
+        (Some(_), true) => (Change::Remove, String::new()),
+        (None, false) => (Change::Create, config::template(None)),
+        (Some(text), false) => match config::read(root) {
+            config::Read::Config(_) => (Change::Unchanged, text.clone()),
+            _ => (Change::Update, config::template(None)),
+        },
+    };
+    plans.push(FilePlan {
+        relative: config::FILE.to_owned(),
+        path,
+        clients: vec!["every client".to_owned()],
+        change,
+        before,
+        after,
+    });
+    let launch = launch::resolve();
+    for client in chosen {
+        let Some(hooks) = &client.hooks else {
+            continue;
+        };
+        plans.push(
+            clients::hooks::plan(
+                root,
+                &hooks.project_local,
+                &client.display,
+                &launch,
+                &client.id,
+                remove,
+            )
+            .map_err(ExecError::Usage)?,
+        );
+    }
+    Ok(plans)
+}
+
+/// Carry out one autopilot file plan. The autopilot file is removed outright
+/// rather than emptied; a hooks file is edited by [`init::project::apply`].
+fn apply_autopilot(plan: &init::project::FilePlan) -> Result<(), String> {
+    use init::project::Change;
+    if plan.relative == crate::autopilot::config::FILE && plan.change == Change::Remove {
+        return std::fs::remove_file(&plan.path)
+            .map_err(|e| format!("cannot remove {}: {e}", plan.path.display()));
+    }
+    init::project::apply(plan)
+}
+
+/// `memfork autopilot status|on|off|rules|check`.
+fn run_autopilot(
+    out: &mut impl Write,
+    action: &AutopilotAction,
+    global: &GlobalArgs,
+    style: &Style,
+) -> Result<(), ExecError> {
+    use crate::autopilot::{config, rules};
+    let cwd = std::env::current_dir()
+        .map_err(|e| ExecError::Usage(format!("cannot read the working directory: {e}")))?;
+    let in_repository = || {
+        crate::namespace::repository_root(&cwd).ok_or_else(|| {
+            ExecError::Usage(format!(
+                "{} is not inside a repository (no `.git` above it). Autopilot is per \
+                 repository; run this from inside one.",
+                crate::style::path(&cwd)
+            ))
+        })
+    };
+    match action {
+        AutopilotAction::Rules => {
+            let set = rules::RuleSet::builtin().map_err(ExecError::Usage)?;
+            if global.json {
+                let list: Vec<serde_json::Value> = set
+                    .rules()
+                    .iter()
+                    .map(|r| json!({ "name": r.name, "family": r.family, "pattern": r.pattern, "example": r.example }))
+                    .collect();
+                writeln!(out, "{}", json!({ "op": "autopilot rules", "rules": list }))
+                    .map_err(io_err)
+            } else {
+                writeln!(
+                    out,
+                    "A shell command matching any of these is risky: memory is forked before it \
+                     runs. A project adds patterns in `extra_rules` and switches rules off by \
+                     name in `ignore_rules` of {}.",
+                    config::FILE
+                )
+                .map_err(io_err)?;
+                let mut family = "";
+                for rule in set.rules() {
+                    if rule.family != family {
+                        family = &rule.family;
+                        writeln!(out, "\n{}", style.primary(family)).map_err(io_err)?;
+                    }
+                    writeln!(out, "  {:<20} e.g. {}", rule.name, style.dim(&rule.example))
+                        .map_err(io_err)?;
+                    writeln!(out, "  {:<20} {}", "", style.dim(&rule.pattern)).map_err(io_err)?;
+                }
+                Ok(())
+            }
+        }
+        AutopilotAction::Check { command } => {
+            let root = crate::namespace::repository_root(&cwd);
+            let (extra, ignore) = root
+                .as_deref()
+                .and_then(|r| config::read(r).config().cloned())
+                .map(|c| (c.extra_rules, c.ignore_rules))
+                .unwrap_or_default();
+            let set = rules::RuleSet::for_project(&extra, &ignore).map_err(ExecError::Usage)?;
+            let matched = set.matches(command);
+            if global.json {
+                writeln!(
+                    out,
+                    "{}",
+                    json!({
+                        "op": "autopilot check",
+                        "command": command,
+                        "risky": matched.is_some(),
+                        "rule": matched.map(|r| r.name.clone()),
+                        "family": matched.map(|r| r.family.clone()),
+                    })
+                )
+                .map_err(io_err)
+            } else {
+                match matched {
+                    Some(rule) => writeln!(
+                        out,
+                        "risky: matches `{}` ({}); memory would be forked before it runs",
+                        rule.name, rule.family
+                    ),
+                    None => writeln!(
+                        out,
+                        "not risky: no rule matches; memory would not be forked"
+                    ),
+                }
+                .map_err(io_err)
+            }
+        }
+        AutopilotAction::On | AutopilotAction::Off => {
+            let root = in_repository()?;
+            let on = matches!(action, AutopilotAction::On);
+            if on && !crate::policy::allows(crate::policy::Feature::Autopilot) {
+                return Err(ExecError::Usage(crate::policy::refusal(
+                    crate::policy::Feature::Autopilot,
+                )));
+            }
+            let path = root.join(config::FILE);
+            let text = std::fs::read_to_string(&path).map_err(|_| {
+                ExecError::Usage(format!(
+                    "{} has no {}. `memfork init --project --autopilot` writes one.",
+                    crate::style::path(&root),
+                    config::FILE
+                ))
+            })?;
+            let after = config::set_enabled(&text, on).map_err(ExecError::Usage)?;
+            if after != text {
+                std::fs::write(&path, &after).map_err(|e| {
+                    ExecError::Usage(format!("cannot write {}: {e}", path.display()))
+                })?;
+            }
+            if global.json {
+                writeln!(out, "{}", json!({ "op": if on { "autopilot on" } else { "autopilot off" }, "file": path.display().to_string(), "enabled": on }))
+                    .map_err(io_err)
+            } else {
+                writeln!(
+                    out,
+                    "autopilot is {} for {} ({})",
+                    if on { "on" } else { "off" },
+                    crate::style::path(&root),
+                    config::FILE
+                )
+                .map_err(io_err)
+            }
+        }
+        AutopilotAction::Status => {
+            let root = in_repository()?;
+            let report = crate::autopilot::status::report(&root, global.data_dir.as_deref());
+            if global.json {
+                writeln!(out, "{}", report.to_json()).map_err(io_err)
+            } else {
+                for line in report.lines(style) {
+                    writeln!(out, "{line}").map_err(io_err)?;
+                }
+                Ok(())
+            }
+        }
+        AutopilotAction::Hook { .. } => Ok(()),
+    }
 }
 
 /// Write, update or remove MemFork's block in this repository's instruction
@@ -1301,28 +1529,45 @@ fn run_init_project(
         .into_iter()
         .map(|(file, ids)| (file, ids.iter().map(|id| display(id)).collect()))
         .collect();
-    let plans = init::project::plan(&root, &files, ask.remove).map_err(ExecError::Usage)?;
+    // With --autopilot, --remove takes out autopilot and leaves the block;
+    // the block has its own --remove.
+    let mut plans = if ask.autopilot && ask.remove {
+        Vec::new()
+    } else {
+        init::project::plan(&root, &files, ask.remove).map_err(ExecError::Usage)?
+    };
+    let block_plans = plans.len();
+    if ask.autopilot {
+        plans.extend(plan_autopilot(&root, &chosen, ask.remove)?);
+    }
 
     let mut failures = Vec::new();
     let mut records = Vec::new();
     if !as_json {
         writeln!(
             out,
-            "memfork init --project{}: {} in {}, for {how}",
+            "memfork init --project{}{}: {} in {}, for {how}",
+            if ask.autopilot { " --autopilot" } else { "" },
             if ask.dry_run { " --dry-run" } else { "" },
-            if ask.remove {
-                "removing the MemFork block"
-            } else {
-                "the MemFork block"
+            match (ask.autopilot, ask.remove) {
+                (true, true) => "removing autopilot",
+                (true, false) => "the MemFork block and autopilot",
+                (false, true) => "removing the MemFork block",
+                (false, false) => "the MemFork block",
             },
             crate::style::path(&root)
         )
         .map_err(io_err)?;
     }
-    for plan in &plans {
+    for (index, plan) in plans.iter().enumerate() {
         let mut error = None;
         if !ask.dry_run {
-            if let Err(e) = init::project::apply(plan) {
+            let applied = if index >= block_plans {
+                apply_autopilot(plan)
+            } else {
+                init::project::apply(plan)
+            };
+            if let Err(e) = applied {
                 failures.push(format!("{}: {e}", plan.relative));
                 error = Some(e);
             }
@@ -1370,6 +1615,22 @@ fn run_init_project(
             }
         }
     }
+    // Which chosen clients autopilot cannot fork through, said rather than
+    // assumed.
+    let unverified: Vec<String> = chosen
+        .iter()
+        .filter(|c| c.hooks.is_none())
+        .map(|c| c.display.clone())
+        .collect();
+    if ask.autopilot && !ask.remove && !as_json && !unverified.is_empty() {
+        writeln!(
+            out,
+            "  automatic forks are off for {}: the hook system of each is unverified. \
+             Memory still follows the git branch for every client.",
+            unverified.join(", ")
+        )
+        .map_err(io_err)?;
+    }
     if as_json {
         writeln!(
             out,
@@ -1378,13 +1639,34 @@ fn run_init_project(
                 "root": root.display().to_string(),
                 "dry_run": ask.dry_run,
                 "remove": ask.remove,
+                "autopilot": ask.autopilot,
                 "chosen": chosen.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+                "unverified_hooks": if ask.autopilot { Some(unverified) } else { None },
                 "files": records,
             })
         )
         .map_err(io_err)?;
     } else if ask.dry_run {
         writeln!(out, "Nothing was written (--dry-run).").map_err(io_err)?;
+    } else if ask.autopilot && ask.remove {
+        writeln!(
+            out,
+            "Autopilot is uninstalled here: the file is gone and only MemFork's hook \
+             entries were taken out. The MemFork block stays; `memfork init --project \
+             --remove` takes that out."
+        )
+        .map_err(io_err)?;
+    } else if ask.autopilot {
+        writeln!(
+            out,
+            "Only the lines between the MemFork markers and MemFork's own hook entries \
+             were touched. {} is yours to edit: the check command goes there. Nothing \
+             was committed; the hooks file is personal and stays out of git. `memfork \
+             autopilot status` reports what is in force, `memfork autopilot off` \
+             switches it off.",
+            crate::autopilot::config::FILE
+        )
+        .map_err(io_err)?;
     } else {
         writeln!(
             out,

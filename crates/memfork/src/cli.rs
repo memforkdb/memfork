@@ -440,6 +440,22 @@ pub enum Command {
         /// With --project: take the block out again, and nothing else.
         #[arg(long, requires = "project")]
         remove: bool,
+        /// With --project: switch autopilot on for this repository. Writes
+        /// `memfork-autopilot.toml`, so memory follows the git branch, and
+        /// installs the hooks of the clients whose hook system is verified,
+        /// so memory is forked before a risky step. With --remove, takes
+        /// both out again. `memfork autopilot status` reports what is on.
+        #[arg(long, requires = "project")]
+        autopilot: bool,
+    },
+
+    /// Autopilot: memory that follows the git branch and forks itself
+    /// before a risky step, per repository. Off until `memfork init
+    /// --project --autopilot` switches it on.
+    Autopilot {
+        /// What to do.
+        #[command(subcommand)]
+        action: AutopilotAction,
     },
 
     /// Report version, paths, the daemon, the policy in force and which
@@ -552,6 +568,37 @@ pub enum Command {
         /// the first two in the client registry.
         #[arg(long, value_name = "A,B")]
         agents: Option<String>,
+    },
+}
+
+/// What `memfork autopilot` does.
+#[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
+pub enum AutopilotAction {
+    /// What is in force for this repository: the file, each half, the
+    /// check, which clients' hooks are installed, forks left open, memory
+    /// branches whose git branch is gone, and what autopilot did lately.
+    Status,
+    /// Switch autopilot on again in an existing `memfork-autopilot.toml`.
+    On,
+    /// Switch autopilot off for this repository: one command, nothing
+    /// removed. `memfork init --project --autopilot --remove` uninstalls.
+    Off,
+    /// The rules that make a shell command risky, with an example each.
+    Rules,
+    /// Which rule, if any, a command matches, so nobody has to guess why
+    /// memory was forked.
+    Check {
+        /// The command line to judge.
+        command: String,
+    },
+    /// What a client's hook runs, with the event as JSON on stdin. Prints
+    /// nothing and always exits 0; when MemFork is not running it does
+    /// nothing at all.
+    #[command(hide = true)]
+    Hook {
+        /// The client whose hook this is, by registry id.
+        #[arg(long, value_name = "ID", default_value = "claude-code")]
+        client: String,
     },
 }
 
@@ -688,6 +735,7 @@ impl Command {
                 | Command::Init { .. }
                 | Command::Doctor { .. }
                 | Command::Completions { .. }
+                | Command::Autopilot { .. }
         )
     }
 
@@ -727,6 +775,7 @@ impl Command {
             Command::Watch { .. } => "watch",
             Command::Brain { .. } => "brain",
             Command::Demo { .. } => "demo",
+            Command::Autopilot { .. } => "autopilot",
         }
     }
 }

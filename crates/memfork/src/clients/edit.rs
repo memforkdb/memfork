@@ -206,41 +206,41 @@ fn toml_to_json(value: &toml::Value) -> Json {
 // that forbids them never had any for MemFork to preserve.
 
 /// One `"key": value` inside an object, by position.
-struct Member {
-    key: String,
+pub(crate) struct Member {
+    pub(crate) key: String,
     /// Where the key's opening quote is.
-    key_start: usize,
+    pub(crate) key_start: usize,
     /// The value's first byte, and one past its last.
-    value_start: usize,
-    value_end: usize,
+    pub(crate) value_start: usize,
+    pub(crate) value_end: usize,
 }
 
 /// An object, by position.
-struct Object {
+pub(crate) struct Object {
     /// The `{`.
-    open: usize,
+    pub(crate) open: usize,
     /// The `}`.
-    close: usize,
-    members: Vec<Member>,
+    pub(crate) close: usize,
+    pub(crate) members: Vec<Member>,
     /// A comma after the last member with nothing but space and comments
     /// before the `}`, as some editors leave.
-    trailing_comma: Option<usize>,
+    pub(crate) trailing_comma: Option<usize>,
 }
 
-struct Scanner<'a> {
-    s: &'a [u8],
-    i: usize,
+pub(crate) struct Scanner<'a> {
+    pub(crate) s: &'a [u8],
+    pub(crate) i: usize,
 }
 
 impl<'a> Scanner<'a> {
-    fn new(text: &'a str) -> Self {
+    pub(crate) fn new(text: &'a str) -> Self {
         Scanner {
             s: text.as_bytes(),
             i: 0,
         }
     }
 
-    fn peek(&self) -> Option<u8> {
+    pub(crate) fn peek(&self) -> Option<u8> {
         self.s.get(self.i).copied()
     }
 
@@ -252,7 +252,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// Skip whitespace, `//` comments and `/* */` comments.
-    fn skip(&mut self) -> Result<(), String> {
+    pub(crate) fn skip(&mut self) -> Result<(), String> {
         loop {
             match self.peek() {
                 Some(b' ' | b'\t' | b'\n' | b'\r') => self.i += 1,
@@ -286,7 +286,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// Scan a string at `"`, returning its decoded text.
-    fn string(&mut self) -> Result<String, String> {
+    pub(crate) fn string(&mut self) -> Result<String, String> {
         let start = self.i;
         if self.peek() != Some(b'"') {
             return Err(self.fail("expected a string"));
@@ -309,7 +309,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// Scan any value, returning its span.
-    fn value(&mut self) -> Result<(usize, usize), String> {
+    pub(crate) fn value(&mut self) -> Result<(usize, usize), String> {
         let start = self.i;
         match self.peek() {
             Some(b'{') => {
@@ -362,7 +362,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// Scan an object at `{`.
-    fn object(&mut self) -> Result<Object, String> {
+    pub(crate) fn object(&mut self) -> Result<Object, String> {
         let open = self.i;
         if self.peek() != Some(b'{') {
             return Err(self.fail("expected `{`"));
@@ -418,7 +418,7 @@ impl<'a> Scanner<'a> {
 }
 
 /// JSON with its comments and trailing commas taken out, for `serde_json`.
-fn strip_jsonc(text: &str) -> Result<String, String> {
+pub(crate) fn strip_jsonc(text: &str) -> Result<String, String> {
     let mut out = String::with_capacity(text.len());
     let mut scanner = Scanner::new(text);
     // Copy every token; skipping is what drops comments. Trailing commas are
@@ -451,7 +451,7 @@ fn strip_jsonc(text: &str) -> Result<String, String> {
 }
 
 /// The indentation the file already uses, so a rewrite matches its house style.
-fn detect_indent(source: &str) -> String {
+pub(crate) fn detect_indent(source: &str) -> String {
     for line in source.lines() {
         let spaces = line.len() - line.trim_start_matches(' ').len();
         if spaces > 0 {
@@ -465,7 +465,7 @@ fn detect_indent(source: &str) -> String {
 }
 
 /// The whitespace at the start of the line `at` is on.
-fn line_indent(text: &str, at: usize) -> String {
+pub(crate) fn line_indent(text: &str, at: usize) -> String {
     let line_start = text[..at].rfind('\n').map_or(0, |n| n + 1);
     text[line_start..at]
         .chars()
@@ -475,7 +475,7 @@ fn line_indent(text: &str, at: usize) -> String {
 
 /// A value as pretty JSON with `unit` indentation, every line after the
 /// first prefixed by `indent`, so it sits inside an object at that depth.
-fn pretty_at(value: &Json, unit: &str, indent: &str) -> Result<String, String> {
+pub(crate) fn pretty_at(value: &Json, unit: &str, indent: &str) -> Result<String, String> {
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(unit.as_bytes());
     let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
