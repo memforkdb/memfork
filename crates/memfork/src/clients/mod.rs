@@ -818,8 +818,8 @@ mod tests {
                 "{id} is not reached by {every:?}"
             );
         }
-        // Three files reach everyone: AGENTS.md for most, CLAUDE.md for Claude
-        // Code, GEMINI.md for Gemini CLI.
+        // Three files reach everyone: AGENTS.md for most, and the two clients
+        // with a file of their own.
         assert_eq!(files.len(), 3, "{every:?}");
 
         // Stable: the same clients in another order give the same files.

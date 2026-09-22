@@ -333,7 +333,15 @@ mod schema_tests {
 
     #[test]
     fn every_field_is_described_in_the_docs() {
-        let docs = include_str!("../../../docs/EVENTS.md");
+        // Read at test time rather than compiled in: the page is part of the
+        // repository, not of the published crate.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("docs")
+            .join("EVENTS.md");
+        let docs = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         for field in FIELDS_V1
             .iter()
             .chain(["version", "port", "clients"].iter())
