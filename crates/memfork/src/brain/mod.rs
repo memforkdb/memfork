@@ -58,7 +58,15 @@ pub const STATIC: &[(&str, &str, &str)] = &[
 /// Every route that answers with data, by the name after `/brain/`. Each
 /// answers `GET` only, needs a token, and reads; there is no other kind, and
 /// a test walks this list to prove it.
-pub const ROUTES: &[&str] = &["summary", "graph", "entry", "search", "diff", "export"];
+pub const ROUTES: &[&str] = &[
+    "summary",
+    "attention",
+    "graph",
+    "entry",
+    "search",
+    "diff",
+    "export",
+];
 
 /// The families of key the page knows, as `<project>:<family>:<rest>`.
 pub const FAMILIES: &[&str] = &["decision", "fact", "task", "lesson", "handoff", "note"];
@@ -187,6 +195,7 @@ pub async fn handle(request: Request<Incoming>, context: Context) -> Response<Bo
     let query = Query::parse(request.uri().query());
     let answer = tokio::task::spawn_blocking(move || match name.as_str() {
         "summary" => summary::summary(&context, &query).map(Answer::Json),
+        "attention" => summary::attention(&context, &query).map(Answer::Json),
         "graph" => graph_route(&context, &query).map(Answer::Json),
         "entry" => summary::entry(&context, &query).map(Answer::Json),
         "search" => summary::search(&context, &query).map(Answer::Json),

@@ -98,7 +98,6 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
     let prefix = format!("{ns}{}", namespace::SEPARATOR);
     let entries = view.list(&prefix, None);
     let connected = context.events.connected();
-    let here: BTreeSet<String> = connected.iter().map(|c| display(&c.client)).collect();
 
     // The headline: real counts, from the side file.
     let stats = side.sidecar.stats(Some(&ns));
@@ -261,6 +260,70 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
         .collect();
     served.reverse();
 
+    // The footer.
+    let store_bytes: usize = view
+        .list("", None)
+        .iter()
+        .map(|(k, e)| k.len() + e.value.len())
+        .sum();
+    let log = db.log(&branch, None).unwrap_or_default();
+    let horizon = log.last().map_or(0, |c| c.seq);
+    let policy = match crate::policy::current() {
+        Ok(p) => p.summary(),
+        Err(e) => format!("unreadable: {}", e.why),
+    };
+    let branches: Vec<String> = db.branches().into_iter().map(|b| b.name).collect();
+
+    Ok(json!({
+        "version": crate::VERSION,
+        "port": context.port,
+        "read_only": true,
+        "namespace": ns,
+        "branch": branch,
+        "seq": view.seq(),
+        "entries": entries.len(),
+        "branches": branches,
+        "namespaces": namespaces(db, &branch)?,
+        "clients": connected,
+        "policy": policy,
+        "headline": { "twice": twice, "counts": counts },
+        "handoffs": handoffs,
+        "tasks": tasks,
+        "facts": facts,
+        "lessons": lessons,
+        "briefings": served,
+        "footer": {
+            "store_bytes": store_bytes,
+            "commits_retained": db.commit_count(),
+            "history_from_seq": horizon,
+            "branch_entries": view.len(),
+        },
+    }))
+}
+
+/// What needs a look: contradictions, near-duplicates, stale facts,
+/// maintenance suggestions and claims whose holder is gone. Flagged, never
+/// fixed. Its own route, fetched after the first paint: scanning a large
+/// project for duplicates is the one slow thing here, and the headline and
+/// the panels need not wait for it.
+pub fn attention(context: &Context, query: &Query) -> Result<Json, Failure> {
+    let branch = branch_of(context, query)?;
+    let ns = namespace_of(context, query, &branch)?;
+    let db = &context.db;
+    let side = &context.side;
+    let view = db
+        .read(&branch)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let prefix = format!("{ns}{}", namespace::SEPARATOR);
+    let entries = view.list(&prefix, None);
+    let task_prefix = namespace::prefix(&ns, "task");
+    let here: BTreeSet<String> = context
+        .events
+        .connected()
+        .iter()
+        .map(|c| display(&c.client))
+        .collect();
+    let stale: BTreeSet<String> = side.sidecar.stale_facts(&ns).into_iter().collect();
     // Attention: flagged, never fixed.
     let mut attention: Vec<Json> = Vec::new();
     for flag in crate::flags::scan(db, &branch, &ns).unwrap_or_default() {
@@ -350,45 +413,10 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
         }
     }
 
-    // The footer.
-    let store_bytes: usize = view
-        .list("", None)
-        .iter()
-        .map(|(k, e)| k.len() + e.value.len())
-        .sum();
-    let log = db.log(&branch, None).unwrap_or_default();
-    let horizon = log.last().map_or(0, |c| c.seq);
-    let policy = match crate::policy::current() {
-        Ok(p) => p.summary(),
-        Err(e) => format!("unreadable: {}", e.why),
-    };
-    let branches: Vec<String> = db.branches().into_iter().map(|b| b.name).collect();
-
     Ok(json!({
-        "version": crate::VERSION,
-        "port": context.port,
-        "read_only": true,
         "namespace": ns,
         "branch": branch,
-        "seq": view.seq(),
-        "entries": entries.len(),
-        "branches": branches,
-        "namespaces": namespaces(db, &branch)?,
-        "clients": connected,
-        "policy": policy,
-        "headline": { "twice": twice, "counts": counts },
-        "handoffs": handoffs,
-        "tasks": tasks,
-        "facts": facts,
-        "lessons": lessons,
-        "briefings": served,
         "attention": attention,
-        "footer": {
-            "store_bytes": store_bytes,
-            "commits_retained": db.commit_count(),
-            "history_from_seq": horizon,
-            "branch_entries": view.len(),
-        },
     }))
 }
 

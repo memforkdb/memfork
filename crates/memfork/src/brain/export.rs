@@ -75,6 +75,7 @@ pub fn build(context: &Context, query: &Query) -> Result<Export, Failure> {
     let db = &context.db;
 
     let mut summary = summary::summary(context, query)?;
+    summary["attention"] = summary::attention(context, query)?["attention"].take();
     let g = graph::build(
         db,
         &branch,

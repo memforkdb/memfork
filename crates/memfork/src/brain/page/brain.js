@@ -167,10 +167,14 @@ const Brain = (() => {
   function loadGraph(g, json, now) {
     const first = !g.loaded;
     const old = g.byId;
+    const kinds = json.kinds || [], agents = json.agents || [];
     g.nodes = json.nodes.map((n) => {
       const was = old.get(n[0]);
+      const id = n[0];
+      const label = n[2] == null ? id.slice(id.indexOf(":", id.indexOf(":") + 1) + 1) : n[2];
       return {
-        id: n[0], kind: n[1], label: n[2], col: n[3], y: n[4], seq: n[5], state: n[6], who: n[7],
+        id, kind: typeof n[1] === "number" ? kinds[n[1]] : n[1], label, col: n[3], y: n[4], seq: n[5], state: n[6],
+        who: typeof n[7] === "number" ? agents[n[7]] : n[7],
         born: was ? was.born : first ? 0 : now,
         glow: was ? was.glow : 0,
         fresh: !was && !first,
@@ -801,9 +805,7 @@ function boot(document, window) {
       return `<div class="row vi"><svg class="icon" aria-hidden="true"><use href="#i-brief"/></svg><div class="body"><div class="v">to ${Brain.esc(b.to)} · ${b.bytes} B · about ${Brain.tokens(b.bytes)} tokens</div><div class="s">${Brain.esc(carried || "empty project: a hint to start")}${Brain.esc(cut)}${Brain.esc(since)}</div></div></div>`;
     }).join("") : '<span class="empty">None yet.</span>';
 
-    $("attn").innerHTML = s.attention.length ? s.attention.map((a) => `<div class="row am${open(a.keys && a.keys[0])}"><svg class="icon" aria-hidden="true"><use href="#i-attention"/></svg><div class="body"><div class="v">${Brain.esc(a.title)}</div><div class="s">${Brain.esc(a.detail)}</div></div></div>`).join("") : '<span class="empty">Nothing needs attention.</span>';
-
-    const f = s.footer;
+    if (s.attention) renderAttention(s.attention);
     $("foot-store").textContent = `store ${f.store_bytes >= 1e6 ? (f.store_bytes / 1e6).toFixed(1) + " MB" : f.store_bytes >= 1e3 ? Math.round(f.store_bytes / 1e3) + " kB" : f.store_bytes + " B"} · ${f.commits_retained.toLocaleString()} commits retained · history from seq ${f.history_from_seq}`;
     $("foot-policy").textContent = `policy: ${s.policy === "none" ? "none in force" : s.policy}`;
     $("port").textContent = String(s.port);
@@ -816,6 +818,9 @@ function boot(document, window) {
     };
     pick("ns", s.namespaces.length ? s.namespaces : [s.namespace], s.namespace);
     pick("branch", s.branches, s.branch);
+  }
+  function renderAttention(list) {
+    $("attn").innerHTML = list.length ? list.map((a) => `<div class="row am${open(a.keys && a.keys[0])}"><svg class="icon" aria-hidden="true"><use href="#i-attention"/></svg><div class="body"><div class="v">${Brain.esc(a.title)}</div><div class="s">${Brain.esc(a.detail)}</div></div></div>`).join("") : '<span class="empty">Nothing needs attention.</span>';
   }
   document.querySelector(".panels").addEventListener("click", (e) => {
     const r = e.target.closest(".row.open");
@@ -838,6 +843,11 @@ function boot(document, window) {
         if (!exported && String(s.port) !== window.location.port) { session.set("stopped", "this page belongs to another daemon"); return; }
         view.ns = s.namespace; view.branch = s.branch;
         renderPanels(s);
+        if (!s.attention) {
+          session.get("attention", { ns: view.ns, branch: view.branch })
+            .then((a) => renderAttention(a.attention))
+            .catch(() => {});
+        }
         const fresh = Brain.loadGraph(g, gj, now());
         for (const n of fresh) glow(n.id, 1200);
         for (const p of Brain.announce(g, fresh)) pulse(p);

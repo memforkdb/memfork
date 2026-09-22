@@ -909,14 +909,22 @@ fn the_summary_carries_the_panels_and_the_headline_counts_real_things() {
     );
     assert!(s["briefings"][0]["bytes"].as_u64().unwrap() > 0);
     assert_eq!(s["facts"][0]["state"], "stale", "{}", s["facts"][0]);
+    let attention = ask(
+        port,
+        Method::GET,
+        "/brain/attention?ns=shop",
+        None,
+        Some(&read),
+    )
+    .json();
     assert!(
-        s["attention"]
+        attention["attention"]
             .as_array()
             .unwrap()
             .iter()
             .any(|a| a["kind"] == "stale_fact"),
         "{}",
-        s["attention"]
+        attention["attention"]
     );
     assert_eq!(s["headline"]["counts"]["briefings"], 1);
     assert_eq!(s["headline"]["counts"]["handoffs_picked_up"], 1);

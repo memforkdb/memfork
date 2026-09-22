@@ -44,6 +44,11 @@ pub const HEIGHT: u32 = 65_535;
 /// Longest label drawn on the canvas.
 const MAX_LABEL: usize = 60;
 
+/// A board with more tasks than this has handoffs matched to tasks by id
+/// only, not by title: matching every title against every handoff is the
+/// one thing here that grows as the product of two counts.
+pub const MAX_TITLE_MATCHED: usize = 2000;
+
 /// The kinds of node, in the order their counts are reported.
 pub const KINDS: [&str; 9] = [
     "agent", "brief", "decision", "handoff", "lesson", "task", "fact", "entry", "file",
@@ -226,6 +231,25 @@ pub fn build(
     let stale: BTreeSet<String> = side.sidecar.stale_facts(ns).into_iter().collect();
     let known: BTreeSet<String> = entries.iter().map(|(k, _)| k.clone()).collect();
     let task_prefix = crate::namespace::prefix(ns, "task");
+    // The tasks a handoff's next list can name, once: by id, as a word of
+    // the item, and by title, as a substring. Titles are matched only while
+    // the board is small enough for that to be cheap.
+    let tasks: Vec<(String, String, String)> = entries
+        .iter()
+        .filter(|(k, _)| k.starts_with(&task_prefix))
+        .map(|(k, e)| {
+            let title = serde_json::from_slice::<Json>(&e.value)
+                .ok()
+                .and_then(|t| t["title"].as_str().map(str::to_lowercase))
+                .unwrap_or_default();
+            (k.clone(), k[task_prefix.len()..].to_lowercase(), title)
+        })
+        .collect();
+    let task_by_id: BTreeMap<&str, &str> = tasks
+        .iter()
+        .map(|(key, id, _)| (id.as_str(), key.as_str()))
+        .collect();
+    let match_titles = tasks.len() <= MAX_TITLE_MATCHED;
 
     // Pass one: every entry is a node.
     for (key, entry) in &entries {
@@ -357,20 +381,20 @@ pub fn build(
                     .filter_map(Json::as_str)
                     .map(str::to_lowercase)
                     .collect();
-                if !next.is_empty() {
-                    for (task_key, task) in
-                        entries.iter().filter(|(k, _)| k.starts_with(&task_prefix))
+                for item in &next {
+                    for word in item
+                        .split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '_' | '-')))
+                        .filter(|w| !w.is_empty())
                     {
-                        let id = task_key[task_prefix.len()..].to_lowercase();
-                        let title = serde_json::from_slice::<Json>(&task.value)
-                            .ok()
-                            .and_then(|t| t["title"].as_str().map(str::to_lowercase))
-                            .unwrap_or_default();
-                        if next
-                            .iter()
-                            .any(|n| n.contains(&id) || (!title.is_empty() && n.contains(&title)))
-                        {
-                            edges.push((key.clone(), task_key.clone(), "next"));
+                        if let Some(task_key) = task_by_id.get(word) {
+                            edges.push((key.clone(), (*task_key).to_owned(), "next"));
+                        }
+                    }
+                    if match_titles {
+                        for (task_key, _, title) in &tasks {
+                            if !title.is_empty() && item.contains(title.as_str()) {
+                                edges.push((key.clone(), task_key.clone(), "next"));
+                            }
                         }
                     }
                 }
@@ -488,21 +512,54 @@ pub fn build(
 }
 
 /// The graph as the page receives it: arrays rather than objects, since a
-/// large store has a hundred thousand nodes and every byte is parsed.
+/// large store has a hundred thousand nodes and every byte is parsed. A
+/// node is id, kind, label, column, y, seq, state and writer, with the kind
+/// and the writer as indexes into the kinds and agents lists, and the label
+/// null when it is the id without its project, which the page derives.
 pub fn to_json(graph: &Graph) -> Json {
     let mut counts: BTreeMap<&str, usize> = KINDS.iter().map(|k| (*k, 0)).collect();
     for node in &graph.nodes {
         *counts.entry(node.kind).or_insert(0) += 1;
     }
+    let mut agents: Vec<&str> = Vec::new();
+    let mut agent_index: BTreeMap<&str, usize> = BTreeMap::new();
+    let nodes: Vec<Json> = graph
+        .nodes
+        .iter()
+        .zip(&graph.positions)
+        .map(|(n, (col, y))| {
+            let kind = KINDS.iter().position(|k| *k == n.kind).unwrap_or(7);
+            let who = n.who.as_deref().map(|w| {
+                *agent_index.entry(w).or_insert_with(|| {
+                    agents.push(w);
+                    agents.len() - 1
+                })
+            });
+            let derived = n.id.split_once(':').is_some_and(|(_, rest)| {
+                rest.split_once(':')
+                    .is_some_and(|(_, tail)| tail == n.label)
+            });
+            json!([
+                n.id,
+                kind,
+                if derived { Json::Null } else { json!(n.label) },
+                col,
+                y,
+                n.seq,
+                n.state,
+                who,
+            ])
+        })
+        .collect();
     json!({
         "seq": graph.seq,
         "at": graph.at,
         "columns": COLUMNS,
+        "kinds": KINDS,
+        "agents": agents,
         "few": FEW,
         "height": HEIGHT,
-        "nodes": graph.nodes.iter().zip(&graph.positions).map(|(n, (col, y))| json!([
-            n.id, n.kind, n.label, col, y, n.seq, n.state, n.who,
-        ])).collect::<Vec<_>>(),
+        "nodes": nodes,
         "edges": graph.edges.iter().map(|e| json!([e.from, e.to, e.kind])).collect::<Vec<_>>(),
         "counts": counts,
     })

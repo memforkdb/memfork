@@ -81,6 +81,25 @@ jobs:
       - name: Licences, advisories, sources
         run: cargo deny --workspace --all-features check
 
+  # The Brain's page runs in a browser this suite does not have. Everything
+  # its script decides — escaping, the token, the dead-daemon verdict, the
+  # graph, events, lenses, the keyboard — runs under the Node the runners
+  # ship, with its own test runner and no packages. The HTTP surface and the
+  # budgets are Rust tests in the matrix above.
+  brain-page:
+    name: brain page (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: The page's logic, under Node
+        run: |
+          node --version
+          node --test crates/memfork/src/brain/page/tests/brain.test.mjs
+
   # A commit id must be identical on every platform. The
   # golden file is checked in and compared by each matrix leg above; this job
   # makes a drift between legs visible as its own failure rather than as three

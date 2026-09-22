@@ -193,20 +193,24 @@ fn the_demo_leaves_the_engine_with_everything_the_page_shows() {
         .enable_all()
         .build()
         .unwrap();
-    let summary: serde_json::Value = runtime.block_on(async {
-        let client =
-            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-                .build_http::<http_body_util::Full<hyper::body::Bytes>>();
-        let request = hyper::Request::builder()
-            .uri(format!("http://127.0.0.1:{port}/brain/summary?ns=shop"))
-            .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
-            .body(http_body_util::Full::new(hyper::body::Bytes::new()))
-            .unwrap();
-        let response = client.request(request).await.expect("answered");
-        assert_eq!(response.status(), 200);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    });
+    let fetch = |route: &str| -> serde_json::Value {
+        runtime.block_on(async {
+            let client =
+                hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                    .build_http::<http_body_util::Full<hyper::body::Bytes>>();
+            let request = hyper::Request::builder()
+                .uri(format!("http://127.0.0.1:{port}/brain/{route}?ns=shop"))
+                .header(hyper::header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(http_body_util::Full::new(hyper::body::Bytes::new()))
+                .unwrap();
+            let response = client.request(request).await.expect("answered");
+            assert_eq!(response.status(), 200);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice(&bytes).unwrap()
+        })
+    };
+    let summary = fetch("summary");
+    let attention = fetch("attention");
 
     // The whole story is in the engine, not in the narration.
     let s = &summary;
@@ -240,7 +244,7 @@ fn the_demo_leaves_the_engine_with_everything_the_page_shows() {
     assert_eq!(status("schema"), "done");
     assert_eq!(status("checkout"), "done");
     assert_eq!(status("refunds"), "claimed");
-    let kinds: Vec<&str> = s["attention"]
+    let kinds: Vec<&str> = attention["attention"]
         .as_array()
         .unwrap()
         .iter()

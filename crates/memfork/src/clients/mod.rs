@@ -646,7 +646,15 @@ fn memfork_path_in(text: &str) -> Option<String> {
 /// is a build-time mistake rather than a user-visible one; it surfaces as an
 /// empty registry with the reason available from [`load`].
 pub fn all() -> Vec<Client> {
-    load().unwrap_or_default()
+    cached().to_vec()
+}
+
+/// The registry, parsed once per process. It is compiled in, so parsing it
+/// again for every writer's name would cost a hundred thousand parses on
+/// a large store for the same answer.
+fn cached() -> &'static [Client] {
+    static PARSED: std::sync::OnceLock<Vec<Client>> = std::sync::OnceLock::new();
+    PARSED.get_or_init(|| load().unwrap_or_default())
 }
 
 /// Parse the registry, reporting why if it cannot be read.
@@ -659,8 +667,8 @@ pub fn load() -> Result<Vec<Client>, String> {
 /// The display name for a writer recorded from MCP `initialize`, if the
 /// registry knows that client; otherwise the name as it was given.
 pub fn display_for_writer(name: &str) -> String {
-    all()
-        .into_iter()
+    cached()
+        .iter()
         .find(|c| {
             c.mcp_names
                 .iter()
@@ -669,7 +677,7 @@ pub fn display_for_writer(name: &str) -> String {
                     None => name == pattern,
                 })
         })
-        .map(|c| c.display)
+        .map(|c| c.display.clone())
         .unwrap_or_else(|| name.to_owned())
 }
 
