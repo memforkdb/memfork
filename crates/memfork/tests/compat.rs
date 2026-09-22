@@ -15,31 +15,47 @@ use memfork::tools::dispatch::Session;
 use serde_json::{json, Value as Json};
 
 fn fixture() -> PathBuf {
+    fixture_of("0.1.1")
+}
+
+fn fixture_of(version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("store-0.1.1")
+        .join(format!("store-{version}"))
 }
 
 /// A private copy of the fixture's data directory: opening takes a lock and
 /// writing appends, and neither may touch the checked-in files.
 fn copy_of_fixture() -> (tempfile::TempDir, PathBuf) {
+    copy_of("0.1.1")
+}
+
+fn copy_of(version: &str) -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("data");
     std::fs::create_dir_all(&dir).unwrap();
     for name in ["memfork.snapshot", "memfork.wal"] {
-        std::fs::copy(fixture().join("data").join(name), dir.join(name)).unwrap();
+        std::fs::copy(fixture_of(version).join("data").join(name), dir.join(name)).unwrap();
     }
     (tmp, dir)
 }
 
 fn expected() -> Json {
-    let text = std::fs::read_to_string(fixture().join("expected.json")).unwrap();
+    expected_of("0.1.1")
+}
+
+fn expected_of(version: &str) -> Json {
+    let text = std::fs::read_to_string(fixture_of(version).join("expected.json")).unwrap();
     serde_json::from_str(&text).unwrap()
 }
 
 /// What a database holds, in the shape `expected.json` records.
 fn describe(db: &memfork_core::Db) -> Json {
+    describe_as(db, "memfork 0.1.1")
+}
+
+fn describe_as(db: &memfork_core::Db, written_by: &str) -> Json {
     let branches: Vec<Json> = db
         .branches()
         .iter()
@@ -76,7 +92,7 @@ fn describe(db: &memfork_core::Db) -> Json {
             })
         })
         .collect();
-    json!({ "written_by": "memfork 0.1.1", "branches": branches })
+    json!({ "written_by": written_by, "branches": branches })
 }
 
 fn bytes(dir: &Path) -> Vec<Vec<u8>> {
@@ -198,4 +214,72 @@ fn writing_to_it_stays_reproducible_and_keeps_who_wrote_what() {
     let main_log = branch(&now, "main")["log"].as_array().unwrap().clone();
     let old_log = branch(&old, "main")["log"].as_array().unwrap().clone();
     assert_eq!(&main_log[2..], &old_log[..], "main's 0.1.1 history changed");
+}
+
+// ---- a store written by 0.2.1 ------------------------------------------------
+
+#[test]
+fn the_0_2_1_fixture_has_not_changed() {
+    for (name, expected) in [
+        (
+            "memfork.snapshot",
+            "7434fa9e418cbde5a56228bfcd8397be15c15151404894da696a515fd9c78b5a",
+        ),
+        (
+            "memfork.wal",
+            "a62d3cedcdf320f835c8d0e572d22af6b84227db9d6d3ee8b89427d46a239b00",
+        ),
+    ] {
+        let data = std::fs::read(fixture_of("0.2.1").join("data").join(name)).unwrap();
+        assert_eq!(
+            blake3::hash(&data).to_hex().as_str(),
+            expected,
+            "data/{name} changed"
+        );
+    }
+}
+
+#[test]
+fn a_store_written_by_0_2_1_reads_back_exactly_and_gains_nothing_by_being_read() {
+    let (_tmp, dir) = copy_of("0.2.1");
+    let before = bytes(&dir);
+    let (db, store, recovery) = Store::open(&dir, Options::default()).unwrap();
+    assert!(
+        recovery.from_snapshot > 0 && recovery.from_wal > 0,
+        "{recovery:?}"
+    );
+    assert_eq!(describe_as(&db, "memfork 0.2.1"), expected_of("0.2.1"));
+
+    // Reading it the ways this version reads memory adds nothing: no lesson,
+    // no fact record, no new key of any family, and the files are untouched.
+    let session = Session::in_namespace(db.clone(), "shop");
+    session.set_writer("reader");
+    let args = |v: Json| v.as_object().unwrap().clone();
+    session
+        .call("memfork_resume", &args(json!({ "task": "refunds" })))
+        .unwrap();
+    session
+        .call("memfork_search", &args(json!({ "text": "checkout" })))
+        .unwrap();
+    session
+        .call("memfork_task", &args(json!({ "action": "list" })))
+        .unwrap();
+    assert_eq!(describe_as(&db, "memfork 0.2.1"), expected_of("0.2.1"));
+    for branch in db.branches() {
+        for (key, _) in db.list(&branch.name, "", None).unwrap() {
+            assert!(
+                !key.contains(":lesson:"),
+                "{key} appeared on {}",
+                branch.name
+            );
+        }
+    }
+    drop(session);
+    drop(db);
+    drop(store);
+    assert_eq!(bytes(&dir), before, "reading rewrote the 0.2.1 files");
+    assert!(
+        !dir.join(memfork::sidecar::FILE).exists(),
+        "reading made a side file"
+    );
 }

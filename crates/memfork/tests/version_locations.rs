@@ -7,7 +7,8 @@
 //!
 //! Left out on purpose: `CHANGELOG.md`, which is a history and names every
 //! version; `Cargo.lock`, which Cargo writes; and `tests/fixtures/`, which
-//! hold stores written by earlier releases and say so.
+//! hold stores written by earlier releases and say so, with `tests/compat.rs`,
+//! which opens them by the version that wrote them.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -62,7 +63,11 @@ fn the_version_appears_only_where_the_release_guide_says() {
     let mut found_allowed = Vec::new();
     let mut stray = Vec::new();
     for file in &files {
-        if file == "CHANGELOG.md" || file == "Cargo.lock" || file.contains("tests/fixtures/") {
+        if file == "CHANGELOG.md"
+            || file == "Cargo.lock"
+            || file.contains("tests/fixtures/")
+            || file.ends_with("tests/compat.rs")
+        {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(root.join(file)) else {

@@ -1,0 +1,666 @@
+{
+  "written_by": "memfork 0.2.1",
+  "branches": [
+    {
+      "name": "experiment",
+      "head": "437bff2407cf762f4d3370342190704af6cdf4cc49513f6100aae5c436d1f8e7",
+      "seq": 9,
+      "entries": [
+        {
+          "key": "note:unicode",
+          "value": "héllo — ✓",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:decision:wal",
+          "value": "append-only log, checksummed",
+          "importance": 0.8999999761581421,
+          "meta": {
+            "source": "design"
+          },
+          "embedding": null
+        },
+        {
+          "key": "project:idea",
+          "value": "try a trie",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:task:1",
+          "value": "write the fixture",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "shop:decision:payments",
+          "value": "hosted checkout",
+          "importance": 0.5,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "shop:handoff:00000001",
+          "value": "{\"summary\":\"checkout works\",\"done\":[\"checkout\"],\"next\":[\"refunds\"],\"blockers\":[],\"questions\":[]}",
+          "importance": 0.8999999761581421,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "shop:task:1",
+          "value": "{\"status\":\"open\",\"what\":\"refunds\"}",
+          "importance": 0.5,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "vec:a",
+          "value": "near",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": [
+            1.0,
+            0.0,
+            0.5
+          ]
+        }
+      ],
+      "log": [
+        {
+          "commit": "437bff2407cf762f4d3370342190704af6cdf4cc49513f6100aae5c436d1f8e7",
+          "seq": 9,
+          "parents": [
+            "4e3ccd82671ea740c9ab3548151123668b521dee3d56a72999053f445f93f30c"
+          ]
+        },
+        {
+          "commit": "4e3ccd82671ea740c9ab3548151123668b521dee3d56a72999053f445f93f30c",
+          "seq": 8,
+          "parents": [
+            "ad5169913b6fcdca1dc63dd82765986df40226a55c6842fdc0cbdd92ca66c990"
+          ]
+        },
+        {
+          "commit": "ad5169913b6fcdca1dc63dd82765986df40226a55c6842fdc0cbdd92ca66c990",
+          "seq": 7,
+          "parents": [
+            "c9dcbf703f540178af7812b31707ac6a146891c57fbcab26f90406f93ca91770"
+          ]
+        },
+        {
+          "commit": "c9dcbf703f540178af7812b31707ac6a146891c57fbcab26f90406f93ca91770",
+          "seq": 6,
+          "parents": [
+            "96b5ebd5393f962afa3c482481999ef5e4572fda762f5b65a30590ccdb4dc06b"
+          ]
+        },
+        {
+          "commit": "96b5ebd5393f962afa3c482481999ef5e4572fda762f5b65a30590ccdb4dc06b",
+          "seq": 5,
+          "parents": [
+            "3050936926c13759fea2ffb8c9bee709ebea0148d8f4239b9e25a50198ea1838"
+          ]
+        },
+        {
+          "commit": "3050936926c13759fea2ffb8c9bee709ebea0148d8f4239b9e25a50198ea1838",
+          "seq": 4,
+          "parents": [
+            "1d3eb7af70ec15923f0f59918126857eaf87916aaf673a11538521b7b9bd4f3d"
+          ]
+        },
+        {
+          "commit": "1d3eb7af70ec15923f0f59918126857eaf87916aaf673a11538521b7b9bd4f3d",
+          "seq": 3,
+          "parents": [
+            "c6fd7cdaf79d2002a83f860613633369ddc7fee98ea82e21de4d963c60424ab1"
+          ]
+        },
+        {
+          "commit": "c6fd7cdaf79d2002a83f860613633369ddc7fee98ea82e21de4d963c60424ab1",
+          "seq": 2,
+          "parents": [
+            "91664b71c5d924f9b94826ee3970ee9744feaf8bea47b09baaa99263bd176476"
+          ]
+        },
+        {
+          "commit": "91664b71c5d924f9b94826ee3970ee9744feaf8bea47b09baaa99263bd176476",
+          "seq": 1,
+          "parents": [
+            "6d188c4e987f8878403525c505c02f9940297baba09124fdaa9b5f1036302b6c"
+          ]
+        },
+        {
+          "commit": "6d188c4e987f8878403525c505c02f9940297baba09124fdaa9b5f1036302b6c",
+          "seq": 0,
+          "parents": []
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "head": "15e9060e830abe76bceade5f6f1ce4aa7561591ede397aa83b098f0c59fb7c10",
+      "seq": 17,
+      "entries": [
+        {
+          "key": "after:snapshot",
+          "value": "in the log tail",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:0",
+          "value": "0",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:1",
+          "value": "1",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:2",
+          "value": "2",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:3",
+          "value": "3",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:4",
+          "value": "4",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:5",
+          "value": "5",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "note:unicode",
+          "value": "héllo — ✓",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:decision:wal",
+          "value": "append-only log, checksummed",
+          "importance": 0.8999999761581421,
+          "meta": {
+            "source": "design"
+          },
+          "embedding": null
+        },
+        {
+          "key": "project:idea",
+          "value": "try a trie",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:task:2",
+          "value": "review",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "shop:decision:payments",
+          "value": "hosted checkout",
+          "importance": 0.5,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "shop:handoff:00000001",
+          "value": "{\"summary\":\"checkout works\",\"done\":[\"checkout\"],\"next\":[\"refunds\"],\"blockers\":[],\"questions\":[]}",
+          "importance": 0.8999999761581421,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "shop:task:1",
+          "value": "{\"status\":\"open\",\"what\":\"refunds\"}",
+          "importance": 0.5,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "vec:a",
+          "value": "near",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": [
+            1.0,
+            0.0,
+            0.5
+          ]
+        }
+      ],
+      "log": [
+        {
+          "commit": "15e9060e830abe76bceade5f6f1ce4aa7561591ede397aa83b098f0c59fb7c10",
+          "seq": 17,
+          "parents": [
+            "9eb26b8b5679028fa4814d802acabdb26527fd0188f8f784f94b116b0e793b75"
+          ]
+        },
+        {
+          "commit": "9eb26b8b5679028fa4814d802acabdb26527fd0188f8f784f94b116b0e793b75",
+          "seq": 16,
+          "parents": [
+            "6677beb196dadfd9cd33b6d99e4fb2f08d696cdf5635b1431eb3786ba44feb28"
+          ]
+        },
+        {
+          "commit": "6677beb196dadfd9cd33b6d99e4fb2f08d696cdf5635b1431eb3786ba44feb28",
+          "seq": 15,
+          "parents": [
+            "4f3d29860d3ccaa2db4fde4123b2db9adef4a4e581a8606746f9c268d3e7f55e"
+          ]
+        },
+        {
+          "commit": "4f3d29860d3ccaa2db4fde4123b2db9adef4a4e581a8606746f9c268d3e7f55e",
+          "seq": 14,
+          "parents": [
+            "644e36933150e8dd77a67baf4e5cf36c24a0e3632ef0da3951f38956ab82a90e"
+          ]
+        },
+        {
+          "commit": "644e36933150e8dd77a67baf4e5cf36c24a0e3632ef0da3951f38956ab82a90e",
+          "seq": 13,
+          "parents": [
+            "565266ec0ba182c139f658bb338b879028b41de3a9875180132c325c051b33c3"
+          ]
+        },
+        {
+          "commit": "565266ec0ba182c139f658bb338b879028b41de3a9875180132c325c051b33c3",
+          "seq": 12,
+          "parents": [
+            "a3beda1d4641da1172f5823714b20755db6c07049c9adfdce2f5302384ee2c85"
+          ]
+        },
+        {
+          "commit": "a3beda1d4641da1172f5823714b20755db6c07049c9adfdce2f5302384ee2c85",
+          "seq": 11,
+          "parents": [
+            "a49af7efb495b0620b667d529ead64ccccce819a52493015ab0758b83d624e4c"
+          ]
+        },
+        {
+          "commit": "a49af7efb495b0620b667d529ead64ccccce819a52493015ab0758b83d624e4c",
+          "seq": 10,
+          "parents": [
+            "3ccd9545f4d85d18f6fbb8d9ce0f8693599fce03432dd080dbf8b98af01e41fe"
+          ]
+        },
+        {
+          "commit": "3ccd9545f4d85d18f6fbb8d9ce0f8693599fce03432dd080dbf8b98af01e41fe",
+          "seq": 9,
+          "parents": [
+            "5c9908837e2ce1775a92ec7ba21ca15e0930c4d2436a3231998b39c775828ecf",
+            "437bff2407cf762f4d3370342190704af6cdf4cc49513f6100aae5c436d1f8e7"
+          ]
+        },
+        {
+          "commit": "5c9908837e2ce1775a92ec7ba21ca15e0930c4d2436a3231998b39c775828ecf",
+          "seq": 8,
+          "parents": [
+            "ad5169913b6fcdca1dc63dd82765986df40226a55c6842fdc0cbdd92ca66c990"
+          ]
+        },
+        {
+          "commit": "ad5169913b6fcdca1dc63dd82765986df40226a55c6842fdc0cbdd92ca66c990",
+          "seq": 7,
+          "parents": [
+            "c9dcbf703f540178af7812b31707ac6a146891c57fbcab26f90406f93ca91770"
+          ]
+        },
+        {
+          "commit": "c9dcbf703f540178af7812b31707ac6a146891c57fbcab26f90406f93ca91770",
+          "seq": 6,
+          "parents": [
+            "96b5ebd5393f962afa3c482481999ef5e4572fda762f5b65a30590ccdb4dc06b"
+          ]
+        },
+        {
+          "commit": "96b5ebd5393f962afa3c482481999ef5e4572fda762f5b65a30590ccdb4dc06b",
+          "seq": 5,
+          "parents": [
+            "3050936926c13759fea2ffb8c9bee709ebea0148d8f4239b9e25a50198ea1838"
+          ]
+        },
+        {
+          "commit": "3050936926c13759fea2ffb8c9bee709ebea0148d8f4239b9e25a50198ea1838",
+          "seq": 4,
+          "parents": [
+            "1d3eb7af70ec15923f0f59918126857eaf87916aaf673a11538521b7b9bd4f3d"
+          ]
+        },
+        {
+          "commit": "1d3eb7af70ec15923f0f59918126857eaf87916aaf673a11538521b7b9bd4f3d",
+          "seq": 3,
+          "parents": [
+            "c6fd7cdaf79d2002a83f860613633369ddc7fee98ea82e21de4d963c60424ab1"
+          ]
+        },
+        {
+          "commit": "c6fd7cdaf79d2002a83f860613633369ddc7fee98ea82e21de4d963c60424ab1",
+          "seq": 2,
+          "parents": [
+            "91664b71c5d924f9b94826ee3970ee9744feaf8bea47b09baaa99263bd176476"
+          ]
+        },
+        {
+          "commit": "91664b71c5d924f9b94826ee3970ee9744feaf8bea47b09baaa99263bd176476",
+          "seq": 1,
+          "parents": [
+            "6d188c4e987f8878403525c505c02f9940297baba09124fdaa9b5f1036302b6c"
+          ]
+        },
+        {
+          "commit": "6d188c4e987f8878403525c505c02f9940297baba09124fdaa9b5f1036302b6c",
+          "seq": 0,
+          "parents": []
+        }
+      ]
+    },
+    {
+      "name": "open-branch",
+      "head": "978b2c57ca9e7bc25eb420793d9a9716caa7c10b2a9953d7331fd38f79425ee6",
+      "seq": 18,
+      "entries": [
+        {
+          "key": "after:snapshot",
+          "value": "in the log tail",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:0",
+          "value": "0",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:1",
+          "value": "1",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:2",
+          "value": "2",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:3",
+          "value": "3",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:4",
+          "value": "4",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "counter:5",
+          "value": "5",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "note:unicode",
+          "value": "héllo — ✓",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:decision:wal",
+          "value": "append-only log, checksummed",
+          "importance": 0.8999999761581421,
+          "meta": {
+            "source": "design"
+          },
+          "embedding": null
+        },
+        {
+          "key": "project:idea",
+          "value": "try a trie",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:task:2",
+          "value": "review",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "project:wip",
+          "value": "unfinished",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": null
+        },
+        {
+          "key": "shop:decision:payments",
+          "value": "hosted checkout",
+          "importance": 0.5,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "shop:handoff:00000001",
+          "value": "{\"summary\":\"checkout works\",\"done\":[\"checkout\"],\"next\":[\"refunds\"],\"blockers\":[],\"questions\":[]}",
+          "importance": 0.8999999761581421,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "shop:task:1",
+          "value": "{\"status\":\"open\",\"what\":\"refunds\"}",
+          "importance": 0.5,
+          "meta": {
+            "memfork.by": "claude-code"
+          },
+          "embedding": null
+        },
+        {
+          "key": "vec:a",
+          "value": "near",
+          "importance": 0.5,
+          "meta": {},
+          "embedding": [
+            1.0,
+            0.0,
+            0.5
+          ]
+        }
+      ],
+      "log": [
+        {
+          "commit": "978b2c57ca9e7bc25eb420793d9a9716caa7c10b2a9953d7331fd38f79425ee6",
+          "seq": 18,
+          "parents": [
+            "15e9060e830abe76bceade5f6f1ce4aa7561591ede397aa83b098f0c59fb7c10"
+          ]
+        },
+        {
+          "commit": "15e9060e830abe76bceade5f6f1ce4aa7561591ede397aa83b098f0c59fb7c10",
+          "seq": 17,
+          "parents": [
+            "9eb26b8b5679028fa4814d802acabdb26527fd0188f8f784f94b116b0e793b75"
+          ]
+        },
+        {
+          "commit": "9eb26b8b5679028fa4814d802acabdb26527fd0188f8f784f94b116b0e793b75",
+          "seq": 16,
+          "parents": [
+            "6677beb196dadfd9cd33b6d99e4fb2f08d696cdf5635b1431eb3786ba44feb28"
+          ]
+        },
+        {
+          "commit": "6677beb196dadfd9cd33b6d99e4fb2f08d696cdf5635b1431eb3786ba44feb28",
+          "seq": 15,
+          "parents": [
+            "4f3d29860d3ccaa2db4fde4123b2db9adef4a4e581a8606746f9c268d3e7f55e"
+          ]
+        },
+        {
+          "commit": "4f3d29860d3ccaa2db4fde4123b2db9adef4a4e581a8606746f9c268d3e7f55e",
+          "seq": 14,
+          "parents": [
+            "644e36933150e8dd77a67baf4e5cf36c24a0e3632ef0da3951f38956ab82a90e"
+          ]
+        },
+        {
+          "commit": "644e36933150e8dd77a67baf4e5cf36c24a0e3632ef0da3951f38956ab82a90e",
+          "seq": 13,
+          "parents": [
+            "565266ec0ba182c139f658bb338b879028b41de3a9875180132c325c051b33c3"
+          ]
+        },
+        {
+          "commit": "565266ec0ba182c139f658bb338b879028b41de3a9875180132c325c051b33c3",
+          "seq": 12,
+          "parents": [
+            "a3beda1d4641da1172f5823714b20755db6c07049c9adfdce2f5302384ee2c85"
+          ]
+        },
+        {
+          "commit": "a3beda1d4641da1172f5823714b20755db6c07049c9adfdce2f5302384ee2c85",
+          "seq": 11,
+          "parents": [
+            "a49af7efb495b0620b667d529ead64ccccce819a52493015ab0758b83d624e4c"
+          ]
+        },
+        {
+          "commit": "a49af7efb495b0620b667d529ead64ccccce819a52493015ab0758b83d624e4c",
+          "seq": 10,
+          "parents": [
+            "3ccd9545f4d85d18f6fbb8d9ce0f8693599fce03432dd080dbf8b98af01e41fe"
+          ]
+        },
+        {
+          "commit": "3ccd9545f4d85d18f6fbb8d9ce0f8693599fce03432dd080dbf8b98af01e41fe",
+          "seq": 9,
+          "parents": [
+            "5c9908837e2ce1775a92ec7ba21ca15e0930c4d2436a3231998b39c775828ecf",
+            "437bff2407cf762f4d3370342190704af6cdf4cc49513f6100aae5c436d1f8e7"
+          ]
+        },
+        {
+          "commit": "5c9908837e2ce1775a92ec7ba21ca15e0930c4d2436a3231998b39c775828ecf",
+          "seq": 8,
+          "parents": [
+            "ad5169913b6fcdca1dc63dd82765986df40226a55c6842fdc0cbdd92ca66c990"
+          ]
+        },
+        {
+          "commit": "ad5169913b6fcdca1dc63dd82765986df40226a55c6842fdc0cbdd92ca66c990",
+          "seq": 7,
+          "parents": [
+            "c9dcbf703f540178af7812b31707ac6a146891c57fbcab26f90406f93ca91770"
+          ]
+        },
+        {
+          "commit": "c9dcbf703f540178af7812b31707ac6a146891c57fbcab26f90406f93ca91770",
+          "seq": 6,
+          "parents": [
+            "96b5ebd5393f962afa3c482481999ef5e4572fda762f5b65a30590ccdb4dc06b"
+          ]
+        },
+        {
+          "commit": "96b5ebd5393f962afa3c482481999ef5e4572fda762f5b65a30590ccdb4dc06b",
+          "seq": 5,
+          "parents": [
+            "3050936926c13759fea2ffb8c9bee709ebea0148d8f4239b9e25a50198ea1838"
+          ]
+        },
+        {
+          "commit": "3050936926c13759fea2ffb8c9bee709ebea0148d8f4239b9e25a50198ea1838",
+          "seq": 4,
+          "parents": [
+            "1d3eb7af70ec15923f0f59918126857eaf87916aaf673a11538521b7b9bd4f3d"
+          ]
+        },
+        {
+          "commit": "1d3eb7af70ec15923f0f59918126857eaf87916aaf673a11538521b7b9bd4f3d",
+          "seq": 3,
+          "parents": [
+            "c6fd7cdaf79d2002a83f860613633369ddc7fee98ea82e21de4d963c60424ab1"
+          ]
+        },
+        {
+          "commit": "c6fd7cdaf79d2002a83f860613633369ddc7fee98ea82e21de4d963c60424ab1",
+          "seq": 2,
+          "parents": [
+            "91664b71c5d924f9b94826ee3970ee9744feaf8bea47b09baaa99263bd176476"
+          ]
+        },
+        {
+          "commit": "91664b71c5d924f9b94826ee3970ee9744feaf8bea47b09baaa99263bd176476",
+          "seq": 1,
+          "parents": [
+            "6d188c4e987f8878403525c505c02f9940297baba09124fdaa9b5f1036302b6c"
+          ]
+        },
+        {
+          "commit": "6d188c4e987f8878403525c505c02f9940297baba09124fdaa9b5f1036302b6c",
+          "seq": 0,
+          "parents": []
+        }
+      ]
+    }
+  ]
+}
