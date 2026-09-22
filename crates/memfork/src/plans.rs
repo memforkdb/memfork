@@ -183,6 +183,25 @@ pub fn normalise_accept(accept: Option<&str>) -> Option<String> {
 
 /// Read a plan file's text. Checks its shape; the graph is checked against
 /// the board when the plan is written, or on its own by [`check_alone`].
+///
+/// ```
+/// let plan = r#"
+/// [[task]]
+/// id = "schema"
+/// title = "add the refunds table"
+///
+/// [[task]]
+/// id = "api"
+/// title = "refunds endpoint"
+/// depends_on = ["schema"]
+/// accept = "cargo test -p api"
+/// "#;
+/// let tasks = memfork::plans::parse(plan).unwrap();
+/// assert_eq!(tasks.len(), 2);
+/// assert_eq!(tasks[1].depends_on, ["schema"]);
+/// // Nothing outside the plan is depended on, and there is no cycle.
+/// assert!(memfork::plans::check_alone(&tasks).unwrap().is_empty());
+/// ```
 pub fn parse(text: &str) -> Result<Vec<PlanTask>, String> {
     let file: PlanFile =
         toml::from_str(text).map_err(|e| format!("the plan does not parse: {e}"))?;

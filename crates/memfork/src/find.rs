@@ -36,6 +36,11 @@ pub const DEFAULT_RESULTS: usize = 10;
 pub const SNIPPET_CHARS: usize = 200;
 
 /// Lowercased runs of letters and digits.
+///
+/// ```
+/// assert_eq!(memfork::find::words("Auth lives in src/auth, entry login.rs"),
+///            ["auth", "lives", "in", "src", "auth", "entry", "login", "rs"]);
+/// ```
 pub fn words(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -111,6 +116,23 @@ fn matches(term: &str, word: &str) -> u64 {
 
 /// Rank `docs` against `query`. Only documents with a score above zero are
 /// returned, best first, at most `limit`.
+///
+/// Scores are integers and ties break on the key, so the same documents rank
+/// the same on every machine.
+///
+/// ```
+/// use memfork::find::{rank, Doc};
+///
+/// let docs = [
+///     Doc { key: "shop:decision:payments", text: "hosted checkout, no card data here" },
+///     Doc { key: "shop:decision:emails", text: "queue them; retry twice" },
+///     Doc { key: "shop:note:1", text: "the payments provider's sandbox is slow" },
+/// ];
+/// let hits = rank(&docs, "payments", 10);
+/// assert_eq!(hits[0].key, "shop:decision:payments");
+/// assert_eq!(hits.len(), 2);
+/// assert!(rank(&docs, "kubernetes", 10).is_empty());
+/// ```
 pub fn rank(docs: &[Doc<'_>], query: &str, limit: usize) -> Vec<Hit> {
     let terms: Vec<String> = {
         let mut seen = BTreeSet::new();
@@ -188,6 +210,14 @@ fn first_match(text_lower: &str, phrase: &str, terms: &[String]) -> Option<usize
 
 /// Up to [`SNIPPET_CHARS`] of `text` around character `at`, on one line,
 /// with `…` where it was cut.
+///
+/// ```
+/// let long = "x ".repeat(300);
+/// let cut = memfork::find::snippet(&long, Some(299));
+/// assert!(cut.chars().count() <= memfork::find::SNIPPET_CHARS + 2);
+/// assert!(cut.starts_with('…'));
+/// assert_eq!(memfork::find::snippet("short\nvalue", None), "short value");
+/// ```
 pub fn snippet(text: &str, at: Option<usize>) -> String {
     let flat: Vec<char> = text
         .split_whitespace()

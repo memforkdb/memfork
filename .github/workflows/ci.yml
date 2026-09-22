@@ -56,6 +56,16 @@ jobs:
       - name: Test (release)
         run: cargo test --workspace --all-features --release
 
+      # The examples are documentation that compiles, and the three that need
+      # no daemon are run as well, so a changed API is caught before a reader
+      # meets it.
+      - name: Examples
+        run: |
+          cargo build -p memfork --examples
+          cargo run -q -p memfork --example memory_loop
+          cargo run -q -p memfork --example handoff
+          cargo run -q -p memfork --example plan_two_clients
+
       # docs.rs publishes these and they cannot be edited afterwards, so a
       # broken intra-doc link is a defect rather than a nuisance.
       - name: Documentation

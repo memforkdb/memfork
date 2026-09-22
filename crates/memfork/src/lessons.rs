@@ -36,6 +36,17 @@ const DIGITS: usize = 8;
 static NUMBERING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A lesson made ready to store: one line, bounded.
+///
+/// ```
+/// assert_eq!(
+///     memfork::lessons::tidy("  the migration needs\n  the table first ").unwrap(),
+///     "the migration needs the table first"
+/// );
+/// assert!(memfork::lessons::tidy("   ").is_err());
+/// // A long one is cut to the limit rather than refused.
+/// let long = memfork::lessons::tidy(&"x".repeat(400)).unwrap();
+/// assert_eq!(long.chars().count(), memfork::lessons::MAX_LESSON_CHARS);
+/// ```
 pub fn tidy(raw: &str) -> Result<String, String> {
     let line: String = raw
         .split_whitespace()

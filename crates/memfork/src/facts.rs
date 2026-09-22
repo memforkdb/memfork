@@ -51,6 +51,13 @@ pub const MAX_BYTES_PER_CHECK: u64 = 64 * 1024 * 1024;
 /// Make a list of source paths canonical: relative to the project, `/`
 /// separators, no `.` parts, nothing that climbs out with `..` or starts from
 /// a root, no duplicates, and in the order given.
+///
+/// ```
+/// let paths = ["src\\auth\\login.rs".to_owned(), "./src/auth/mod.rs".to_owned(), "src/auth/login.rs".to_owned()];
+/// assert_eq!(memfork::facts::normalise(&paths).unwrap(), ["src/auth/login.rs", "src/auth/mod.rs"]);
+/// assert!(memfork::facts::normalise(&["../secret".to_owned()]).is_err());
+/// assert!(memfork::facts::normalise(&["/etc/passwd".to_owned()]).is_err());
+/// ```
 pub fn normalise(paths: &[String]) -> Result<Vec<String>, String> {
     if paths.len() > MAX_SOURCES {
         return Err(format!(
@@ -107,6 +114,15 @@ pub fn sources_meta(paths: &[String]) -> String {
 /// and the source paths. The same fact on two branches, or forked from one to
 /// the other, shares its record; a rewrite with different words or sources
 /// gets its own.
+///
+/// ```
+/// use memfork::facts::record_id;
+/// let sources = ["src/auth/login.rs".to_owned()];
+/// let a = record_id("shop:fact:auth", b"auth lives in src/auth", &sources);
+/// assert_eq!(a, record_id("shop:fact:auth", b"auth lives in src/auth", &sources));
+/// assert_ne!(a, record_id("shop:fact:auth", b"auth moved", &sources));
+/// assert_eq!(a.len(), 64);
+/// ```
 pub fn record_id(key: &str, value: &[u8], sources: &[String]) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(&(key.len() as u64).to_le_bytes());
