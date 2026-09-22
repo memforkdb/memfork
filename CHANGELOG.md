@@ -79,6 +79,9 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   naming its rule.
 - **MCP prompts** for the routines: resume, handoff, review-decisions,
   tidy-memory, next-task.
+- **The event stream is a documented contract.** Every line `memfork watch
+  --json` prints carries `schema: 1`; the fields, the operation names and the
+  rule for changing them are in `docs/EVENTS.md`, held by a test.
 
 ### Fixed
 

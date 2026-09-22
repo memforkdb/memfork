@@ -470,6 +470,14 @@ claim loses), `release`, `done`, `lesson`, and `fact` with `fresh`, `stale` or
 would fill with it. (Lease expiry, the one other clock reading, is kept in
 memory and never reaches an id.)
 
+**[v0.14] The feed is a contract.** Every line, the `hello` included, carries
+`schema`, the version of its shape (`events::SCHEMA`, currently 1). Within a
+version a field may be added and never removed, renamed or given a new
+meaning; the field set is held by a test and every field is described in
+[`docs/EVENTS.md`](EVENTS.md), which a second test checks. There is no
+OpenTelemetry exporter: the Rust SDK is not a light dependency, and the
+versioned stream is the integration point.
+
 ## 6. MCP tools
 All tools take an optional `branch` (default: the session's current branch).
 ```

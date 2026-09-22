@@ -20,9 +20,18 @@ use tokio::sync::broadcast;
 /// How many events a slow watcher may fall behind before it misses some.
 const BACKLOG: usize = 1024;
 
+/// The version of the shape of every line `memfork watch --json` prints.
+///
+/// The shape is a contract with whatever ingests the feed (`docs/EVENTS.md`).
+/// Within one version a field may be added but never removed, renamed or
+/// given a new meaning; any of those bumps this number.
+pub const SCHEMA: u32 = 1;
+
 /// One thing that happened.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
+    /// The version of this line's shape: [`SCHEMA`].
+    pub schema: u32,
     /// When, as RFC 3339 in UTC.
     pub time: String,
     /// What kind of thing: `operation`, `connected` or `disconnected`.
@@ -67,6 +76,9 @@ pub struct Connected {
 /// The first thing a watcher is sent: the daemon, and who is connected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
+    /// The version of this line's shape, and of every line after it:
+    /// [`SCHEMA`].
+    pub schema: u32,
     /// Always `hello`.
     pub kind: String,
     /// The daemon's version.
@@ -158,6 +170,7 @@ impl Event {
     pub fn about(client_id: &str, namespace: Option<&str>) -> Event {
         let client = crate::clients::display_for_writer(client_id);
         Event {
+            schema: SCHEMA,
             time: now(),
             kind: "operation".to_owned(),
             client_id: (!client_id.is_empty() && client != client_id).then(|| client_id.to_owned()),
@@ -248,5 +261,103 @@ mod tests {
         assert!(json.get("error").is_none());
         assert_eq!(json["operation"], "put");
         assert_eq!(json["kind"], "operation");
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    /// The field set of schema 1, in order. Adding a field is allowed and
+    /// goes here too; removing or renaming one is a new schema, and the
+    /// constant must change with it.
+    const FIELDS_V1: &[&str] = &[
+        "schema",
+        "time",
+        "kind",
+        "client",
+        "client_id",
+        "namespace",
+        "operation",
+        "key",
+        "branch",
+        "detail",
+        "ok",
+        "error",
+    ];
+
+    fn full_event() -> Event {
+        Event {
+            client_id: Some("claude-code".to_owned()),
+            operation: Some("claim".to_owned()),
+            key: Some("shop:task:3".to_owned()),
+            branch: Some("main".to_owned()),
+            detail: Some("held by Codex CLI".to_owned()),
+            ok: false,
+            error: Some("held".to_owned()),
+            ..Event::about("claude-code", Some("shop"))
+        }
+    }
+
+    #[test]
+    fn schema_one_has_exactly_these_fields() {
+        assert_eq!(
+            SCHEMA, 1,
+            "a new schema needs a new field list and a docs section"
+        );
+        let json = serde_json::to_value(full_event()).unwrap_or_default();
+        let fields: Vec<&str> = json
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(fields, FIELDS_V1);
+        assert_eq!(json["schema"], 1);
+
+        let hello = Hello {
+            schema: SCHEMA,
+            kind: "hello".to_owned(),
+            version: "0.0.0".to_owned(),
+            port: 1,
+            clients: vec![Connected {
+                client: "c".to_owned(),
+                namespace: "n".to_owned(),
+            }],
+        };
+        let json = serde_json::to_value(hello).unwrap_or_default();
+        let fields: Vec<&str> = json
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(fields, ["schema", "kind", "version", "port", "clients"]);
+    }
+
+    #[test]
+    fn every_field_is_described_in_the_docs() {
+        let docs = include_str!("../../../docs/EVENTS.md");
+        for field in FIELDS_V1
+            .iter()
+            .chain(["version", "port", "clients"].iter())
+        {
+            assert!(
+                docs.contains(&format!("| `{field}` |")),
+                "docs/EVENTS.md does not describe `{field}`"
+            );
+        }
+        for kind in ["connected", "disconnected", "operation", "hello"] {
+            assert!(docs.contains(&format!("`{kind}`")), "{kind}");
+        }
+        for op in ["lesson", "fact", "flag", "ready", "maintain"] {
+            assert!(docs.contains(&format!("| `{op}` |")), "{op}");
+        }
+    }
+
+    #[test]
+    fn a_line_stays_readable_by_an_older_reader() {
+        // A reader of schema 1 that knows nothing of a field added later must
+        // still parse the line, so unknown fields are ignored, not refused.
+        let mut json = serde_json::to_value(full_event()).unwrap_or_default();
+        json["added_later"] = serde_json::json!("x");
+        let back: Result<Event, _> = serde_json::from_value(json);
+        assert!(back.is_ok());
     }
 }

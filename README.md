@@ -572,7 +572,7 @@ to the server.
 | `put`, `get`, `ls`, `del`, `search` | one operation on the shared store; on a terminal `ls` fits values to the width, `--full` shows them whole |
 | `fork`, `merge`, `discard`, `diff`, `branches`, `at`, `log` | branching and history on the shared store |
 | `log --graph` | every branch as a tree: forks, merges, discarded attempts |
-| `watch` | what every client is doing, as it happens |
+| `watch` | what every client is doing, as it happens; `--json` is a versioned stream other tools can read ([docs/EVENTS.md](docs/EVENTS.md)) |
 | `task add\|claim\|renew\|release\|done\|list` | the task board, from the command line |
 | `find <text>` | text search over the shared store |
 | `facts [prefix]` | every fact, fresh or stale |

@@ -290,6 +290,7 @@ async fn watch_shows_who_did_what_including_handoffs() {
     let hello: Json = serde_json::from_str(&next(&lines)).unwrap();
     assert_eq!(hello["kind"], "hello");
     assert_eq!(hello["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(hello["schema"], memfork::events::SCHEMA);
 
     let first = client(&sandbox, "claude-code").await;
     call(&first, "memfork_handoff", json!({ "summary": "half done" })).await;
@@ -328,6 +329,10 @@ async fn watch_shows_who_did_what_including_handoffs() {
     assert_eq!(events[1]["namespace"], "shop");
     assert_eq!(events[4]["branch"], "try");
     assert!(events[0]["time"].as_str().unwrap().ends_with('Z'));
+    // Every line says which shape it has, so an ingesting tool can check.
+    assert!(events
+        .iter()
+        .all(|e| e["schema"] == memfork::events::SCHEMA));
 
     // --count ends it.
     let status = watcher.wait().unwrap();

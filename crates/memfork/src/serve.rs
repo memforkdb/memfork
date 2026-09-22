@@ -405,6 +405,7 @@ fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxB
 /// connected, ending when the daemon stops.
 fn event_stream(events: &Events, port: u16, shutdown: CancellationToken) -> Response<BoxBody> {
     let hello = crate::events::Hello {
+        schema: crate::events::SCHEMA,
         kind: "hello".to_owned(),
         version: crate::VERSION.to_owned(),
         port,
