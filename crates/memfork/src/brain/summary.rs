@@ -246,6 +246,7 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
                 *families.entry(family).or_insert(0) += 1;
             }
             json!({
+                "order": b.order,
                 "to": display(&b.to),
                 "bytes": b.bytes,
                 "approx_tokens": b.bytes.div_ceil(4),

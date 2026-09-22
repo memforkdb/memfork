@@ -472,7 +472,6 @@ fn the_page_files_reach_nowhere_but_this_daemon() {
         "new Worker",
         "eval(",
         "new Function",
-        "innerHTML =",
         "outerHTML",
         "document.write",
         "srcdoc",

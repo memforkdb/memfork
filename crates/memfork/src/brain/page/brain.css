@@ -150,6 +150,8 @@ h2 { font-size: 13.5px; font-weight: 500; color: var(--sub); display: flex; alig
 .sheet .pre { white-space: pre-wrap; font-size: 12.5px; color: var(--sub); max-height: 40vh; overflow: auto; }
 .sheet .primary { background: var(--panel); color: var(--ac); border: 0; font: inherit; padding: 8px 14px; border-radius: 10px; cursor: pointer; }
 
+.sheet label { color: var(--sub); display: inline-flex; gap: 6px; align-items: center; }
+.sheet select { background: var(--panel); color: var(--txt); border: 0; font: inherit; padding: 6px 8px; border-radius: 8px; }
 :focus-visible { outline: 2px solid var(--ac); outline-offset: 3px; border-radius: 6px; }
 [hidden] { display: none !important; }
 
