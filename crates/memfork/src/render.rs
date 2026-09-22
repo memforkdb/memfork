@@ -20,6 +20,8 @@ pub fn lines(command: &Command, outcome: &Outcome, style: &Style) -> Vec<String>
         Command::Branches => branches(&outcome.json, style),
         Command::Diff { .. } => diff(&outcome.json, style),
         Command::Ls { full, .. } => listing(outcome, *full, style),
+        Command::Facts { .. } => facts(&outcome.json, style),
+        Command::Stats { .. } => stats(&outcome.json["stats"], style),
         Command::At {
             key: None, full, ..
         } => listing(outcome, *full, style),
@@ -28,6 +30,109 @@ pub fn lines(command: &Command, outcome: &Outcome, style: &Style) -> Vec<String>
         Command::Discard { .. } => lead(&outcome.text, |w| style.warn(w)),
         _ => outcome.text.clone(),
     }
+}
+
+/// `memfork facts`: each fact, whether its sources have changed, and what it
+/// says.
+pub fn facts(json: &Json, style: &Style) -> Vec<String> {
+    let all = json["facts"].as_array().cloned().unwrap_or_default();
+    if all.is_empty() {
+        return vec![style.dim(&format!(
+            "no facts under `{}`; record one with `memfork put <key> <value> --source <file>`",
+            json["prefix"].as_str().unwrap_or("")
+        ))];
+    }
+    let width = all
+        .iter()
+        .filter_map(|f| f["key"].as_str())
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    all.iter()
+        .map(|f| {
+            let key = f["key"].as_str().unwrap_or_default();
+            let state = f["fact"].as_str().unwrap_or("unverified");
+            let word = match state {
+                "fresh" => style.accent("fresh"),
+                "stale" => style.warn("stale"),
+                other => style.dim(other),
+            };
+            let changed = f["stale_sources"]
+                .as_array()
+                .map(|s| {
+                    let names: Vec<&str> = s.iter().filter_map(Json::as_str).collect();
+                    format!("  changed: {}", names.join(", "))
+                })
+                .unwrap_or_default();
+            let value: String = f["value"]
+                .as_str()
+                .unwrap_or("")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(80)
+                .collect();
+            format!(
+                "{}{}  {word:<5}  {}{}",
+                style.primary(key),
+                " ".repeat(width - key.chars().count()),
+                value,
+                style.warn(&changed)
+            )
+        })
+        .collect()
+}
+
+/// `memfork stats`: what was served and saved, in bytes and approximate
+/// tokens — never anything more precise than it is.
+pub fn stats(json: &Json, style: &Style) -> Vec<String> {
+    let block = |c: &Json, indent: &str| -> Vec<String> {
+        let n = |f: &str| c[f].as_u64().unwrap_or(0);
+        let mut lines = vec![format!(
+            "{indent}briefings  {} served, {} bytes (about {} tokens), against {} bytes of memory",
+            n("briefings"),
+            n("briefing_bytes"),
+            n("briefing_bytes").div_ceil(4),
+            n("memory_bytes")
+        )];
+        lines.push(format!(
+            "{indent}lessons    {} recorded, {} served in briefings",
+            n("lessons_recorded"),
+            n("lessons_served")
+        ));
+        lines.push(format!(
+            "{indent}facts      {} fresh, {} stale, {} unverified when served",
+            n("facts_fresh"),
+            n("facts_stale"),
+            n("facts_unverified")
+        ));
+        lines.push(format!(
+            "{indent}tasks      {} claimed, {} claims refused because another had it",
+            n("claims"),
+            n("claim_conflicts")
+        ));
+        lines.push(format!("{indent}finds      {}", n("finds")));
+        lines
+    };
+    let mut out = vec![style.strong(crate::style::palette::PRIMARY, "all projects")];
+    out.extend(block(&json["total"], "  "));
+    if let Some(projects) = json["projects"].as_object() {
+        for (project, clients) in projects {
+            for (client, counters) in clients.as_object().into_iter().flatten() {
+                out.push(String::new());
+                out.push(format!(
+                    "{}  {}",
+                    style.strong(crate::style::palette::PRIMARY, project),
+                    style.dim(&crate::clients::display_for_writer(client))
+                ));
+                out.extend(block(counters, "  "));
+            }
+        }
+    }
+    out.push(String::new());
+    out.push(style.dim("tokens are an estimate: bytes divided by 4, rounded up"));
+    out
 }
 
 /// `memfork ls`, and `memfork at` listing a branch.
@@ -217,8 +322,10 @@ pub fn event(e: &Event, style: &Style) -> String {
         _ => {
             let op = e.operation.as_deref().unwrap_or("?");
             let painted_op = match op {
-                "fork" | "merge" | "handoff" | "resume" => style.accent(op),
-                "discard" | "delete" | "del" => style.warn(op),
+                "fork" | "merge" | "handoff" | "resume" | "claim" | "done" | "lesson" => {
+                    style.accent(op)
+                }
+                "discard" | "delete" | "del" | "release" => style.warn(op),
                 _ => style.primary(op),
             };
             let mut parts = vec![
@@ -235,6 +342,13 @@ pub fn event(e: &Event, style: &Style) -> String {
             ];
             if let Some(key) = &e.key {
                 parts.push(style.primary(key));
+            }
+            if let Some(detail) = &e.detail {
+                parts.push(match detail.as_str() {
+                    "fresh" => style.accent(detail),
+                    "stale" => style.warn(detail),
+                    _ => style.dim(detail),
+                });
             }
             if let Some(branch) = &e.branch {
                 parts.push(style.dim(&format!("on {branch}")));

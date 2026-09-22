@@ -10,8 +10,10 @@ use serde_json::{json, Value as Json};
 
 use super::handoff;
 use super::schema::JsonObject;
+use crate::board::{ClaimOutcome, Who};
 use crate::events::{Event, Events};
-use crate::namespace;
+use crate::shared::Shared;
+use crate::{facts, find, lessons, namespace};
 
 /// Longest writer name recorded, in characters.
 const MAX_WRITER_CHARS: usize = 128;
@@ -70,6 +72,58 @@ pub struct Session {
     /// place in the list of connected clients once it has said who it is.
     events: Option<Arc<Events>>,
     joined: Mutex<Option<u64>>,
+    /// Leases, statistics and fact hashes, shared by every session in the
+    /// process.
+    shared: Arc<Shared>,
+    /// This session, for owning claims: random, and never committed.
+    session_id: Mutex<String>,
+    /// The project's directory, when this process can see it: an
+    /// `--ephemeral` server or the command line. The daemon has none; its
+    /// proxies check facts instead.
+    root: Option<std::path::PathBuf>,
+}
+
+/// Record what checking facts found, wherever it was checked: counted for
+/// `client` in `ns`, and one `fact` event each for `memfork watch`.
+pub fn record_checked(
+    shared: &Shared,
+    events: Option<&Events>,
+    client: &str,
+    ns: &str,
+    checked: &facts::Checked,
+) {
+    if checked.is_empty() {
+        return;
+    }
+    shared.sidecar.count(ns, client, |c| {
+        c.facts_fresh += checked.fresh;
+        c.facts_stale += checked.stale;
+        c.facts_unverified += checked.unverified;
+    });
+    if let Some(events) = events {
+        for (key, state) in &checked.facts {
+            events.publish(Event {
+                operation: Some("fact".to_owned()),
+                key: Some(key.clone()),
+                detail: Some(state.clone()),
+                ..Event::about(client, Some(ns))
+            });
+        }
+    }
+}
+
+/// A random id for a session: sixteen random bytes as hex. Only ever held in
+/// memory, beside the store, so it never reaches a commit id.
+pub fn new_session_id() -> String {
+    let mut bytes = [0u8; 16];
+    if getrandom::fill(&mut bytes).is_err() {
+        // No randomness to be had: fall back to something that is at least
+        // distinct within this process.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return format!("{:016x}{:016x}", std::process::id(), n);
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl Session {
@@ -84,7 +138,70 @@ impl Session {
             writer: Mutex::new(None),
             events: None,
             joined: Mutex::new(None),
+            shared: Shared::in_memory(),
+            session_id: Mutex::new(new_session_id()),
+            root: None,
         }
+    }
+
+    /// Share leases, statistics and fact hashes with every other session in
+    /// this process.
+    #[must_use]
+    pub fn sharing(mut self, shared: Arc<Shared>) -> Self {
+        self.shared = shared;
+        self
+    }
+
+    /// Check facts against the files under `root`, in this process.
+    #[must_use]
+    pub fn in_project(mut self, root: std::path::PathBuf) -> Self {
+        self.root = Some(root);
+        self
+    }
+
+    /// What this session shares with the rest of the process.
+    pub fn shared(&self) -> &Arc<Shared> {
+        &self.shared
+    }
+
+    /// Take the session id a proxy chose, so claims survive its reconnects.
+    pub fn set_session_id(&self, id: &str) {
+        let id: String = id.trim().chars().take(64).collect();
+        if !id.is_empty() {
+            *self.session_id.lock().unwrap_or_else(|e| e.into_inner()) = id;
+        }
+    }
+
+    /// Who this session is, for claims.
+    pub fn who(&self) -> Who {
+        Who {
+            client: self.writer().unwrap_or_else(|| "unknown client".to_owned()),
+            session: self
+                .session_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        }
+    }
+
+    /// Count something for this session's client in this session's project.
+    fn count(&self, change: impl FnOnce(&mut crate::sidecar::Counters)) {
+        let client = self.writer().unwrap_or_else(|| "unknown client".to_owned());
+        self.shared
+            .sidecar
+            .count(&self.namespace(), &client, change);
+    }
+
+    /// Record what checking facts found: statistics, and one event per fact.
+    pub fn facts_checked(&self, checked: &facts::Checked) {
+        let who = self.writer().unwrap_or_else(|| "unknown client".to_owned());
+        record_checked(
+            &self.shared,
+            self.events.as_deref(),
+            &who,
+            &self.namespace(),
+            checked,
+        );
     }
 
     /// Report this session's activity to `events`, for `memfork watch`.
@@ -176,6 +293,12 @@ impl Session {
         let outcome = self.dispatch(name, args);
         self.report(name, args, &before, &outcome);
         let mut result = outcome?;
+        // Facts are checked where the files are. Here only if this process
+        // can see them; otherwise the proxy does it on the way out.
+        if let Some(root) = &self.root {
+            let checked = facts::check(&mut result, root, &self.shared.hasher);
+            self.facts_checked(&checked);
+        }
         if let Json::Object(map) = &mut result {
             map.insert("current_branch".to_owned(), json!(self.branch()));
         }
@@ -216,20 +339,51 @@ impl Session {
                 .map(str::to_owned)
         });
         let namespace = match name {
-            "memfork_handoff" | "memfork_resume" => {
+            "memfork_handoff" | "memfork_resume" | "memfork_task" => {
                 text("namespace").unwrap_or_else(|| self.namespace())
             }
             _ => self.namespace(),
         };
         let who = self.writer().unwrap_or_else(|| "unknown client".to_owned());
+        let result = outcome.as_ref().ok();
+        // The task board speaks in its actions; a renewal is housekeeping and
+        // stays out of the feed.
+        let operation = match name {
+            "memfork_task" => match text("action").as_deref() {
+                Some("renew") => return,
+                Some(action) => action.to_owned(),
+                None => "task".to_owned(),
+            },
+            other => other.trim_start_matches("memfork_").to_owned(),
+        };
+        let detail = result.and_then(|r| {
+            r.get("held_by")
+                .and_then(Json::as_str)
+                .map(|h| format!("held by {h}"))
+        });
+        let ok =
+            outcome.is_ok() && !result.is_some_and(|r| r.get("claimed") == Some(&json!(false)));
         events.publish(Event {
-            operation: Some(name.trim_start_matches("memfork_").to_owned()),
+            operation: Some(operation),
             key,
             branch,
-            ok: outcome.is_ok(),
+            detail,
+            ok,
             error: outcome.as_ref().err().map(ToString::to_string),
             ..Event::about(&who, Some(&namespace))
         });
+        // A discard that left a lesson says so as a second event.
+        if let Some(lesson) = result.and_then(|r| r.get("lesson")) {
+            events.publish(Event {
+                operation: Some("lesson".to_owned()),
+                key: lesson.get("key").and_then(Json::as_str).map(str::to_owned),
+                branch: lesson
+                    .get("branch")
+                    .and_then(Json::as_str)
+                    .map(str::to_owned),
+                ..Event::about(&who, Some(&namespace))
+            });
+        }
     }
 
     fn dispatch(&self, name: &str, args: &JsonObject) -> Result<Json, ToolError> {
@@ -266,11 +420,49 @@ impl Session {
                 if let Some(writer) = self.writer() {
                     value = value.with_meta(WRITTEN_BY, writer);
                 }
+                // A fact: the paths are committed; the hashes they had are
+                // kept beside the store, never in it.
+                let sources = match opt_str_list(args, "sources")? {
+                    Some(raw) if !raw.is_empty() => {
+                        Some(facts::normalise(&raw).map_err(ToolError::BadArguments)?)
+                    }
+                    _ => None,
+                };
+                if let Some(sources) = &sources {
+                    value = value.with_meta(facts::SOURCES_META, facts::sources_meta(sources));
+                }
                 // Read first so the result can say whether this replaced
                 // something. It is one in-memory lookup, and it saves the
                 // caller a round trip to find out.
                 let replaced = self.db.get(&branch, key)?.is_some();
                 let stored = text(&value.value);
+                let recorded = match &sources {
+                    Some(sources) => {
+                        let hashes = match args.get("source_hashes") {
+                            Some(Json::Object(given)) => Some(
+                                sources
+                                    .iter()
+                                    .map(|s| {
+                                        let hash = given.get(s).and_then(Json::as_str);
+                                        (s.clone(), hash.map(str::to_owned))
+                                    })
+                                    .collect(),
+                            ),
+                            _ => self
+                                .root
+                                .as_ref()
+                                .map(|root| self.shared.hasher.record(root, sources)),
+                        };
+                        if let Some(hashes) = hashes {
+                            let id = facts::record_id(key, &value.value, sources);
+                            self.shared.sidecar.record_fact(&id, hashes);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    None => false,
+                };
                 let commit = self.db.put(&branch, key, value)?;
                 Ok(json!({
                     "branch": branch,
@@ -282,6 +474,8 @@ impl Session {
                     "value": stored,
                     "replaced": replaced,
                     "commit": commit.to_hex(),
+                    "sources": sources,
+                    "sources_recorded": sources.is_some().then_some(recorded),
                 }))
             }
 
@@ -299,7 +493,11 @@ impl Session {
                         "has_embedding": entry.embedding.is_some(),
                         "written_by": entry.meta.get(WRITTEN_BY),
                         "meta": entry.meta,
-                    })),
+                    }))
+                    .map(|mut got| {
+                        handoff::with_fact_fields(&mut got, key, &entry, &self.shared.sidecar);
+                        got
+                    }),
                     None => Ok(json!({ "branch": branch, "key": key, "found": false })),
                 }
             }
@@ -332,8 +530,64 @@ impl Session {
                 }))
             }
 
+            "memfork_search" if args.get("text").is_some_and(|t| !t.is_null()) => {
+                if args.get("embedding").is_some_and(|e| !e.is_null()) {
+                    return Err(ToolError::BadArguments(
+                        "give either `text` or `embedding`, not both".to_owned(),
+                    ));
+                }
+                let query = req_str(args, "text")?;
+                let k = opt_usize(args, "k")?
+                    .unwrap_or(find::DEFAULT_RESULTS)
+                    .clamp(1, find::MAX_RESULTS);
+                let prefix = opt_str(args, "prefix")?.unwrap_or("");
+                let entries = self.db.list(&branch, prefix, None)?;
+                let texts: Vec<String> = entries.iter().map(|(_, e)| text(&e.value)).collect();
+                let docs: Vec<find::Doc<'_>> = entries
+                    .iter()
+                    .zip(&texts)
+                    .map(|((k, _), t)| find::Doc { key: k, text: t })
+                    .collect();
+                let hits = find::rank(&docs, query, k);
+                self.count(|c| c.finds += 1);
+                let by_key: std::collections::BTreeMap<
+                    &str,
+                    (&std::sync::Arc<memfork_core::Entry>, &String),
+                > = entries
+                    .iter()
+                    .zip(&texts)
+                    .map(|((k, e), t)| (k.as_str(), (e, t)))
+                    .collect();
+                Ok(json!({
+                    "branch": branch,
+                    "text": query,
+                    "count": hits.len(),
+                    "searched": entries.len(),
+                    "hits": hits.iter().filter_map(|h| {
+                        let (entry, value) = by_key.get(h.key.as_str())?;
+                        let mut hit = json!({
+                            "key": h.key,
+                            "score": h.score,
+                            "snippet": find::snippet(value, h.first_match),
+                            "by": entry.meta.get(WRITTEN_BY),
+                        });
+                        handoff::with_fact_fields(&mut hit, &h.key, entry, &self.shared.sidecar);
+                        Some(hit)
+                    }).collect::<Vec<_>>(),
+                }))
+            }
+
             "memfork_search" => {
-                let query = req_f32_array(args, "embedding")?;
+                let query = match opt_f32_array(args, "embedding")? {
+                    Some(q) => q,
+                    None => {
+                        return Err(ToolError::BadArguments(
+                            "give `text` to search by words, or `embedding` to search by a \
+                             vector"
+                                .to_owned(),
+                        ))
+                    }
+                };
                 let k = opt_usize(args, "k")?.unwrap_or(10);
                 let prefix = opt_str(args, "prefix")?;
                 let hits = self.db.search(&branch, &query, k, prefix)?;
@@ -424,6 +678,33 @@ impl Session {
 
             "memfork_discard" => {
                 let name = req_str(args, "name")?;
+                // The lesson goes to the parent first: if the discard then
+                // fails, the lesson is still true, and nothing is lost.
+                let lesson = match opt_str(args, "lesson")? {
+                    Some(raw) => {
+                        if !self.db.has_branch(name) {
+                            return Err(ToolError::Engine(memfork_core::Error::NoSuchBranch(
+                                name.to_owned(),
+                            )));
+                        }
+                        let line = lessons::tidy(raw).map_err(ToolError::BadArguments)?;
+                        let rec = lessons::record(
+                            &self.db,
+                            name,
+                            &line,
+                            &self.namespace(),
+                            self.writer().as_deref(),
+                        )?;
+                        self.count(|c| c.lessons_recorded += 1);
+                        Some(json!({
+                            "key": rec.key,
+                            "branch": rec.branch,
+                            "lesson": line,
+                            "commit": rec.commit.to_hex(),
+                        }))
+                    }
+                    None => None,
+                };
                 self.db.discard(name)?;
                 // Do not strand the session on a branch that no longer exists.
                 let moved = if self.branch() == name {
@@ -436,6 +717,7 @@ impl Session {
                     "name": name,
                     "discarded": true,
                     "switched_branch": moved,
+                    "lesson": lesson,
                 }))
             }
 
@@ -539,8 +821,31 @@ impl Session {
 
             "memfork_resume" => {
                 let ns = self.namespace_arg(args)?;
-                Ok(handoff::briefing(&self.db, &branch, &ns)?)
+                let ask = handoff::Ask {
+                    task: opt_str(args, "task")?.map(str::to_owned),
+                    budget: opt_usize(args, "budget")?,
+                    current_branch: Some(self.branch()),
+                };
+                let brief =
+                    handoff::briefing_with(&self.db, &branch, &ns, &ask, Some(&self.shared))?;
+                let size = brief.to_string().len() as u64;
+                let memory: u64 = self
+                    .db
+                    .list(&branch, &format!("{ns}{}", namespace::SEPARATOR), None)?
+                    .iter()
+                    .map(|(k, e)| (k.len() + e.value.len()) as u64)
+                    .sum();
+                let lessons_served = brief["lessons"].as_array().map_or(0, Vec::len) as u64;
+                self.count(|c| {
+                    c.briefings += 1;
+                    c.briefing_bytes += size;
+                    c.memory_bytes += memory;
+                    c.lessons_served += lessons_served;
+                });
+                Ok(brief)
             }
+
+            "memfork_task" => self.task(&branch, args),
 
             // `find` above already rejected anything not in the registry, so a
             // name reaching here means the registry and this match disagree.
@@ -561,6 +866,64 @@ impl Drop for Session {
 }
 
 impl Session {
+    /// `memfork_task`: the task board.
+    fn task(&self, branch: &str, args: &JsonObject) -> Result<Json, ToolError> {
+        let action = req_str(args, "action")?;
+        let ns = self.namespace_arg(args)?;
+        let board = &self.shared.board;
+        let bad = |e: crate::board::BoardError| match e {
+            crate::board::BoardError::Bad(m) => ToolError::BadArguments(m),
+            crate::board::BoardError::Engine(e) => ToolError::Engine(e),
+        };
+        let key = || -> Result<String, ToolError> {
+            let id = req_str(args, "id")?;
+            Ok(crate::board::task_key(&ns, id))
+        };
+        let who = self.who();
+        match action {
+            "add" => board
+                .add(
+                    &self.db,
+                    branch,
+                    &ns,
+                    crate::board::NewTask {
+                        id: opt_str(args, "id")?,
+                        title: opt_str(args, "title")?.unwrap_or(""),
+                        detail: opt_str(args, "detail")?,
+                    },
+                    self.writer().as_deref(),
+                )
+                .map_err(bad),
+            "claim" => {
+                let seconds =
+                    opt_u64(args, "lease_seconds")?.unwrap_or(crate::board::DEFAULT_LEASE_SECONDS);
+                let (result, outcome) = board
+                    .claim(&self.db, branch, &key()?, &who, seconds)
+                    .map_err(bad)?;
+                match outcome {
+                    ClaimOutcome::Claimed => self.count(|c| c.claims += 1),
+                    ClaimOutcome::Held => self.count(|c| c.claim_conflicts += 1),
+                    ClaimOutcome::Done => {}
+                }
+                Ok(result)
+            }
+            "renew" => Ok(board.renew(&key()?, &who)),
+            "release" => board.release(&self.db, branch, &key()?, &who).map_err(bad),
+            "done" => board.done(&self.db, branch, &key()?, &who).map_err(bad),
+            "list" => board
+                .list(
+                    &self.db,
+                    branch,
+                    &ns,
+                    opt_str(args, "status")?.unwrap_or("unfinished"),
+                )
+                .map_err(bad),
+            other => Err(ToolError::BadArguments(format!(
+                "`action` must be add, claim, renew, release, done or list; got `{other}`"
+            ))),
+        }
+    }
+
     /// The namespace a handoff or resume call works in: the one it names, if
     /// valid, else the session's.
     fn namespace_arg(&self, args: &JsonObject) -> Result<String, ToolError> {
@@ -648,13 +1011,6 @@ fn opt_f32(args: &JsonObject, field: &str) -> Result<Option<f32>, ToolError> {
     }
 }
 
-fn req_f32_array(args: &JsonObject, field: &str) -> Result<Vec<f32>, ToolError> {
-    match opt_f32_array(args, field)? {
-        Some(v) => Ok(v),
-        None => Err(missing(field, "an array of numbers")),
-    }
-}
-
 fn opt_f32_array(args: &JsonObject, field: &str) -> Result<Option<Vec<f32>>, ToolError> {
     match args.get(field) {
         None | Some(Json::Null) => Ok(None),
@@ -673,6 +1029,13 @@ fn opt_f32_array(args: &JsonObject, field: &str) -> Result<Option<Vec<f32>>, Too
             Ok(Some(out))
         }
         Some(other) => Err(wrong(field, "an array of numbers", other)),
+    }
+}
+
+fn opt_str_list(args: &JsonObject, field: &str) -> Result<Option<Vec<String>>, ToolError> {
+    match args.get(field) {
+        None | Some(Json::Null) => Ok(None),
+        _ => opt_str_array(args, field).map(Some),
     }
 }
 

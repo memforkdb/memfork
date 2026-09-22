@@ -101,6 +101,9 @@ pub struct Hello {
     /// The name the real client gave in its own `initialize`, if it has
     /// shaken hands yet.
     pub client: Option<String>,
+    /// This proxy's own session id, so the claims it makes survive a
+    /// reconnect. Random; never committed.
+    pub session: Option<String>,
 }
 
 impl Hello {
@@ -109,6 +112,9 @@ impl Hello {
         session.insert("namespace".to_owned(), json!(self.namespace));
         if let Some(client) = &self.client {
             session.insert("client".to_owned(), json!(client));
+        }
+        if let Some(id) = &self.session {
+            session.insert("session".to_owned(), json!(id));
         }
         json!({ "experimental": { crate::mcp::SESSION_CAPABILITY: session } })
     }
@@ -188,6 +194,31 @@ impl Upstream {
             .header("Mcp-Session-Id", session)
             .header("MCP-Protocol-Version", PROTOCOL_VERSION)
             .body(Full::new(Bytes::new()))
+        else {
+            return;
+        };
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            self.http.request(request),
+        )
+        .await;
+    }
+
+    /// Tell the daemon which facts were found fresh or stale, for its
+    /// statistics and its feed. Best effort: a report lost is a count missed.
+    pub async fn report(&self, body: &Json) {
+        let url = self
+            .url
+            .replace(crate::serve::MCP_PATH, crate::serve::REPORT_PATH);
+        let Ok(request) = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(url)
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .header(
+                hyper::header::AUTHORIZATION,
+                format!("Bearer {}", self.token),
+            )
+            .body(Full::new(Bytes::from(body.to_string())))
         else {
             return;
         };
@@ -344,6 +375,14 @@ pub struct Proxy {
     namespace: String,
     /// The real client's name, from its `initialize`.
     client: Arc<std::sync::Mutex<Option<String>>>,
+    /// This proxy's session id, for owning claims.
+    session: String,
+    /// The project's directory, where facts' source files are read.
+    root: std::path::PathBuf,
+    /// Hashes of those files, cached.
+    hasher: Arc<crate::facts::Hasher>,
+    /// Tasks whose claims are being kept alive, by key.
+    kept: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl std::fmt::Debug for Proxy {
@@ -359,12 +398,63 @@ impl Proxy {
     /// it. It is not called here: see the note at the top of this module about
     /// what a handshake must not cost.
     pub fn new(connect: Reconnect, namespace: String) -> Self {
+        let cwd = std::env::current_dir().unwrap_or_default();
         Proxy {
             upstream: Arc::new(tokio::sync::RwLock::new(None)),
             connect,
             namespace,
             client: Arc::new(std::sync::Mutex::new(None)),
+            session: crate::tools::dispatch::new_session_id(),
+            root: crate::facts::project_root(&cwd),
+            hasher: Arc::new(crate::facts::Hasher::default()),
+            kept: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
         }
+    }
+
+    /// Keep a claim alive at half its lease period for as long as this proxy
+    /// lives, so an agent in a long build does not lose its task between tool
+    /// calls. Stops when the daemon says the claim is no longer this
+    /// session's — released, done, or taken after it lapsed — or when the
+    /// proxy exits, after which the claim runs out within one lease period.
+    fn keep_alive(&self, key: String, id: String, namespace: Option<String>, lease: u64) {
+        {
+            let mut kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+            if !kept.insert(key.clone()) {
+                return;
+            }
+        }
+        let proxy = self.clone();
+        let every = std::time::Duration::from_millis((lease * 1000 / 2).max(250));
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let mut args = serde_json::Map::new();
+                args.insert("action".to_owned(), json!("renew"));
+                args.insert("id".to_owned(), json!(id));
+                if let Some(ns) = &namespace {
+                    args.insert("namespace".to_owned(), json!(ns));
+                }
+                let params =
+                    CallToolRequestParams::new("memfork_task".to_owned()).with_arguments(args);
+                let renewed = proxy
+                    .with_retry(move |up| {
+                        let params = params.clone();
+                        Box::pin(async move { up.call_tool(&params).await })
+                    })
+                    .await
+                    .ok()
+                    .and_then(|raw| raw.get("structuredContent").cloned())
+                    .is_some_and(|c| c.get("renewed") == Some(&json!(true)));
+                if !renewed {
+                    break;
+                }
+            }
+            proxy
+                .kept
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&key);
+        });
     }
 
     /// Who this proxy speaks for, as it stands.
@@ -376,6 +466,7 @@ impl Proxy {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
+            session: Some(self.session.clone()),
         }
     }
 
@@ -504,20 +595,80 @@ impl ServerHandler for Proxy {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let params = request.clone();
+        let mut params = request.clone();
+        // A fact's sources are hashed here, where the files are: the daemon
+        // has no working directory. It keeps the hashes beside the store.
+        if params.name == "memfork_put" {
+            if let Some(args) = params.arguments.as_mut() {
+                let sources: Option<Vec<String>> = args
+                    .get("sources")
+                    .and_then(|s| serde_json::from_value(s.clone()).ok());
+                if let Some(Ok(sources)) = sources.map(|s| crate::facts::normalise(&s)) {
+                    let hashes = self.hasher.record(&self.root, &sources);
+                    args.insert("source_hashes".to_owned(), json!(hashes));
+                }
+            }
+        }
+        let forwarded = params.clone();
         let raw = self
             .with_retry(move |up| {
-                let params = params.clone();
+                let params = forwarded.clone();
                 Box::pin(async move { up.call_tool(&params).await })
             })
             .await?;
 
-        // The daemon already produced a proper tool result; pass it through
-        // rather than rebuilding it, so nothing is lost in translation.
-        match serde_json::from_value::<CallToolResult>(raw.clone()) {
-            Ok(result) => Ok(result.into()),
-            Err(_) => Ok(CallToolResult::structured(raw).into()),
+        let mut result = match serde_json::from_value::<CallToolResult>(raw.clone()) {
+            Ok(result) => result,
+            Err(_) => return Ok(CallToolResult::structured(raw).into()),
+        };
+
+        // A claim that took is kept alive while this session is.
+        if params.name == "memfork_task" {
+            if let (Some(args), Some(content)) = (&params.arguments, &result.structured_content) {
+                if args.get("action") == Some(&json!("claim")) && content["claimed"] == true {
+                    if let (Some(key), Some(id)) = (
+                        content["key"].as_str(),
+                        args.get("id").and_then(Json::as_str),
+                    ) {
+                        let lease = content["lease_seconds"]
+                            .as_u64()
+                            .unwrap_or(crate::board::DEFAULT_LEASE_SECONDS);
+                        let ns = args
+                            .get("namespace")
+                            .and_then(Json::as_str)
+                            .map(str::to_owned);
+                        self.keep_alive(key.to_owned(), id.to_owned(), ns, lease);
+                    }
+                }
+            }
         }
+
+        // Facts in the answer are checked against the files here, and what
+        // was found goes back to the daemon for its statistics and feed.
+        if result.is_error != Some(true) {
+            if let Some(mut content) = result.structured_content.take() {
+                let checked = crate::facts::check(&mut content, &self.root, &self.hasher);
+                if !checked.is_empty() {
+                    let client = self
+                        .hello()
+                        .client
+                        .unwrap_or_else(|| "unknown client".to_owned());
+                    let body = json!({
+                        "client": client,
+                        "namespace": self.namespace,
+                        "facts": checked.facts.iter().map(|(k, s)| json!([k, s])).collect::<Vec<_>>(),
+                    });
+                    if let Ok(up) = self.current().await {
+                        up.report(&body).await;
+                    }
+                    // Rebuilt, so the text copy of the answer agrees with it.
+                    result = CallToolResult::structured(content);
+                } else {
+                    result.structured_content = Some(content);
+                }
+            }
+        }
+        Ok(result.into())
     }
 }
 
@@ -554,6 +705,7 @@ mod tests {
         let hello = Hello {
             namespace: "shop".to_owned(),
             client: Some("real-client".to_owned()),
+            session: Some("s1".to_owned()),
         };
         let caps = hello.capabilities();
         let session = &caps["experimental"][crate::mcp::SESSION_CAPABILITY];
@@ -564,6 +716,7 @@ mod tests {
         let early = Hello {
             namespace: "shop".to_owned(),
             client: None,
+            session: None,
         };
         assert!(
             early.capabilities()["experimental"][crate::mcp::SESSION_CAPABILITY]

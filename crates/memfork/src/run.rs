@@ -20,7 +20,7 @@ use memfork_core::Db;
 use serde_json::json;
 
 use crate::cli::{split_line, Cli, Command, GlobalArgs, PersistArgs, ScriptLine};
-use crate::exec::{execute, ExecError, Outcome};
+use crate::exec::{execute_in, ExecError, Outcome};
 
 /// Run the command line given to this process.
 ///
@@ -142,10 +142,12 @@ pub fn run(cli: Cli) -> ExitCode {
                 // shared store through the daemon otherwise.
                 command if cli.global.ephemeral => {
                     let db = Db::new();
-                    execute(&db, &cli.global.branch, command).and_then(|outcome| {
-                        emit(&mut stdout, command, &outcome, cli.global.json, &style)
-                            .map_err(io_err)
-                    })
+                    execute_in(&db, &cli.global.branch, command, &local_context()).and_then(
+                        |outcome| {
+                            emit(&mut stdout, command, &outcome, cli.global.json, &style)
+                                .map_err(io_err)
+                        },
+                    )
                 }
                 command => run_op(&mut stdout, command, &cli.global, choice, &style),
             }
@@ -236,6 +238,22 @@ fn run_op(
     let endpoint = daemon_for(&dir, choice)?;
     let daemon = client::Daemon::new(&endpoint).map_err(ExecError::Usage)?;
     let namespace = session_namespace(None).ok().map(|n| n.name);
+    let root = project_root();
+    let hasher = crate::facts::Hasher::default();
+    // A fact's sources are hashed here, where the files are; the daemon has no
+    // working directory to read them from.
+    let mut command = command.clone();
+    if let Command::Put {
+        sources,
+        source_hashes,
+        ..
+    } = &mut command
+    {
+        if !sources.is_empty() {
+            let clean = crate::facts::normalise(sources).map_err(ExecError::Usage)?;
+            *source_hashes = Some(hasher.record(&root, &clean));
+        }
+    }
     let request = json!({
         "branch": global.branch,
         "command": command,
@@ -265,7 +283,36 @@ fn run_op(
             .unwrap_or_default(),
         json: answer["json"].clone(),
     };
-    emit(out, command, &outcome, global.json, style).map_err(io_err)
+    let mut outcome = outcome;
+    let checked = crate::facts::check(&mut outcome.json, &root, &hasher);
+    if !checked.is_empty() {
+        let body = json!({
+            "client": serve::CLI_WRITER,
+            "namespace": namespace,
+            "facts": checked.facts.iter().map(|(k, s)| json!([k, s])).collect::<Vec<_>>(),
+        });
+        let _ = runtime()?.block_on(daemon.post(serve::REPORT_PATH, &body));
+    }
+    emit(out, &command, &outcome, global.json, style).map_err(io_err)
+}
+
+/// Where this command's project is: the repository's top level, or the
+/// working directory outside one. Facts' source paths are relative to it.
+fn project_root() -> std::path::PathBuf {
+    crate::facts::project_root(&std::env::current_dir().unwrap_or_default())
+}
+
+/// A context of this process's own, for `--ephemeral` and scripts: in memory,
+/// in this directory's project, checking facts against its files.
+fn local_context() -> crate::exec::Context {
+    crate::exec::Context {
+        writer: None,
+        namespace: session_namespace(None)
+            .map(|n| n.name)
+            .unwrap_or_else(|_| crate::namespace::FALLBACK.to_owned()),
+        shared: crate::shared::Shared::in_memory(),
+        root: Some(project_root()),
+    }
 }
 
 /// `memfork watch`: the daemon's activity, as it happens.
@@ -395,6 +442,7 @@ fn run_script(
 ) -> Result<(), ExecError> {
     let source = read_script(script)?;
     let db = Db::new();
+    let ctx = local_context();
     let mut results = Vec::new();
 
     for (n, raw) in source.lines().enumerate() {
@@ -418,7 +466,7 @@ fn run_script(
             )));
         }
         let branch = parsed.global.branch.as_deref().unwrap_or(default_branch);
-        let outcome = execute(&db, branch, &parsed.command)
+        let outcome = execute_in(&db, branch, &parsed.command, &ctx)
             .map_err(|e| ExecError::Usage(format!("line {line_no}: {e}")))?;
 
         if as_json {
@@ -638,7 +686,9 @@ fn run_mcp(args: &PersistArgs, namespace_flag: Option<&str>) -> Result<(), ExecE
     if args.ephemeral {
         let (db, _, note) = open_database(args)?;
         eprintln!("memfork: {note}; {}", describe_namespace(&namespace));
-        let session = Arc::new(tools::dispatch::Session::in_namespace(db, namespace.name));
+        let session = Arc::new(
+            tools::dispatch::Session::in_namespace(db, namespace.name).in_project(project_root()),
+        );
         return runtime
             .block_on(mcp::serve_stdio(session))
             .map_err(ExecError::Usage);
@@ -759,9 +809,25 @@ fn call_through_daemon(
 ) -> Result<serde_json::Value, ExecError> {
     let dir = data_dir(global)?;
     let endpoint = daemon_for(&dir, choice)?;
+    let root = project_root();
+    let hasher = crate::facts::Hasher::default();
+    let mut args = args;
+    // As a proxy would: hash a fact's sources here, where the files are.
+    if tool == "memfork_put" {
+        let sources: Option<Vec<String>> = args
+            .get("sources")
+            .and_then(|s| serde_json::from_value(s.clone()).ok());
+        if let Some(Ok(sources)) = sources.map(|s| crate::facts::normalise(&s)) {
+            args.insert(
+                "source_hashes".to_owned(),
+                json!(hasher.record(&root, &sources)),
+            );
+        }
+    }
     let hello = proxy::Hello {
-        namespace,
+        namespace: namespace.clone(),
         client: Some(serve::CLI_WRITER.to_owned()),
+        session: Some("cli".to_owned()),
     };
     let params = rmcp::model::CallToolRequestParams::new(tool.to_owned()).with_arguments(args);
     runtime()?.block_on(async {
@@ -769,12 +835,29 @@ fn call_through_daemon(
             .await
             .map_err(|e| ExecError::Usage(e.to_string()))?;
         let answer = upstream.call_tool(&params).await;
-        upstream.close().await;
-        let raw = answer.map_err(|e| ExecError::Usage(e.to_string()))?;
-        let content = raw
+        let raw = match answer {
+            Ok(raw) => raw,
+            Err(e) => {
+                upstream.close().await;
+                return Err(ExecError::Usage(e.to_string()));
+            }
+        };
+        let mut content = raw
             .get("structuredContent")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+        // And check any facts in the answer against the files, as a proxy would.
+        let checked = crate::facts::check(&mut content, &root, &hasher);
+        if !checked.is_empty() {
+            upstream
+                .report(&json!({
+                    "client": serve::CLI_WRITER,
+                    "namespace": namespace,
+                    "facts": checked.facts.iter().map(|(k, s)| json!([k, s])).collect::<Vec<_>>(),
+                }))
+                .await;
+        }
+        upstream.close().await;
         if raw.get("isError").and_then(serde_json::Value::as_bool) == Some(true) {
             return Err(ExecError::Usage(
                 content["error"]

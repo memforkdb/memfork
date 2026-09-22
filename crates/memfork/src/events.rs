@@ -44,6 +44,10 @@ pub struct Event {
     /// The branch it was done on, or the branch it created or removed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// A word or two more, where the operation needs it: `fresh` or `stale`
+    /// for a fact, who holds a task a claim could not take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// Whether it succeeded.
     pub ok: bool,
     /// Why not, when it did not.
@@ -162,6 +166,7 @@ impl Event {
             operation: None,
             key: None,
             branch: None,
+            detail: None,
             ok: true,
             error: None,
         }

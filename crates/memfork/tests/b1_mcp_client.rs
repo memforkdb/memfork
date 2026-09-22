@@ -121,6 +121,7 @@ async fn b1_the_server_lists_every_tool_with_a_usable_schema() {
         "memfork_log",
         "memfork_at",
         "memfork_resume",
+        "memfork_task",
         "memfork_handoff",
         "memfork_diff",
     ]
@@ -240,6 +241,22 @@ async fn b1_every_tool_can_be_called_over_mcp() {
     let resumed = call(&client, "memfork_resume", json!({ "namespace": "b1" })).await;
     assert_eq!(resumed["latest_handoff"]["next"][0], "ship");
     called.insert("memfork_resume");
+
+    let added = call(
+        &client,
+        "memfork_task",
+        json!({ "namespace": "b1", "action": "add", "title": "exercise the board" }),
+    )
+    .await;
+    assert_eq!(added["key"], "b1:task:1");
+    let claimed = call(
+        &client,
+        "memfork_task",
+        json!({ "namespace": "b1", "action": "claim", "id": "1" }),
+    )
+    .await;
+    assert_eq!(claimed["claimed"], true);
+    called.insert("memfork_task");
 
     assert_eq!(
         called.len(),

@@ -60,6 +60,7 @@
 
 #![warn(missing_docs)]
 
+pub mod board;
 pub mod cli;
 pub mod client;
 pub mod clients;
@@ -67,9 +68,12 @@ pub mod daemon;
 pub mod doctor;
 pub mod events;
 pub mod exec;
+pub mod facts;
+pub mod find;
 pub mod history;
 pub mod init;
 pub mod launch;
+pub mod lessons;
 pub mod mcp;
 pub mod namespace;
 pub mod persist;
@@ -77,6 +81,8 @@ pub mod proxy;
 pub mod render;
 pub mod run;
 pub mod serve;
+pub mod shared;
+pub mod sidecar;
 pub mod style;
 pub mod tools;
 

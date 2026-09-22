@@ -78,7 +78,10 @@ pub fn all() -> Vec<ToolDef> {
                  `<project>:decision:<topic>` as soon as it is made, and open work \
                  under `<project>:task:<id>`, so the next agent can pick it up. \
                  Supply `embedding` if you want the entry to be findable by \
-                 memfork_search. Raise `importance` for entries that should survive \
+                 memfork_search. After exploring code, record what you found with \
+                 `sources` naming the files it came from: it becomes a fact that is \
+                 marked fresh while they are unchanged and stale once they change. \
+                 Raise `importance` for entries that should survive \
                  longest when memory is tight. The result repeats the value it \
                  stored and says whether it replaced anything, so there is no need \
                  to read the key back to check."
@@ -115,6 +118,14 @@ pub fn all() -> Vec<ToolDef> {
                         "meta",
                         free_object(
                             "Optional string-to-string metadata, such as a source or a tag.",
+                        ),
+                    ),
+                    (
+                        "sources",
+                        string_array(
+                            "Files this finding came from, relative to the project, such as \
+                             `src/auth/login.rs`. Makes the entry a fact: whenever it is read \
+                             back it says whether those files have changed since.",
                         ),
                     ),
                     branch_arg(),
@@ -166,25 +177,34 @@ pub fn all() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memfork_search",
-            title: "Find memories by similarity",
+            title: "Find memories",
             description: format!(
-                "Find the entries whose embeddings are most similar to a query \
-                 vector, by exact cosine similarity. Use this when you want \
-                 whatever is relevant to a topic and do not know the key. Only \
-                 entries stored with an embedding can be found this way; supply the \
-                 vector yourself, since memfork does not embed text. {BRANCH_NOTE}"
+                "Find what memory already knows about something, by words: give \
+                 `text` and get the best-matching entries, ranked, with a snippet \
+                 of each. Use this before asking the user something memory may \
+                 already answer, and before working out again what an earlier \
+                 agent found. Facts in the results say whether their source files \
+                 are still unchanged: trust a fresh one; re-check a stale one, then \
+                 update it. Give `embedding` instead to search by a vector you \
+                 supply. {BRANCH_NOTE}"
             ),
             schema: object(
                 &[
+                    ("text", string("Words to look for, in keys and values.")),
                     (
                         "embedding",
-                        number_array("Query vector, same length as the stored ones."),
+                        number_array(
+                            "Instead of text: a query vector, the same length as the stored ones.",
+                        ),
                     ),
-                    ("k", integer("How many results to return. Defaults to 10.")),
+                    (
+                        "k",
+                        integer("How many results to return. Defaults to 10, at most 50."),
+                    ),
                     ("prefix", string("Only consider keys starting with this.")),
                     branch_arg(),
                 ],
-                &["embedding"],
+                &[],
             ),
         },
         ToolDef {
@@ -265,9 +285,23 @@ pub fn all() -> Vec<ToolDef> {
                  attempt did not work out: the branch you forked from is left exactly \
                  as it was, with no trace of the attempt. The default branch cannot be \
                  discarded. If the session is on the branch being discarded, it \
-                 switches back to the default branch."
+                 switches back to the default branch. Leave a `lesson` when you \
+                 discard: one line on what did not work, kept on the branch you \
+                 forked from so the next agent does not try it again."
                 .to_owned(),
-            schema: object(&[("name", string("Branch to delete."))], &["name"]),
+            schema: object(
+                &[
+                    ("name", string("Branch to delete.")),
+                    (
+                        "lesson",
+                        string(
+                            "One line on what was learned, kept on the parent branch after \
+                             everything else on this one is gone.",
+                        ),
+                    ),
+                ],
+                &["name"],
+            ),
         },
         ToolDef {
             name: "memfork_branches",
@@ -325,15 +359,81 @@ pub fn all() -> Vec<ToolDef> {
             name: "memfork_resume",
             title: "Pick up where work left off",
             description: format!(
-                "Get one short briefing on a project: the latest handoff note, the \
-                 most recent decisions and the open tasks. Call this first, when you \
-                 start work in a project or take over from another agent, before \
-                 deciding anything, so you continue from what was already decided \
-                 and done instead of starting over. The briefing is bounded in size; \
-                 if more is stored it says so and which prefix to list. A project \
-                 with nothing stored returns `empty: true`. {BRANCH_NOTE}"
+                "Get one short briefing on a project: the latest handoff note, \
+                 lessons from abandoned attempts, the decisions, facts and open tasks \
+                 that matter most. Call this first, when you start work in a project \
+                 or take over from another agent, before deciding anything, so you \
+                 continue from what was already decided and done instead of starting \
+                 over. Say what you are about to do in `task` to get what is most \
+                 relevant to it, and cap its size with `budget`. If more is stored \
+                 it says so and where to look. A project with nothing stored returns \
+                 `empty: true`. {BRANCH_NOTE}"
             ),
-            schema: object(&[namespace_arg(), branch_arg()], &[]),
+            schema: object(
+                &[
+                    (
+                        "task",
+                        string("What you are about to do, to rank what is most relevant to it."),
+                    ),
+                    (
+                        "budget",
+                        integer(
+                            "Most bytes the briefing may take, 512 to 65536. Defaults to 6144. \
+                             Tokens are roughly bytes divided by four.",
+                        ),
+                    ),
+                    namespace_arg(),
+                    branch_arg(),
+                ],
+                &[],
+            ),
+        },
+        ToolDef {
+            name: "memfork_task",
+            title: "Share out work",
+            description: format!(
+                "The task board, so agents never do the same work twice. Claim a \
+                 task before you start it: `action` claim with its `id`. A claim \
+                 lasts `lease_seconds` (default 300) and is kept alive while your \
+                 session is; if somebody else holds it you are told who, and should \
+                 pick another. Mark it done when finished, or release it if you \
+                 stop. Also: add (with a `title`), renew, and list (by `status`: \
+                 open, claimed, done, unfinished or all). {BRANCH_NOTE}"
+            ),
+            schema: object(
+                &[
+                    (
+                        "action",
+                        string_enum(
+                            "What to do.",
+                            &["add", "claim", "renew", "release", "done", "list"],
+                        ),
+                    ),
+                    (
+                        "id",
+                        string("The task's id. Leave it out when adding to get the next number."),
+                    ),
+                    ("title", string("When adding: what the task is, in a line.")),
+                    (
+                        "detail",
+                        string("When adding: anything more the task needs."),
+                    ),
+                    (
+                        "lease_seconds",
+                        integer("When claiming: how long the claim lasts, 1 to 3600."),
+                    ),
+                    (
+                        "status",
+                        string_enum(
+                            "When listing: which tasks. Defaults to unfinished.",
+                            &["open", "claimed", "done", "unfinished", "all"],
+                        ),
+                    ),
+                    namespace_arg(),
+                    branch_arg(),
+                ],
+                &["action"],
+            ),
         },
         ToolDef {
             name: "memfork_handoff",
@@ -403,7 +503,7 @@ mod tests {
 
     #[test]
     fn the_registry_matches_the_spec() {
-        // DESIGN §6 lists exactly these fifteen tools.
+        // DESIGN §6 lists exactly these sixteen tools.
         assert_eq!(
             names(),
             vec![
@@ -420,6 +520,7 @@ mod tests {
                 "memfork_log",
                 "memfork_at",
                 "memfork_resume",
+                "memfork_task",
                 "memfork_handoff",
                 "memfork_diff",
             ]

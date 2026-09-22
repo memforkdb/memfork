@@ -145,6 +145,16 @@ pub enum Command {
         /// Metadata pair, repeatable: `--meta source=notes`.
         #[arg(long, value_name = "KEY=VALUE")]
         meta: Vec<String>,
+        /// A file this finding came from, relative to the project; repeat for
+        /// several. Makes the entry a fact that says when those files change.
+        #[arg(long = "source", value_name = "PATH")]
+        sources: Vec<String>,
+        /// The sources' hashes, worked out by the command line before the
+        /// command is sent: the daemon has no working directory to read them
+        /// from.
+        #[arg(skip)]
+        #[serde(default)]
+        source_hashes: Option<std::collections::BTreeMap<String, Option<String>>>,
     },
 
     /// Read a key.
@@ -216,6 +226,57 @@ pub enum Command {
     Discard {
         /// Name of the branch to delete.
         name: String,
+        /// One line on what was learned, kept on the branch it was forked
+        /// from after everything else on this one is gone.
+        #[arg(long)]
+        lesson: Option<String>,
+    },
+
+    /// Find entries by words in their keys and values, best match first.
+    Find {
+        /// The words to look for.
+        text: String,
+        /// How many results, at most 50.
+        #[arg(long, default_value_t = 10)]
+        k: usize,
+        /// Only look at keys starting with this.
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+
+    /// Share out work: add, claim, release and finish tasks.
+    Task {
+        /// What to do.
+        #[command(subcommand)]
+        action: TaskAction,
+        /// The project. Defaults to the one this directory belongs to.
+        #[arg(long, global = true, value_name = "NAME")]
+        namespace: Option<String>,
+    },
+
+    /// List the facts in a project, and whether their source files have
+    /// changed since each was written.
+    Facts {
+        /// Only keys starting with this. Defaults to the project's own.
+        prefix: Option<String>,
+        /// The project. Defaults to the one this directory belongs to.
+        #[arg(long, value_name = "NAME")]
+        namespace: Option<String>,
+    },
+
+    /// The lessons left by discarded attempts in a project, newest first.
+    Lessons {
+        /// The project. Defaults to the one this directory belongs to.
+        #[arg(long, value_name = "NAME")]
+        namespace: Option<String>,
+    },
+
+    /// What MemFork saved and served: briefings and their size, lessons,
+    /// facts found fresh or stale, claims. Bytes and approximate tokens only.
+    Stats {
+        /// Only this project.
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
     },
 
     /// List branches.
@@ -395,6 +456,52 @@ pub enum Command {
     },
 }
 
+/// What `memfork task` does.
+#[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
+pub enum TaskAction {
+    /// Add a task.
+    Add {
+        /// What the task is, in a line.
+        title: String,
+        /// Its id. Leave it out for the next number.
+        #[arg(long)]
+        id: Option<String>,
+        /// Anything more it needs.
+        #[arg(long)]
+        detail: Option<String>,
+    },
+    /// Claim a task, so nobody else starts it.
+    Claim {
+        /// The task's id.
+        id: String,
+        /// How long the claim lasts, in seconds.
+        #[arg(long, default_value_t = crate::board::DEFAULT_LEASE_SECONDS)]
+        lease: u64,
+    },
+    /// Keep a claim alive.
+    Renew {
+        /// The task's id.
+        id: String,
+    },
+    /// Give a claimed task back, still open.
+    Release {
+        /// The task's id.
+        id: String,
+    },
+    /// Mark a task done.
+    Done {
+        /// The task's id.
+        id: String,
+    },
+    /// List tasks.
+    List {
+        /// Which: open, claimed, done, unfinished or all.
+        #[arg(long, default_value = "unfinished",
+              value_parser = ["open", "claimed", "done", "unfinished", "all"])]
+        status: String,
+    },
+}
+
 impl Command {
     /// Whether this subcommand may appear inside a batch script.
     ///
@@ -431,6 +538,11 @@ impl Command {
             Command::Log { .. } => "log",
             Command::At { .. } => "at",
             Command::Diff { .. } => "diff",
+            Command::Find { .. } => "find",
+            Command::Task { .. } => "task",
+            Command::Facts { .. } => "facts",
+            Command::Lessons { .. } => "lessons",
+            Command::Stats { .. } => "stats",
             Command::Run { .. } => "run",
             Command::Mcp { .. } => "mcp",
             Command::Tools { .. } => "tools",

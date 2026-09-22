@@ -47,15 +47,20 @@ This repository's working memory lives in MemFork, which every AI tool used \
 here can reach through its MCP tools. Other agents, from any vendor, read what \
 you record and continue from it, so record as you go rather than at the end.
 
-- When you start, call `memfork_resume` to pick up what earlier agents decided \
-and did.
-- As you work, store each decision with its reason using `memfork_put` under \
+- When you start, call `memfork_resume`, saying in `task` what you are about \
+to do.
+- Before asking the user something memory may already know, call \
+`memfork_search` with `text`.
+- Before starting a task on the board, claim it with `memfork_task`; mark it \
+done when it is.
+- Store each decision with its reason using `memfork_put` under \
 `<project>:decision:<topic>`, where `<project>` is the namespace MemFork names \
-when you connect.
+when you connect. After exploring code, store what you found with `sources` \
+naming the files.
 - Before you stop or hand over, call `memfork_handoff` with what is done, what \
 comes next and what is blocking.
 - Before anything risky, call `memfork_fork`. If it worked, `memfork_merge`; if \
-it did not, `memfork_discard`.";
+it did not, `memfork_discard` with a one-line `lesson`.";
 
 /// What would happen to one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -395,7 +400,11 @@ mod tests {
         let text = block("\n").to_ascii_lowercase();
         for step in [
             "memfork_resume",
+            "memfork_search",
+            "memfork_task",
             "memfork_put",
+            "sources",
+            "lesson",
             "memfork_handoff",
             "memfork_fork",
             "memfork_merge",

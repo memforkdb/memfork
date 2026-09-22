@@ -5,7 +5,65 @@ use std::collections::{BTreeMap, BTreeSet};
 use memfork_core::{CommitId, Db, MergePolicy, Op, Value, WRITTEN_BY};
 use serde_json::{json, Value as Json};
 
-use crate::cli::{parse_meta, parse_vector, Command};
+use crate::cli::{parse_meta, parse_vector, Command, TaskAction};
+use crate::shared::Shared;
+use crate::tools::dispatch::Session;
+
+/// Where a command runs: who it is recorded as, which project it is in, the
+/// state shared with the rest of the process, and — when this process can
+/// see it — the project's directory, for checking facts.
+#[derive(Debug, Clone)]
+pub struct Context {
+    /// Who writes are recorded as.
+    pub writer: Option<String>,
+    /// The project namespace.
+    pub namespace: String,
+    /// Leases, statistics and fact hashes.
+    pub shared: std::sync::Arc<Shared>,
+    /// The project's directory, if this process can see it.
+    pub root: Option<std::path::PathBuf>,
+}
+
+impl Context {
+    /// A context of its own, in memory, recorded as nobody.
+    pub fn alone() -> Self {
+        Context {
+            writer: None,
+            namespace: crate::namespace::FALLBACK.to_owned(),
+            shared: Shared::in_memory(),
+            root: None,
+        }
+    }
+
+    /// A session to run a tool through, as this context's writer. Claims
+    /// made from the command line all belong to one session, "cli", so a
+    /// person can claim in one command and finish in the next.
+    fn session(&self, db: &Db) -> Session {
+        let mut session = Session::in_namespace(db.clone(), self.namespace.clone())
+            .sharing(std::sync::Arc::clone(&self.shared));
+        if let Some(root) = &self.root {
+            session = session.in_project(root.clone());
+        }
+        session.set_writer(self.writer.as_deref().unwrap_or(crate::serve::CLI_WRITER));
+        session.set_session_id("cli");
+        session
+    }
+
+    fn tool(&self, db: &Db, branch: &str, name: &str, mut args: Json) -> Result<Json, ExecError> {
+        if let Json::Object(map) = &mut args {
+            map.insert("branch".to_owned(), json!(branch));
+        }
+        let Json::Object(map) = args else {
+            return Err(ExecError::Usage(
+                "internal: tool arguments must be an object".to_owned(),
+            ));
+        };
+        self.session(db).call(name, &map).map_err(|e| match e {
+            crate::tools::dispatch::ToolError::Engine(e) => ExecError::Engine(e),
+            other => ExecError::Usage(other.to_string()),
+        })
+    }
+}
 
 /// What a command produced: the same information twice, once for a person and
 /// once for a program.
@@ -55,20 +113,23 @@ fn short(id: memfork_core::CommitId) -> String {
     id.to_hex()[..12].to_owned()
 }
 
-/// Run one command against `db` on `branch`.
+/// Run one command against `db` on `branch`, alone and in memory.
 pub fn execute(db: &Db, branch: &str, command: &Command) -> Result<Outcome, ExecError> {
-    execute_as(db, branch, command, None)
+    execute_in(db, branch, command, &Context::alone())
 }
 
-/// [`execute`], recording `writer` against anything written — which is how
-/// the daemon records that a write came from the command line.
-pub fn execute_as(
+/// Run one command in a context: the daemon's for the command line on the
+/// shared store, a local one for `--ephemeral` and scripts.
+pub fn execute_in(
     db: &Db,
     branch: &str,
     command: &Command,
-    writer: Option<&str>,
+    ctx: &Context,
 ) -> Result<Outcome, ExecError> {
+    let writer = ctx.writer.as_deref();
     match command {
+        // A fact goes through the tool, which records its sources' hashes
+        // beside the store.
         Command::Put {
             key,
             value,
@@ -76,6 +137,185 @@ pub fn execute_as(
             embedding,
             ttl_commits,
             meta,
+            sources,
+            source_hashes,
+        } if !sources.is_empty() => {
+            let mut args = json!({ "key": key, "value": value, "sources": sources });
+            if let Some(i) = importance {
+                args["importance"] = json!(i);
+            }
+            if let Some(e) = embedding {
+                args["embedding"] = json!(parse_vector(e).map_err(ExecError::Usage)?);
+            }
+            if let Some(t) = ttl_commits {
+                args["ttl_commits"] = json!(t);
+            }
+            if !meta.is_empty() {
+                let mut pairs = serde_json::Map::new();
+                for pair in meta {
+                    let (k, v) = parse_meta(pair).map_err(ExecError::Usage)?;
+                    pairs.insert(k, json!(v));
+                }
+                args["meta"] = Json::Object(pairs);
+            }
+            if let Some(hashes) = source_hashes {
+                args["source_hashes"] = json!(hashes);
+            }
+            let result = ctx.tool(db, branch, "memfork_put", args)?;
+            let commit = result["commit"].as_str().unwrap_or("");
+            Ok(Outcome::line(
+                format!(
+                    "put {key} on {branch} @ {} (a fact with {} source{})",
+                    &commit[..commit.len().min(12)],
+                    sources.len(),
+                    if sources.len() == 1 { "" } else { "s" }
+                ),
+                json!({"op": "put", "branch": branch, "key": key, "commit": commit,
+                       "sources": result["sources"]}),
+            ))
+        }
+
+        Command::Discard {
+            name,
+            lesson: Some(lesson),
+        } => {
+            let result = ctx.tool(
+                db,
+                branch,
+                "memfork_discard",
+                json!({ "name": name, "lesson": lesson }),
+            )?;
+            let key = result["lesson"]["key"].as_str().unwrap_or("");
+            let parent = result["lesson"]["branch"].as_str().unwrap_or("");
+            Ok(Outcome::new(
+                vec![
+                    format!("discarded {name}"),
+                    format!("  lesson kept on {parent} as {key}"),
+                ],
+                json!({"op": "discard", "name": name, "lesson": result["lesson"]}),
+            ))
+        }
+
+        Command::Find { text, k, prefix } => {
+            let mut args = json!({ "text": text, "k": k });
+            if let Some(p) = prefix {
+                args["prefix"] = json!(p);
+            }
+            let result = ctx.tool(db, branch, "memfork_search", args)?;
+            let hits = result["hits"].as_array().cloned().unwrap_or_default();
+            let width = hits
+                .iter()
+                .filter_map(|h| h["key"].as_str())
+                .map(|k| k.chars().count())
+                .max()
+                .unwrap_or(0);
+            let text = hits
+                .iter()
+                .map(|h| {
+                    let key = h["key"].as_str().unwrap_or_default();
+                    let pad = width - key.chars().count();
+                    format!(
+                        "{key}{}  {}",
+                        " ".repeat(pad),
+                        h["snippet"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            Ok(Outcome::new(
+                text,
+                json!({"op": "find", "branch": branch, "result": result}),
+            ))
+        }
+
+        Command::Task { action, namespace } => {
+            let mut args = match action {
+                TaskAction::Add { title, id, detail } => {
+                    json!({"action": "add", "title": title, "id": id, "detail": detail})
+                }
+                TaskAction::Claim { id, lease } => {
+                    json!({"action": "claim", "id": id, "lease_seconds": lease})
+                }
+                TaskAction::Renew { id } => json!({"action": "renew", "id": id}),
+                TaskAction::Release { id } => json!({"action": "release", "id": id}),
+                TaskAction::Done { id } => json!({"action": "done", "id": id}),
+                TaskAction::List { status } => json!({"action": "list", "status": status}),
+            };
+            if let Some(ns) = namespace {
+                args["namespace"] = json!(ns);
+            }
+            let result = ctx.tool(db, branch, "memfork_task", args)?;
+            Ok(Outcome::new(
+                task_lines(&result),
+                json!({"op": "task", "result": result}),
+            ))
+        }
+
+        Command::Facts { prefix, namespace } => {
+            let ns = namespace.clone().unwrap_or_else(|| ctx.namespace.clone());
+            let prefix = prefix
+                .clone()
+                .unwrap_or_else(|| format!("{ns}{}", crate::namespace::SEPARATOR));
+            let facts: Vec<Json> = db
+                .list(branch, &prefix, None)?
+                .iter()
+                .filter(|(_, e)| crate::facts::sources_of(&e.meta).is_some())
+                .map(|(k, e)| {
+                    let mut fact = json!({
+                        "key": k,
+                        "value": String::from_utf8_lossy(&e.value),
+                        "by": e.meta.get(WRITTEN_BY),
+                    });
+                    crate::tools::handoff::with_fact_fields(&mut fact, k, e, &ctx.shared.sidecar);
+                    fact
+                })
+                .collect();
+            let mut json =
+                json!({"op": "facts", "branch": branch, "prefix": prefix, "facts": facts});
+            if let Some(root) = &ctx.root {
+                crate::facts::check(&mut json, root, &ctx.shared.hasher);
+            }
+            Ok(Outcome::new(Vec::new(), json))
+        }
+
+        Command::Lessons { namespace } => {
+            let ns = namespace.clone().unwrap_or_else(|| ctx.namespace.clone());
+            let all = crate::lessons::recent(db, branch, &ns, crate::lessons::MAX_LESSONS)?;
+            let text = if all.is_empty() {
+                vec![format!(
+                    "no lessons in `{ns}`; leave one with `memfork discard <branch> --lesson <text>`"
+                )]
+            } else {
+                all.iter()
+                    .map(|l| {
+                        format!(
+                            "{}  {}  (from {}, by {})",
+                            l["key"].as_str().unwrap_or_default(),
+                            l["lesson"].as_str().unwrap_or_default(),
+                            l["branch"].as_str().unwrap_or("?"),
+                            l["by"].as_str().unwrap_or("unknown"),
+                        )
+                    })
+                    .collect()
+            };
+            Ok(Outcome::new(
+                text,
+                json!({"op": "lessons", "branch": branch, "namespace": ns, "lessons": all}),
+            ))
+        }
+
+        Command::Stats { project } => Ok(Outcome::new(
+            Vec::new(),
+            json!({"op": "stats", "stats": ctx.shared.sidecar.stats(project.as_deref())}),
+        )),
+
+        Command::Put {
+            key,
+            value,
+            importance,
+            embedding,
+            ttl_commits,
+            meta,
+            ..
         } => {
             let mut v = Value::new(value.clone());
             if let Some(i) = importance {
@@ -231,7 +471,7 @@ pub fn execute_as(
             ))
         }
 
-        Command::Discard { name } => {
+        Command::Discard { name, .. } => {
             db.discard(name)?;
             Ok(Outcome::line(
                 format!("discarded {name}"),
@@ -443,7 +683,29 @@ pub fn target(command: &Command, branch: &str) -> (Option<String>, Option<String
         Command::Ls { prefix, .. } => ((!prefix.is_empty()).then(|| prefix.clone()), on),
         Command::Search { prefix, .. } => (prefix.clone(), on),
         Command::At { key, prefix, .. } => (key.clone().or_else(|| prefix.clone()), on),
-        Command::Fork { name, .. } | Command::Discard { name } => (None, Some(name.clone())),
+        Command::Fork { name, .. } | Command::Discard { name, .. } => (None, Some(name.clone())),
+        Command::Find { prefix, .. } => (prefix.clone(), on),
+        Command::Task { action, namespace } => {
+            let ns = namespace.as_deref().unwrap_or("");
+            let id = match action {
+                TaskAction::Claim { id, .. }
+                | TaskAction::Renew { id }
+                | TaskAction::Release { id }
+                | TaskAction::Done { id } => Some(id.clone()),
+                TaskAction::Add { id, .. } => id.clone(),
+                TaskAction::List { .. } => None,
+            };
+            (
+                id.map(|id| {
+                    if ns.is_empty() {
+                        id
+                    } else {
+                        crate::board::task_key(ns, &id)
+                    }
+                }),
+                on,
+            )
+        }
         Command::Merge { source, target, .. } => (
             None,
             Some(format!(
@@ -508,6 +770,28 @@ fn writer_of(commit: &memfork_core::Commit) -> Option<String> {
     })
 }
 
+/// The newest lesson left about each discarded branch, from every existing
+/// branch, by the discarded branch's name.
+fn lessons_by_branch(db: &Db) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for b in db.branches() {
+        let Ok(entries) = db.list(&b.name, "", None) else {
+            continue;
+        };
+        for (key, entry) in entries {
+            if !key.contains(":lesson:") {
+                continue;
+            }
+            let view = crate::lessons::view(&key, &entry);
+            if let (Some(branch), Some(lesson)) = (view["branch"].as_str(), view["lesson"].as_str())
+            {
+                out.insert(branch.to_owned(), lesson.to_owned());
+            }
+        }
+    }
+    out
+}
+
 /// Everything `memfork log --graph` draws: every commit newest first, the
 /// branch heads, and the discarded branches the graph no longer holds.
 ///
@@ -554,6 +838,23 @@ pub fn history(db: &Db, limit: Option<usize>) -> Json {
     }
     let total = order.len();
     let shown = limit.unwrap_or(40).min(total);
+    let gone = db.discarded();
+    let lessons = if gone.is_empty() {
+        BTreeMap::new()
+    } else {
+        lessons_by_branch(db)
+    };
+    let discarded: Vec<Json> = gone
+        .iter()
+        .map(|d| {
+            json!({
+                "name": d.name,
+                "forked_at": d.forked_at.to_hex(),
+                "commits": d.commits,
+                "lesson": lessons.get(&d.name),
+            })
+        })
+        .collect();
 
     json!({
         "commits": order.iter().take(shown).map(|c| json!({
@@ -571,10 +872,65 @@ pub fn history(db: &Db, limit: Option<usize>) -> Json {
             "head": b.head.to_hex(),
             "is_default": b.is_default,
         })).collect::<Vec<_>>(),
-        "discarded": db.discarded().iter().map(|d| json!({
-            "name": d.name,
-            "forked_at": d.forked_at.to_hex(),
-            "commits": d.commits,
-        })).collect::<Vec<_>>(),
+        "discarded": discarded,
     })
+}
+
+/// A task board answer, for a person.
+fn task_lines(result: &Json) -> Vec<String> {
+    let key = result["key"].as_str().unwrap_or("");
+    match result["action"].as_str().unwrap_or("") {
+        "add" => vec![format!(
+            "added {key}: {}",
+            result["task"]["title"].as_str().unwrap_or("")
+        )],
+        "claim" if result["claimed"] == true => vec![format!(
+            "claimed {key} for {}s",
+            result["lease_seconds"].as_u64().unwrap_or(0)
+        )],
+        "claim" if result["status"] == "done" => vec![format!("{key} is already done")],
+        "claim" => vec![format!(
+            "{key} is held by {} ({}s left); pick another task",
+            result["held_by"].as_str().unwrap_or("someone"),
+            result["seconds_left"].as_u64().unwrap_or(0)
+        )],
+        "renew" if result["renewed"] == true => vec![format!("renewed {key}")],
+        "renew" => vec![format!("{key} is not yours any more; claim it again")],
+        "release" | "done" if result["changed"] == false => vec![format!(
+            "{key} is held by {}; only the holder can change it",
+            result["held_by"].as_str().unwrap_or("someone")
+        )],
+        "release" => vec![format!("released {key}; it is open again")],
+        "done" => vec![format!("{key} is done")],
+        "list" => {
+            let tasks = result["tasks"].as_array().cloned().unwrap_or_default();
+            let width = tasks
+                .iter()
+                .filter_map(|t| t["id"].as_str())
+                .map(|i| i.chars().count())
+                .max()
+                .unwrap_or(0);
+            let mut lines: Vec<String> = tasks
+                .iter()
+                .map(|t| {
+                    let id = t["id"].as_str().unwrap_or("");
+                    let status = t["status"].as_str().unwrap_or("");
+                    let holder = t["held_by"]
+                        .as_str()
+                        .map(|h| format!(" by {h}"))
+                        .unwrap_or_default();
+                    format!(
+                        "{id}{}  {status:<7}{holder}  {}",
+                        " ".repeat(width - id.chars().count()),
+                        t["title"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            if lines.is_empty() {
+                lines.push("no tasks".to_owned());
+            }
+            lines
+        }
+        _ => Vec::new(),
+    }
 }

@@ -131,7 +131,7 @@ pub fn render(graph: &Json, style: &Style) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
-    let discarded: Vec<(String, String, u64)> = graph["discarded"]
+    let discarded: Vec<(String, String, u64, Option<String>)> = graph["discarded"]
         .as_array()
         .map(|d| {
             d.iter()
@@ -140,6 +140,7 @@ pub fn render(graph: &Json, style: &Style) -> Vec<String> {
                         d["forked_at"].as_str().unwrap_or_default().to_owned(),
                         d["name"].as_str().unwrap_or_default().to_owned(),
                         d["commits"].as_u64().unwrap_or(0),
+                        d["lesson"].as_str().map(str::to_owned),
                     )
                 })
                 .collect()
@@ -180,7 +181,7 @@ pub fn render(graph: &Json, style: &Style) -> Vec<String> {
 
         // Discarded attempts that forked here, as stubs above the commit,
         // run out past every other lane so none is cut.
-        for (_, name, commits) in discarded.iter().filter(|(at, _, _)| *at == node.id) {
+        for (_, name, commits, lesson) in discarded.iter().filter(|(at, _, _, _)| *at == node.id) {
             let across = style.glyph(Glyph::Across);
             let mut line = String::new();
             for i in 0..lanes.len() {
@@ -200,6 +201,9 @@ pub fn render(graph: &Json, style: &Style) -> Vec<String> {
                 "discarded {name} ({commits} commit{})",
                 if *commits == 1 { "" } else { "s" }
             )));
+            if let Some(lesson) = lesson {
+                line.push_str(&style.dim(&format!("  lesson: {lesson}")));
+            }
             out.push(Row::Text(line));
         }
 

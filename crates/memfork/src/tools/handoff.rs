@@ -137,8 +137,89 @@ fn numbered<'a>(
     })
 }
 
-/// Build the briefing for `ns` on `branch`.
+/// What a caller may ask of a briefing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ask {
+    /// What the caller is about to do, to rank what is most relevant to it.
+    pub task: Option<String>,
+    /// Most bytes of JSON the briefing may take; [`MAX_BRIEFING_BYTES`] if
+    /// unset, and never below [`MIN_BUDGET`] or above [`MAX_BUDGET`].
+    pub budget: Option<usize>,
+    /// The asking session's current branch, which every tool result carries.
+    /// Given here so the briefing counts it against the budget.
+    pub current_branch: Option<String>,
+}
+
+/// The smallest budget a briefing accepts: room for its own frame, a handoff
+/// and its next steps once everything else has been left out.
+pub const MIN_BUDGET: usize = 1024;
+
+/// What a briefing says about its token figure.
+pub const ESTIMATE: &str = "approx_tokens = bytes / 4, rounded up";
+
+/// The largest budget a briefing accepts.
+pub const MAX_BUDGET: usize = 64 * 1024;
+
+/// How many recent lessons a briefing includes at most.
+pub const MAX_LESSONS: usize = 5;
+
+/// How many facts a briefing includes at most.
+pub const MAX_FACTS: usize = 10;
+
+/// Build the briefing for `ns` on `branch`, as it was before briefings could
+/// be asked for anything.
 pub fn briefing(db: &Db, branch: &str, ns: &str) -> Result<Json, memfork_core::Error> {
+    briefing_with(db, branch, ns, &Ask::default(), None)
+}
+
+/// The kinds of thing a briefing carries after the handoff, in the order they
+/// are kept when room runs out: lessons longest, open tasks shortest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Task,
+    Fact,
+    Decision,
+    Lesson,
+}
+
+/// One candidate for a briefing, with what decides whether it stays.
+#[derive(Debug, Clone)]
+struct Item {
+    kind: Kind,
+    json: Json,
+    /// Relevance to the caller's task; zero without one.
+    score: u64,
+    /// Position in its kind's default order: newest first.
+    pos: usize,
+}
+
+impl Item {
+    /// Lower is given up first.
+    fn keep_order(&self) -> (u64, Kind, std::cmp::Reverse<usize>) {
+        (self.score, self.kind, std::cmp::Reverse(self.pos))
+    }
+}
+
+/// Build a briefing for `ns` on `branch`, ranked for `ask.task` and within
+/// `ask.budget` bytes.
+///
+/// The latest handoff comes first. Then lessons, decisions, facts and open
+/// tasks, each ranked by how well it matches the task (see [`crate::find`])
+/// and, without a task or among equals, newest first. When the whole will not
+/// fit, the least relevant item goes first, and among equals a task before a
+/// fact, a fact before a decision, a decision before a lesson. The same store
+/// and the same ask always give the same briefing.
+pub fn briefing_with(
+    db: &Db,
+    branch: &str,
+    ns: &str,
+    ask: &Ask,
+    shared: Option<&crate::shared::Shared>,
+) -> Result<Json, memfork_core::Error> {
+    let budget = ask
+        .budget
+        .unwrap_or(MAX_BRIEFING_BYTES)
+        .clamp(MIN_BUDGET, MAX_BUDGET);
     let handoff_prefix = namespace::prefix(ns, "handoff");
     let handoffs = db.list(branch, &handoff_prefix, None)?;
     let latest = numbered(handoffs.iter().map(|(k, _)| k.as_str()), &handoff_prefix)
@@ -151,22 +232,46 @@ pub fn briefing(db: &Db, branch: &str, ns: &str) -> Result<Json, memfork_core::E
         });
     let handoff_count = numbered(handoffs.iter().map(|(k, _)| k.as_str()), &handoff_prefix).count();
 
-    // Newest write first; key order breaks ties, so the same store always
-    // gives the same briefing.
-    let mut decisions = db.list(branch, &namespace::prefix(ns, "decision"), None)?;
-    decisions.sort_by(|(ka, a), (kb, b)| {
-        b.last_access_seq
-            .cmp(&a.last_access_seq)
-            .then_with(|| ka.cmp(kb))
-    });
-
+    let newest_first = |mut entries: Vec<(String, std::sync::Arc<Entry>)>| {
+        // Newest write first; key order breaks ties, so the same store always
+        // gives the same briefing.
+        entries.sort_by(|(ka, a), (kb, b)| {
+            b.last_access_seq
+                .cmp(&a.last_access_seq)
+                .then_with(|| ka.cmp(kb))
+        });
+        entries
+    };
+    let decisions = newest_first(db.list(branch, &namespace::prefix(ns, "decision"), None)?);
+    let mut lessons = db.list(branch, &namespace::prefix(ns, "lesson"), None)?;
+    lessons.reverse();
+    let task_prefix = namespace::prefix(ns, "task");
     let tasks: Vec<_> = db
-        .list(branch, &namespace::prefix(ns, "task"), None)?
+        .list(branch, &task_prefix, None)?
         .into_iter()
-        .filter(|(_, e)| !is_done(e))
+        .filter(|(k, e)| match shared {
+            Some(s) => s.board.view(k, e, &task_prefix)["status"] != "done",
+            None => !is_done(e),
+        })
         .collect();
+    // Facts outside the families above: a finding stored with its sources.
+    let families = ["handoff", "decision", "lesson", "task"].map(|f| namespace::prefix(ns, f));
+    let facts = newest_first(
+        db.list(branch, &format!("{ns}{}", namespace::SEPARATOR), None)?
+            .into_iter()
+            .filter(|(k, e)| {
+                !families.iter().any(|f| k.starts_with(f.as_str()))
+                    && crate::facts::sources_of(&e.meta).is_some()
+            })
+            .collect(),
+    );
 
-    if latest.is_none() && decisions.is_empty() && tasks.is_empty() {
+    if latest.is_none()
+        && decisions.is_empty()
+        && tasks.is_empty()
+        && lessons.is_empty()
+        && facts.is_empty()
+    {
         return Ok(json!({
             "namespace": ns,
             "branch": branch,
@@ -174,52 +279,199 @@ pub fn briefing(db: &Db, branch: &str, ns: &str) -> Result<Json, memfork_core::E
             "hint": format!(
                 "Nothing is recorded for `{ns}` yet, so there is no earlier work to \
                  pick up. As you work, store each decision and its reason with \
-                 memfork_put under `{ns}:decision:<topic>`, open tasks under \
-                 `{ns}:task:<id>`, and call memfork_handoff before you stop."
+                 memfork_put under `{ns}:decision:<topic>`, open tasks with \
+                 memfork_task, and call memfork_handoff before you stop."
             ),
         }));
     }
 
+    // Relevance to the task, if one was given.
+    let scores: std::collections::BTreeMap<String, u64> = match ask
+        .task
+        .as_deref()
+        .filter(|t| !crate::find::words(t).is_empty())
+    {
+        Some(task) => {
+            let texts: Vec<(String, String)> = lessons
+                .iter()
+                .chain(&decisions)
+                .chain(&facts)
+                .chain(&tasks)
+                .map(|(k, e)| (k.clone(), String::from_utf8_lossy(&e.value).into_owned()))
+                .collect();
+            let docs: Vec<crate::find::Doc<'_>> = texts
+                .iter()
+                .map(|(k, t)| crate::find::Doc { key: k, text: t })
+                .collect();
+            crate::find::rank(&docs, task, usize::MAX)
+                .into_iter()
+                .map(|h| (h.key, h.score))
+                .collect()
+        }
+        None => std::collections::BTreeMap::new(),
+    };
+
     let mut truncated = false;
+    let mut omitted = std::collections::BTreeMap::new();
+    let mut items = Vec::new();
+    let mut take = |kind: Kind,
+                    name: &'static str,
+                    list: &[(String, std::sync::Arc<Entry>)],
+                    cap: usize,
+                    truncated: &mut bool| {
+        let mut ranked: Vec<(usize, &(String, std::sync::Arc<Entry>))> =
+            list.iter().enumerate().collect();
+        ranked.sort_by(|(pa, (ka, _)), (pb, (kb, _))| {
+            let sa = scores.get(ka).copied().unwrap_or(0);
+            let sb = scores.get(kb).copied().unwrap_or(0);
+            sb.cmp(&sa).then(pa.cmp(pb))
+        });
+        for (pos, (key, entry)) in ranked.into_iter().take(cap) {
+            let mut json = match kind {
+                Kind::Lesson => {
+                    let mut view = crate::lessons::view(key, entry);
+                    if let Some(text) = view["lesson"].as_str().map(|t| clip(t, truncated)) {
+                        view["lesson"] = json!(text);
+                    }
+                    view
+                }
+                Kind::Task => match shared {
+                    Some(s) => s.board.view(key, entry, &task_prefix),
+                    None => item_json(key, entry, truncated),
+                },
+                Kind::Decision | Kind::Fact => item_json(key, entry, truncated),
+            };
+            if let Some(s) = shared {
+                with_fact_fields(&mut json, key, entry, &s.sidecar);
+            }
+            items.push(Item {
+                kind,
+                json,
+                score: scores.get(key).copied().unwrap_or(0),
+                pos,
+            });
+        }
+        omitted.insert(name, list.len().saturating_sub(cap));
+    };
+    take(
+        Kind::Lesson,
+        "lessons",
+        &lessons,
+        MAX_LESSONS,
+        &mut truncated,
+    );
+    take(
+        Kind::Decision,
+        "decisions",
+        &decisions,
+        MAX_DECISIONS,
+        &mut truncated,
+    );
+    take(Kind::Fact, "facts", &facts, MAX_FACTS, &mut truncated);
+    take(Kind::Task, "tasks", &tasks, MAX_TASKS, &mut truncated);
+
     let mut brief = Brief {
         ns: ns.to_owned(),
         branch: branch.to_owned(),
+        task: ask.task.clone(),
+        current_branch: ask.current_branch.clone(),
+        budget,
         handoff: latest
             .as_ref()
             .map(|(number, key, entry)| HandoffView::read(*number, key, entry, &mut truncated)),
         earlier_handoffs: handoff_count.saturating_sub(usize::from(latest.is_some())),
-        decisions: decisions
-            .iter()
-            .take(MAX_DECISIONS)
-            .map(|(k, e)| item_json(k, e, &mut truncated))
-            .collect(),
-        tasks: tasks
-            .iter()
-            .take(MAX_TASKS)
-            .map(|(k, e)| item_json(k, e, &mut truncated))
-            .collect(),
-        omitted_decisions: decisions.len().saturating_sub(MAX_DECISIONS),
-        omitted_tasks: tasks.len().saturating_sub(MAX_TASKS),
+        items,
+        omitted,
         truncated,
     };
 
     // Over budget: give things up one at a time, least useful to the next
-    // agent first, until it fits. What was done matters less than what is
-    // next, and older decisions less than the handoff that followed them.
-    while brief.render().to_string().len() > MAX_BRIEFING_BYTES && brief.give_up_one() {}
-    Ok(brief.render())
+    // agent first, until it fits. The size is measured with the budget's own
+    // figures at their largest, so filling them in cannot push it over, and
+    // with every fact as large as checking it can make it.
+    while measure(&brief.render(budget)) > budget && brief.give_up_one() {}
+    let mut out = brief.render(budget);
+    restate_size(&mut out);
+    Ok(out)
+}
+
+/// The size a briefing may reach on its way to the agent: as built, or once
+/// whoever holds the files has turned each fact's `recorded` hashes into a
+/// verdict, whichever is larger.
+fn measure(brief: &Json) -> usize {
+    fn worst(value: &mut Json) {
+        match value {
+            Json::Object(map) => {
+                if map.contains_key("recorded") {
+                    map.remove("recorded");
+                    map.insert("fact".to_owned(), json!("unverified"));
+                    let sources = map.get("sources").cloned().unwrap_or(Json::Null);
+                    map.insert("stale_sources".to_owned(), sources);
+                }
+                map.values_mut().for_each(worst);
+            }
+            Json::Array(items) => items.iter_mut().for_each(worst),
+            _ => {}
+        }
+    }
+    let mut checked = brief.clone();
+    worst(&mut checked);
+    brief.to_string().len().max(checked.to_string().len())
+}
+
+/// Set a briefing's `budget.bytes` and `approx_tokens` to its size as it now
+/// stands. Called after anything changes it, such as checking its facts;
+/// anything else is left alone.
+pub fn restate_size(json: &mut Json) {
+    let is_briefing = json
+        .get("budget")
+        .and_then(|b| b.get("limit_bytes"))
+        .is_some();
+    if !is_briefing {
+        return;
+    }
+    // Writing the figures can change their own width; a few rounds settle it.
+    for _ in 0..4 {
+        let size = json.to_string().len();
+        if json["budget"]["bytes"] == json!(size) {
+            return;
+        }
+        json["budget"]["bytes"] = json!(size);
+        json["budget"]["approx_tokens"] = json!(size.div_ceil(4));
+    }
+}
+
+/// Add a fact's sources, and the hashes they were recorded with, to its
+/// entry in an answer. Whoever holds the files — a proxy, an `--ephemeral`
+/// server, the command line — turns `recorded` into fresh or stale.
+pub fn with_fact_fields(
+    json: &mut Json,
+    key: &str,
+    entry: &Entry,
+    sidecar: &crate::sidecar::Sidecar,
+) {
+    let Some(sources) = crate::facts::sources_of(&entry.meta) else {
+        return;
+    };
+    let id = crate::facts::record_id(key, &entry.value, &sources);
+    let recorded = sidecar.fact(&id).map_or(Json::Null, |h| json!(h));
+    if let Json::Object(map) = json {
+        map.insert("sources".to_owned(), json!(sources));
+        map.insert("recorded".to_owned(), recorded);
+    }
 }
 
 /// A briefing being assembled, kept in parts so it can be trimmed to fit.
 struct Brief {
     ns: String,
     branch: String,
+    task: Option<String>,
+    current_branch: Option<String>,
+    budget: usize,
     handoff: Option<HandoffView>,
     earlier_handoffs: usize,
-    decisions: Vec<Json>,
-    tasks: Vec<Json>,
-    omitted_decisions: usize,
-    omitted_tasks: usize,
+    items: Vec<Item>,
+    omitted: std::collections::BTreeMap<&'static str, usize>,
     truncated: bool,
 }
 
@@ -236,12 +488,21 @@ impl Brief {
                 }
             }
         }
-        if self.decisions.pop().is_some() {
-            self.omitted_decisions += 1;
-            return true;
-        }
-        if self.tasks.pop().is_some() {
-            self.omitted_tasks += 1;
+        if let Some(weakest) = self
+            .items
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, item)| item.keep_order())
+            .map(|(i, _)| i)
+        {
+            let item = self.items.remove(weakest);
+            let name = match item.kind {
+                Kind::Lesson => "lessons",
+                Kind::Decision => "decisions",
+                Kind::Fact => "facts",
+                Kind::Task => "tasks",
+            };
+            *self.omitted.entry(name).or_insert(0) += 1;
             return true;
         }
         if let Some(h) = &mut self.handoff {
@@ -252,15 +513,38 @@ impl Brief {
                 }
             }
         }
+        // Last of all, the long free text: the caller's own task, which it
+        // knows, then the handoff's summary, a half at a time.
+        if self.task.take().is_some() {
+            return true;
+        }
+        if let Some(summary) = self.handoff.as_mut().and_then(|h| h.summary.as_mut()) {
+            let chars = summary.chars().count();
+            if chars > 1 {
+                let mut cut: String = summary.chars().take(chars / 2).collect();
+                cut.push('…');
+                *summary = cut;
+                return true;
+            }
+        }
         false
     }
 
-    fn render(&self) -> Json {
+    fn of(&self, kind: Kind) -> Vec<Json> {
+        let mut chosen: Vec<&Item> = self.items.iter().filter(|i| i.kind == kind).collect();
+        chosen.sort_by(|a, b| b.score.cmp(&a.score).then(a.pos.cmp(&b.pos)));
+        chosen.into_iter().map(|i| i.json.clone()).collect()
+    }
+
+    fn render(&self, bytes: usize) -> Json {
         let ns = &self.ns;
         let mut map = Map::new();
         map.insert("namespace".to_owned(), json!(ns));
         map.insert("branch".to_owned(), json!(self.branch));
         map.insert("empty".to_owned(), json!(false));
+        if let Some(task) = &self.task {
+            map.insert("task".to_owned(), json!(task));
+        }
         map.insert(
             "latest_handoff".to_owned(),
             self.handoff
@@ -268,31 +552,45 @@ impl Brief {
                 .map_or(Json::Null, HandoffView::render),
         );
         map.insert("earlier_handoffs".to_owned(), json!(self.earlier_handoffs));
-        map.insert("recent_decisions".to_owned(), json!(self.decisions));
-        map.insert("open_tasks".to_owned(), json!(self.tasks));
-        if self.omitted_decisions > 0 || self.omitted_tasks > 0 {
-            map.insert(
-                "omitted".to_owned(),
-                json!({
-                    "decisions": self.omitted_decisions,
-                    "tasks": self.omitted_tasks,
-                    "hint": format!(
-                        "More is stored than fits in a briefing. memfork_list with \
-                         prefix `{ns}:decision:` or `{ns}:task:` shows all of it."
-                    ),
-                }),
+        map.insert("lessons".to_owned(), json!(self.of(Kind::Lesson)));
+        map.insert(
+            "recent_decisions".to_owned(),
+            json!(self.of(Kind::Decision)),
+        );
+        map.insert("facts".to_owned(), json!(self.of(Kind::Fact)));
+        map.insert("open_tasks".to_owned(), json!(self.of(Kind::Task)));
+        let left_out: usize = self.omitted.values().sum();
+        if left_out > 0 {
+            let mut omitted = Map::new();
+            for (name, count) in &self.omitted {
+                omitted.insert((*name).to_owned(), json!(count));
+            }
+            omitted.insert(
+                "hint".to_owned(),
+                json!(format!(
+                    "memfork_search with text, or memfork_list with a prefix such \
+                     as `{ns}:decision:`, shows the rest."
+                )),
             );
+            map.insert("omitted".to_owned(), Json::Object(omitted));
         }
         let handoff_cut = self.handoff.as_ref().is_some_and(HandoffView::cut);
         map.insert(
             "truncated".to_owned(),
-            json!(
-                self.truncated
-                    || handoff_cut
-                    || self.omitted_decisions > 0
-                    || self.omitted_tasks > 0
-            ),
+            json!(self.truncated || handoff_cut || left_out > 0),
         );
+        map.insert(
+            "budget".to_owned(),
+            json!({
+                "limit_bytes": self.budget,
+                "bytes": bytes,
+                "approx_tokens": bytes.div_ceil(4),
+                "estimate": ESTIMATE,
+            }),
+        );
+        if let Some(branch) = &self.current_branch {
+            map.insert("current_branch".to_owned(), json!(branch));
+        }
         Json::Object(map)
     }
 }

@@ -44,6 +44,12 @@ pub const EVENTS_PATH: &str = "/events";
 /// The path the command line posts its operations to.
 pub const CLI_PATH: &str = "/cli";
 
+/// The path a proxy reports facts it has checked to.
+pub const REPORT_PATH: &str = "/report";
+
+/// How often the side structure is written while it changes.
+const SIDECAR_FLUSH: Duration = Duration::from_secs(5);
+
 /// The name the command line's writes are recorded under.
 pub const CLI_WRITER: &str = "memfork-cli";
 
@@ -140,8 +146,17 @@ pub async fn run(
     // Every HTTP session gets its own MCP session over the one database, so
     // two clients share the data and keep their own current branch.
     let events = Arc::new(Events::default());
+    let (sidecar, note) = crate::sidecar::Sidecar::open(store.dir());
+    if let Some(note) = note {
+        eprintln!("memfork: {note}");
+    }
+    let side = Arc::new(crate::shared::Shared {
+        sidecar,
+        ..crate::shared::Shared::default()
+    });
     let shared = db.clone();
     let hub = Arc::clone(&events);
+    let side_for_sessions = Arc::clone(&side);
     let mut sessions = LocalSessionManager::default();
     sessions.session_config.keep_alive = Some(Duration::from_secs(options.session_seconds.max(1)));
     let service = StreamableHttpService::new(
@@ -150,7 +165,9 @@ pub async fn run(
         // `crate::mcp::adopt`), and from then on it reports what it does.
         move || {
             Ok(MemforkServer::new(Arc::new(
-                Session::new(shared.clone()).reporting_to(Arc::clone(&hub)),
+                Session::new(shared.clone())
+                    .reporting_to(Arc::clone(&hub))
+                    .sharing(Arc::clone(&side_for_sessions)),
             )))
         },
         Arc::new(sessions),
@@ -162,6 +179,24 @@ pub async fn run(
             .with_json_response(true)
             .with_legacy_session_mode(true),
     );
+
+    // Statistics and fact hashes to disk, now and then while they change.
+    let flusher = {
+        let side = Arc::clone(&side);
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(SIDECAR_FLUSH) => {
+                        if let Err(e) = side.sidecar.flush() {
+                            eprintln!("memfork: {e}");
+                        }
+                    }
+                }
+            }
+        })
+    };
 
     let idle = {
         let clock = Arc::clone(&clock);
@@ -187,6 +222,7 @@ pub async fn run(
     };
 
     let accept = {
+        let side = Arc::clone(&side);
         let shutdown = shutdown.clone();
         let clock = Arc::clone(&clock);
         let token = token.clone();
@@ -207,6 +243,7 @@ pub async fn run(
                 let token = token.clone();
                 let events = Arc::clone(&events);
                 let db = db.clone();
+                let side = Arc::clone(&side);
                 tokio::spawn(async move {
                     let guard = Guard {
                         inner: service,
@@ -216,6 +253,7 @@ pub async fn run(
                         events,
                         db,
                         port,
+                        side,
                     };
                     let io = hyper_util::rt::TokioIo::new(stream);
                     let _ = hyper::server::conn::http1::Builder::new()
@@ -235,6 +273,10 @@ pub async fn run(
 
     // Flush before the lock goes, so a looser fsync policy does not lose the
     // last commits to a shutdown the daemon chose itself.
+    flusher.abort();
+    if let Err(e) = side.sidecar.flush() {
+        eprintln!("memfork: {e}");
+    }
     store.flush().map_err(|e| e.to_string())?;
     Ok(stopped)
 }
@@ -249,6 +291,7 @@ struct Guard {
     events: Arc<Events>,
     db: memfork_core::Db,
     port: u16,
+    side: Arc<crate::shared::Shared>,
 }
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
@@ -327,7 +370,14 @@ impl tower_service::Service<Request<Incoming>> for Guard {
         if request.uri().path() == CLI_PATH {
             let db = self.db.clone();
             let events = Arc::clone(&self.events);
-            return Box::pin(async move { Ok(run_cli(request, db, events).await) });
+            let side = Arc::clone(&self.side);
+            return Box::pin(async move { Ok(run_cli(request, db, events, side).await) });
+        }
+
+        if request.uri().path() == REPORT_PATH {
+            let events = Arc::clone(&self.events);
+            let side = Arc::clone(&self.side);
+            return Box::pin(async move { Ok(take_report(request, events, side).await) });
         }
 
         let mut inner = self.inner.clone();
@@ -399,10 +449,49 @@ fn event_stream(events: &Events, port: u16, shutdown: CancellationToken) -> Resp
 
 /// One command-line operation, carried out on the shared store exactly as
 /// `--ephemeral` would carry it out in memory, and reported to watchers.
+/// Facts a proxy or the command line checked, to count and to show in the
+/// feed: `{"client", "namespace", "facts": [[key, state], ...]}`.
+async fn take_report(
+    request: Request<Incoming>,
+    events: Arc<Events>,
+    side: Arc<crate::shared::Shared>,
+) -> Response<BoxBody> {
+    let Ok(collected) = request.into_body().collect().await else {
+        return text(StatusCode::BAD_REQUEST, "the report could not be read\n");
+    };
+    let Ok(report) = serde_json::from_slice::<serde_json::Value>(&collected.to_bytes()) else {
+        return text(StatusCode::BAD_REQUEST, "the report did not parse\n");
+    };
+    let client = report["client"].as_str().unwrap_or("unknown client");
+    let ns = report["namespace"]
+        .as_str()
+        .filter(|n| crate::namespace::validate(n).is_ok())
+        .unwrap_or(crate::namespace::FALLBACK);
+    let mut checked = crate::facts::Checked::default();
+    for pair in report["facts"].as_array().into_iter().flatten().take(1000) {
+        let (Some(key), Some(state)) = (pair[0].as_str(), pair[1].as_str()) else {
+            continue;
+        };
+        match state {
+            "fresh" => checked.fresh += 1,
+            "stale" => checked.stale += 1,
+            "unverified" => checked.unverified += 1,
+            _ => continue,
+        }
+        checked.facts.push((key.to_owned(), state.to_owned()));
+    }
+    crate::tools::dispatch::record_checked(&side, Some(&events), client, ns, &checked);
+    json_response(
+        StatusCode::OK,
+        &serde_json::json!({ "recorded": checked.facts.len() }),
+    )
+}
+
 async fn run_cli(
     request: Request<Incoming>,
     db: memfork_core::Db,
     events: Arc<Events>,
+    side: Arc<crate::shared::Shared>,
 ) -> Response<BoxBody> {
     let bad = |why: String| {
         json_response(
@@ -437,10 +526,18 @@ async fn run_cli(
     } = call;
     let (key, target) = crate::exec::target(&command, &branch);
     let name = command.name();
-    let outcome = tokio::task::spawn_blocking(move || {
-        crate::exec::execute_as(&db, &branch, &command, Some(CLI_WRITER))
-    })
-    .await;
+    let ctx = crate::exec::Context {
+        writer: Some(CLI_WRITER.to_owned()),
+        namespace: namespace
+            .clone()
+            .filter(|n| crate::namespace::validate(n).is_ok())
+            .unwrap_or_else(|| crate::namespace::FALLBACK.to_owned()),
+        shared: side,
+        root: None,
+    };
+    let outcome =
+        tokio::task::spawn_blocking(move || crate::exec::execute_in(&db, &branch, &command, &ctx))
+            .await;
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(e) => Err(crate::exec::ExecError::Usage(format!(

@@ -102,6 +102,13 @@ pub fn adopt(session: &Session, request: &InitializeRequestParams) {
     {
         session.set_namespace(ns.to_owned());
     }
+    // A proxy's own session id, so its claims survive its reconnects.
+    if let Some(id) = hello
+        .and_then(|h| h.get("session"))
+        .and_then(|s| s.as_str())
+    {
+        session.set_session_id(id);
+    }
     session.announce();
 }
 
