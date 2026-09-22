@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use memfork_core::{CommitId, Db, MergePolicy, Op, Value, WRITTEN_BY};
 use serde_json::{json, Value as Json};
 
-use crate::cli::{parse_meta, parse_vector, Command, TaskAction};
+use crate::cli::{parse_meta, parse_vector, Command, PlanAction, TaskAction};
 use crate::shared::Shared;
 use crate::tools::dispatch::Session;
 
@@ -236,15 +236,30 @@ pub fn execute_in(
             allow_secret,
         } => {
             let mut args = match action {
-                TaskAction::Add { title, id, detail } => {
-                    json!({"action": "add", "title": title, "id": id, "detail": detail})
-                }
+                TaskAction::Add {
+                    title,
+                    id,
+                    detail,
+                    depends_on,
+                    accept,
+                    timeout_seconds,
+                } => json!({
+                    "action": "add", "title": title, "id": id, "detail": detail,
+                    "depends_on": depends_on, "accept": accept,
+                    "timeout_seconds": timeout_seconds,
+                }),
                 TaskAction::Claim { id, lease } => {
                     json!({"action": "claim", "id": id, "lease_seconds": lease})
                 }
                 TaskAction::Renew { id } => json!({"action": "renew", "id": id}),
                 TaskAction::Release { id } => json!({"action": "release", "id": id}),
-                TaskAction::Done { id } => json!({"action": "done", "id": id}),
+                TaskAction::Done { id, acceptance } => {
+                    let mut args = json!({"action": "done", "id": id});
+                    if let Some(ran) = acceptance {
+                        args["acceptance"] = json!(ran);
+                    }
+                    args
+                }
                 TaskAction::List { status } => json!({"action": "list", "status": status}),
             };
             if let Some(ns) = namespace {
@@ -258,6 +273,40 @@ pub fn execute_in(
                 task_lines(&result),
                 json!({"op": "task", "result": result}),
             ))
+        }
+
+        Command::Plan {
+            action,
+            namespace,
+            allow_secret,
+        } => {
+            let mut args = match action {
+                PlanAction::Write {
+                    tasks: Some(tasks),
+                    plan_file,
+                    ..
+                } => json!({"action": "plan", "tasks": tasks, "plan_file": plan_file}),
+                PlanAction::Write { .. } | PlanAction::Check { .. } => {
+                    return Err(ExecError::Usage(
+                        "a plan file is read where it is, before the command is sent; \
+                         run `memfork plan` from the project"
+                            .to_owned(),
+                    ))
+                }
+                PlanAction::Show => json!({"action": "list", "status": "all"}),
+            };
+            if let Some(ns) = namespace {
+                args["namespace"] = json!(ns);
+            }
+            if let Some(allow) = allow_secret {
+                args["allow_secret"] = json!(allow);
+            }
+            let result = ctx.tool(db, branch, "memfork_task", args)?;
+            let lines = match action {
+                PlanAction::Show => plan_lines(&result),
+                _ => task_lines(&result),
+            };
+            Ok(Outcome::new(lines, json!({"op": "plan", "result": result})))
         }
 
         Command::Facts { prefix, namespace } => {
@@ -720,7 +769,7 @@ pub fn target(command: &Command, branch: &str) -> (Option<String>, Option<String
                 TaskAction::Claim { id, .. }
                 | TaskAction::Renew { id }
                 | TaskAction::Release { id }
-                | TaskAction::Done { id } => Some(id.clone()),
+                | TaskAction::Done { id, .. } => Some(id.clone()),
                 TaskAction::Add { id, .. } => id.clone(),
                 TaskAction::List { .. } => None,
             };
@@ -906,6 +955,60 @@ pub fn history(db: &Db, limit: Option<usize>) -> Json {
 }
 
 /// A task board answer, for a person.
+/// `memfork plan show`: the board grouped as a plan.
+fn plan_lines(result: &Json) -> Vec<String> {
+    let tasks = result["tasks"].as_array().cloned().unwrap_or_default();
+    if tasks.is_empty() {
+        return vec!["no tasks; write a plan with `memfork plan write`".to_owned()];
+    }
+    let title = |t: &Json| {
+        format!(
+            "{}  {}",
+            t["id"].as_str().unwrap_or(""),
+            t["title"].as_str().unwrap_or("")
+        )
+    };
+    let mut ready = Vec::new();
+    let mut blocked = Vec::new();
+    let mut claimed = Vec::new();
+    let mut done = Vec::new();
+    for t in &tasks {
+        match t["status"].as_str().unwrap_or("open") {
+            "done" => done.push(format!("  {}", title(t))),
+            "claimed" => claimed.push(format!(
+                "  {}  (held by {})",
+                title(t),
+                t["held_by"].as_str().unwrap_or("someone")
+            )),
+            _ if t["ready"] == false => blocked.push(format!(
+                "  {}  (waiting for {})",
+                title(t),
+                t["blocked_by"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Json::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            _ => ready.push(format!("  {}", title(t))),
+        }
+    }
+    let mut lines = Vec::new();
+    for (name, group) in [
+        ("ready", ready),
+        ("claimed", claimed),
+        ("blocked", blocked),
+        ("done", done),
+    ] {
+        if !group.is_empty() {
+            lines.push(format!("{name} ({})", group.len()));
+            lines.extend(group);
+        }
+    }
+    lines
+}
+
 fn task_lines(result: &Json) -> Vec<String> {
     let key = result["key"].as_str().unwrap_or("");
     match result["action"].as_str().unwrap_or("") {
@@ -930,7 +1033,56 @@ fn task_lines(result: &Json) -> Vec<String> {
             result["held_by"].as_str().unwrap_or("someone")
         )],
         "release" => vec![format!("released {key}; it is open again")],
-        "done" => vec![format!("{key} is done")],
+        "done" if result["accepted"] == false => {
+            let mut lines = vec![format!(
+                "{key} is not done: its acceptance command {}; it is open again",
+                match (result["timed_out"] == true, result["exit_code"].as_i64()) {
+                    (true, _) => "ran out of time".to_owned(),
+                    (false, Some(code)) => format!("exited {code}"),
+                    (false, None) => "did not finish".to_owned(),
+                }
+            )];
+            if let Some(lesson) = result["lesson"]["key"].as_str() {
+                lines.push(format!("  lesson kept as {lesson}"));
+            }
+            lines
+        }
+        "done" => {
+            let mut lines = vec![format!("{key} is done")];
+            let ready: Vec<&str> = result["now_ready"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Json::as_str)
+                .collect();
+            if !ready.is_empty() {
+                lines.push(format!("  now ready: {}", ready.join(", ")));
+            }
+            lines
+        }
+        "plan" => {
+            let written = result["written"].as_array().map_or(0, Vec::len);
+            let ready: Vec<&str> = result["ready"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Json::as_str)
+                .collect();
+            vec![
+                format!(
+                    "wrote {written} task{} to the board",
+                    if written == 1 { "" } else { "s" }
+                ),
+                format!(
+                    "  ready now: {}",
+                    if ready.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        ready.join(", ")
+                    }
+                ),
+            ]
+        }
         "list" => {
             let tasks = result["tasks"].as_array().cloned().unwrap_or_default();
             let width = tasks

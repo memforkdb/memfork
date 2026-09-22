@@ -266,6 +266,20 @@ pub enum Command {
         allow_secret: Option<String>,
     },
 
+    /// Plans: tasks with dependencies and acceptance commands, from a file.
+    Plan {
+        /// What to do.
+        #[command(subcommand)]
+        action: PlanAction,
+        /// The project. Defaults to the one this directory belongs to.
+        #[arg(long, global = true, value_name = "NAME")]
+        namespace: Option<String>,
+        /// Write it even though something in it looks like a credential: the
+        /// rule id the refusal named. Only for something that is not a secret.
+        #[arg(long = "allow-secret", global = true, value_name = "RULE")]
+        allow_secret: Option<String>,
+    },
+
     /// List the facts in a project, and whether their source files have
     /// changed since each was written.
     Facts {
@@ -468,6 +482,36 @@ pub enum Command {
     },
 }
 
+/// What `memfork plan` does.
+#[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
+pub enum PlanAction {
+    /// Put a plan file's tasks on the board, in one step. A task already
+    /// there is replaced only while it is open and unclaimed.
+    Write {
+        /// The plan file. Defaults to memfork-plan.toml at the top of the
+        /// project.
+        file: Option<String>,
+        /// The file's tasks, read here before the command is sent.
+        #[arg(skip)]
+        #[serde(default)]
+        tasks: Option<Vec<crate::plans::PlanTask>>,
+        /// Where the file is, relative to the project.
+        #[arg(skip)]
+        #[serde(default)]
+        plan_file: Option<String>,
+    },
+    /// Check a plan file without writing anything: its shape, its ids, and
+    /// that it has no cycle.
+    Check {
+        /// The plan file. Defaults to memfork-plan.toml at the top of the
+        /// project.
+        file: Option<String>,
+    },
+    /// Show the board as a plan: what is ready, what is blocked and by what,
+    /// who holds what, and what is done.
+    Show,
+}
+
 /// What `memfork task` does.
 #[derive(Debug, Clone, Subcommand, Serialize, Deserialize)]
 pub enum TaskAction {
@@ -481,6 +525,16 @@ pub enum TaskAction {
         /// Anything more it needs.
         #[arg(long)]
         detail: Option<String>,
+        /// A task that must be done first; repeat for several.
+        #[arg(long = "depends-on", value_name = "ID")]
+        depends_on: Vec<String>,
+        /// A command that exits 0 in the project when the task is done. It
+        /// runs only if the repository's plan file holds the same command.
+        #[arg(long, value_name = "COMMAND")]
+        accept: Option<String>,
+        /// How long that command may take, in seconds (at most 3600).
+        #[arg(long = "timeout", value_name = "SECONDS")]
+        timeout_seconds: Option<u64>,
     },
     /// Claim a task, so nobody else starts it.
     Claim {
@@ -500,16 +554,23 @@ pub enum TaskAction {
         /// The task's id.
         id: String,
     },
-    /// Mark a task done.
+    /// Mark a task done. A task with an acceptance command is done only
+    /// when that command exits 0 here; if it fails the task is reopened and
+    /// a lesson recorded.
     Done {
         /// The task's id.
         id: String,
+        /// The acceptance command's result, worked out here before the
+        /// command is sent, since the daemon cannot see the project.
+        #[arg(skip)]
+        #[serde(default)]
+        acceptance: Option<crate::plans::Acceptance>,
     },
     /// List tasks.
     List {
-        /// Which: open, claimed, done, unfinished or all.
+        /// Which: ready, blocked, open, claimed, done, unfinished or all.
         #[arg(long, default_value = "unfinished",
-              value_parser = ["open", "claimed", "done", "unfinished", "all"])]
+              value_parser = ["ready", "blocked", "open", "claimed", "done", "unfinished", "all"])]
         status: String,
     },
 }
@@ -552,6 +613,7 @@ impl Command {
             Command::Diff { .. } => "diff",
             Command::Find { .. } => "find",
             Command::Task { .. } => "task",
+            Command::Plan { .. } => "plan",
             Command::Facts { .. } => "facts",
             Command::Lessons { .. } => "lessons",
             Command::Stats { .. } => "stats",

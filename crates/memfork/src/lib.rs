@@ -77,6 +77,7 @@ pub mod lessons;
 pub mod mcp;
 pub mod namespace;
 pub mod persist;
+pub mod plans;
 pub mod proxy;
 pub mod render;
 pub mod run;

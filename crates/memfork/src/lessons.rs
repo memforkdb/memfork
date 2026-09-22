@@ -123,14 +123,53 @@ pub fn record(
             b.seq.saturating_sub(base)
         })
         .unwrap_or(0);
-    let prefix = namespace::prefix(ns, "lesson");
     let body = json!({
         "lesson": lesson,
         "branch": discarded,
         "commits": commits,
-    })
-    .to_string();
-    let mut value = Value::new(body).with_importance(0.8);
+    });
+    write(
+        db,
+        &parent,
+        body,
+        ns,
+        by,
+        &format!("lesson from {discarded}"),
+    )
+}
+
+/// Write a lesson about a task whose acceptance command failed, on the
+/// branch the task is on.
+pub fn record_about_task(
+    db: &Db,
+    branch: &str,
+    lesson: &str,
+    task: &str,
+    ns: &str,
+    by: Option<&str>,
+) -> Result<Recorded, memfork_core::Error> {
+    let body = json!({ "lesson": lesson, "task": task });
+    write(
+        db,
+        branch,
+        body,
+        ns,
+        by,
+        &format!("lesson from task {task}"),
+    )
+}
+
+/// Store the next numbered lesson on `on`, keeping the newest [`MAX_LESSONS`].
+fn write(
+    db: &Db,
+    on: &str,
+    body: Json,
+    ns: &str,
+    by: Option<&str>,
+    message: &str,
+) -> Result<Recorded, memfork_core::Error> {
+    let prefix = namespace::prefix(ns, "lesson");
+    let mut value = Value::new(body.to_string()).with_importance(0.8);
     if let Some(by) = by {
         value = value.with_meta(WRITTEN_BY, by);
     }
@@ -141,11 +180,11 @@ pub fn record(
     let mut last = None;
     for _ in 0..16 {
         let existing: Vec<(u64, String)> = db
-            .list(&parent, &prefix, None)?
+            .list(on, &prefix, None)?
             .into_iter()
             .filter_map(|(k, _)| Some((k.strip_prefix(&prefix)?.parse::<u64>().ok()?, k)))
             .collect();
-        let mut txn = db.begin(&parent)?;
+        let mut txn = db.begin(on)?;
         let next = existing.iter().map(|(n, _)| *n).max().unwrap_or(0) + 1;
         let key = format!("{prefix}{next:0width$}", width = DIGITS);
         txn.put(&key, value.clone())?;
@@ -156,11 +195,11 @@ pub fn record(
         for (_, old) in numbers.into_iter().take(over) {
             txn.delete(old)?;
         }
-        match txn.commit(Some(format!("lesson from {discarded}"))) {
+        match txn.commit(Some(message.to_owned())) {
             Ok(commit) => {
                 return Ok(Recorded {
                     key,
-                    branch: parent,
+                    branch: on.to_owned(),
                     commit,
                 })
             }
@@ -168,7 +207,7 @@ pub fn record(
             Err(e) => return Err(e),
         }
     }
-    Err(last.unwrap_or(memfork_core::Error::NoSuchBranch(parent)))
+    Err(last.unwrap_or_else(|| memfork_core::Error::NoSuchBranch(on.to_owned())))
 }
 
 /// The newest `limit` lessons in `ns`, newest first, as a briefing shows them.
@@ -191,13 +230,18 @@ pub fn recent(
 /// A lesson as answers show it.
 pub fn view(key: &str, entry: &memfork_core::Entry) -> Json {
     let parsed: Json = serde_json::from_slice(&entry.value).unwrap_or(Json::Null);
-    json!({
+    let mut view = json!({
         "key": key,
         "lesson": parsed.get("lesson").cloned()
             .unwrap_or_else(|| json!(String::from_utf8_lossy(&entry.value))),
         "branch": parsed.get("branch").cloned().unwrap_or(Json::Null),
         "by": entry.meta.get(WRITTEN_BY),
-    })
+    });
+    // A lesson from a failed acceptance names its task.
+    if let Some(task) = parsed.get("task") {
+        view["task"] = task.clone();
+    }
+    view
 }
 
 #[cfg(test)]

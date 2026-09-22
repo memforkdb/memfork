@@ -497,6 +497,64 @@ impl Proxy {
         Ok(fresh)
     }
 
+    /// For `done` on a task with an acceptance command: run it here, where
+    /// the project is, if the repository's plan file holds it, and add the
+    /// result to the call. `Err` says why it was not run.
+    async fn prepare_acceptance(
+        &self,
+        args: &mut rmcp::model::JsonObject,
+    ) -> Result<(), ErrorData> {
+        if args.get("action") != Some(&json!("done")) || args.contains_key("acceptance") {
+            return Ok(());
+        }
+        let Some(id) = args.get("id").and_then(Json::as_str).map(str::to_owned) else {
+            return Ok(());
+        };
+        let ns = args
+            .get("namespace")
+            .and_then(Json::as_str)
+            .unwrap_or(&self.namespace)
+            .to_owned();
+        let mut get = serde_json::Map::new();
+        get.insert("key".to_owned(), json!(crate::board::task_key(&ns, &id)));
+        if let Some(branch) = args.get("branch") {
+            get.insert("branch".to_owned(), branch.clone());
+        }
+        let params = CallToolRequestParams::new("memfork_get").with_arguments(get);
+        let raw = self
+            .with_retry(move |up| {
+                let params = params.clone();
+                Box::pin(async move { up.call_tool(&params).await })
+            })
+            .await?;
+        let found = serde_json::from_value::<CallToolResult>(raw)
+            .ok()
+            .and_then(|r| r.structured_content);
+        let Some(task) = found
+            .as_ref()
+            .and_then(|c| c["value"].as_str())
+            .and_then(|v| serde_json::from_str::<Json>(v).ok())
+        else {
+            // No such task, or not one this board wrote: the daemon says so.
+            return Ok(());
+        };
+        let root = self.root.clone();
+        let prepared =
+            tokio::task::spawn_blocking(move || crate::plans::prepare_done(&root, &id, &task))
+                .await
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("the acceptance run failed: {e}"), None)
+                })?;
+        match prepared {
+            Ok(Some(ran)) => {
+                args.insert("acceptance".to_owned(), json!(ran));
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(why) => Err(ErrorData::invalid_params(why, None)),
+        }
+    }
+
     /// Run an operation against the daemon, restarting it once if it has gone.
     async fn with_retry<T, F>(&self, operation: F) -> Result<T, ErrorData>
     where
@@ -606,6 +664,20 @@ impl ServerHandler for Proxy {
                 if let Some(Ok(sources)) = sources.map(|s| crate::facts::normalise(&s)) {
                     let hashes = self.hasher.record(&self.root, &sources);
                     args.insert("source_hashes".to_owned(), json!(hashes));
+                }
+            }
+        }
+        // Marking a task done may mean running its acceptance command, which
+        // only this side can do. A command it will not run is the agent's to
+        // fix, so it comes back as a tool error saying why.
+        if params.name == "memfork_task" {
+            if let Some(args) = params.arguments.as_mut() {
+                if let Err(refused) = self.prepare_acceptance(args).await {
+                    return Ok(CallToolResult::structured_error(json!({
+                        "error": refused.message,
+                        "tool": "memfork_task",
+                    }))
+                    .into());
                 }
             }
         }

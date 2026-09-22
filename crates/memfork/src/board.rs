@@ -55,7 +55,7 @@ const MAX_LISTED: usize = 200;
 const RETRIES: usize = 16;
 
 /// A task to add to the board.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct NewTask<'a> {
     /// Its id; the next free number if `None`.
     pub id: Option<&'a str>,
@@ -63,7 +63,17 @@ pub struct NewTask<'a> {
     pub title: &'a str,
     /// Anything more.
     pub detail: Option<&'a str>,
+    /// Ids of tasks in the same project that must be done first.
+    pub depends_on: &'a [String],
+    /// A command that exits 0 in the project when the task is done.
+    pub accept: Option<&'a str>,
+    /// How long that command may take.
+    pub timeout_seconds: Option<u64>,
 }
+
+/// Whether each unfinished task in a project is ready, and if not, which of
+/// the tasks it depends on are not done yet. Keyed by task id.
+pub type Readiness = BTreeMap<String, Vec<String>>;
 
 /// What time it is, for leases. Tests use one they can move.
 pub trait Clock: Send + Sync + std::fmt::Debug {
@@ -266,7 +276,14 @@ impl Board {
         task: NewTask<'_>,
         by: Option<&str>,
     ) -> Result<Json, BoardError> {
-        let NewTask { id, title, detail } = task;
+        let NewTask {
+            id,
+            title,
+            detail,
+            depends_on,
+            accept,
+            timeout_seconds,
+        } = task;
         let title = clip(title, MAX_TITLE_CHARS);
         if title.is_empty() {
             return Err(BoardError::Bad("a task needs a `title`".to_owned()));
@@ -294,6 +311,22 @@ impl Board {
                 "a task `{id}` already exists in `{ns}`; choose another id or leave it out"
             )));
         }
+        // A new task cannot close a cycle: nothing can depend on it yet. Its
+        // own dependencies must exist, in this project.
+        let planned = crate::plans::PlanTask {
+            id: id.clone(),
+            title: title.clone(),
+            detail: None,
+            depends_on: depends_on.to_vec(),
+            accept: crate::plans::normalise_accept(accept),
+            timeout_seconds,
+        };
+        crate::plans::check_shape(std::slice::from_ref(&planned)).map_err(BoardError::Bad)?;
+        crate::plans::check_graph(
+            std::slice::from_ref(&planned),
+            &self.graph(db, branch, &prefix, &[])?,
+        )
+        .map_err(BoardError::Bad)?;
         let mut task = Map::new();
         task.insert("title".to_owned(), json!(title));
         if let Some(detail) = detail
@@ -302,6 +335,7 @@ impl Board {
         {
             task.insert("detail".to_owned(), json!(detail));
         }
+        plan_fields(&mut task, &planned, None);
         task.insert("status".to_owned(), json!("open"));
         task.insert("holder".to_owned(), Json::Null);
         task.insert("claims".to_owned(), json!(0));
@@ -440,9 +474,51 @@ impl Board {
         self.finish(db, branch, key, who, "open")
     }
 
-    /// Mark a task done.
-    pub fn done(&self, db: &Db, branch: &str, key: &str, who: &Who) -> Result<Json, BoardError> {
-        self.finish(db, branch, key, who, "done")
+    /// Mark a task done. A task with an acceptance command needs the result
+    /// of running it, from where the project is: done if it passed, and
+    /// reopened, with the claim dropped, if it did not.
+    pub fn done(
+        &self,
+        db: &Db,
+        branch: &str,
+        key: &str,
+        who: &Who,
+        acceptance: Option<&crate::plans::Acceptance>,
+    ) -> Result<Json, BoardError> {
+        let entry = db
+            .get(branch, key)?
+            .ok_or_else(|| BoardError::Bad(format!("there is no task `{key}` on `{branch}`")))?;
+        let task = read_task(&entry);
+        let Some(command) =
+            crate::plans::normalise_accept(task.get("accept").and_then(Json::as_str))
+        else {
+            return self.finish(db, branch, key, who, "done");
+        };
+        let Some(ran) = acceptance else {
+            return Err(BoardError::Bad(format!(
+                "`{key}` is done only when its acceptance command (`{command}`) exits 0 in \
+                 the project, and it runs where the project is: mark it done through \
+                 `memfork mcp` or `memfork task done`, which run it and send the result"
+            )));
+        };
+        if ran.command != command {
+            return Err(BoardError::Bad(format!(
+                "the acceptance result sent was for `{}`, but `{key}` now says `{command}`; \
+                 mark it done again",
+                ran.command
+            )));
+        }
+        if ran.passed() {
+            let mut answer = self.finish(db, branch, key, who, "done")?;
+            answer["accepted"] = json!(true);
+            return Ok(answer);
+        }
+        let mut answer = self.finish(db, branch, key, who, "reopen")?;
+        answer["accepted"] = json!(false);
+        answer["exit_code"] = json!(ran.exit_code);
+        answer["timed_out"] = json!(ran.timed_out);
+        answer["output"] = json!(ran.output);
+        Ok(answer)
     }
 
     fn finish(
@@ -453,7 +529,13 @@ impl Board {
         who: &Who,
         to: &str,
     ) -> Result<Json, BoardError> {
-        let action = if to == "done" { "done" } else { "release" };
+        let action = match to {
+            "done" => "done",
+            "reopen" => "reopen",
+            _ => "release",
+        };
+        // A failed acceptance reopens the task: open again, and unclaimed.
+        let to = if to == "reopen" { "open" } else { to };
         let mut leases = self.leases();
         if let Some(lease) = self.current(&leases, key) {
             if lease.who != *who {
@@ -508,24 +590,184 @@ impl Board {
         }))
     }
 
+    /// Each task's dependencies, by id, leaving out the ids in `except`.
+    fn graph(
+        &self,
+        db: &Db,
+        branch: &str,
+        prefix: &str,
+        except: &[&str],
+    ) -> Result<BTreeMap<String, Vec<String>>, BoardError> {
+        Ok(db
+            .list(branch, prefix, None)?
+            .iter()
+            .filter_map(|(k, e)| {
+                let id = k.strip_prefix(prefix)?;
+                (!except.contains(&id)).then(|| (id.to_owned(), depends_on(&read_task(e))))
+            })
+            .collect())
+    }
+
+    /// Whether any task in `ns` depends on another, which is when saying
+    /// which tasks are ready tells anybody anything.
+    pub fn uses_plans(&self, db: &Db, branch: &str, ns: &str) -> bool {
+        let prefix = namespace::prefix(ns, "task");
+        db.list(branch, &prefix, None)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .any(|(_, e)| !depends_on(&read_task(e)).is_empty())
+            })
+            .unwrap_or(false)
+    }
+
+    /// For every unfinished task in `ns`: the tasks it waits on that are not
+    /// done. An empty list means it is ready.
+    pub fn readiness(&self, db: &Db, branch: &str, ns: &str) -> Result<Readiness, BoardError> {
+        let prefix = namespace::prefix(ns, "task");
+        let entries = db.list(branch, &prefix, None)?;
+        let status: BTreeMap<&str, String> = entries
+            .iter()
+            .filter_map(|(k, e)| Some((k.strip_prefix(&prefix)?, status_of(&read_task(e)))))
+            .collect();
+        Ok(entries
+            .iter()
+            .filter_map(|(k, e)| {
+                let id = k.strip_prefix(&prefix)?;
+                let task = read_task(e);
+                (status_of(&task) != "done").then(|| {
+                    let waiting = depends_on(&task)
+                        .into_iter()
+                        .filter(|d| status.get(d.as_str()).map(String::as_str) != Some("done"))
+                        .collect();
+                    (id.to_owned(), waiting)
+                })
+            })
+            .collect())
+    }
+
+    /// Write a whole plan in one commit. A task the plan names that already
+    /// exists is replaced only while it is open and unclaimed; dependencies
+    /// must exist in the plan or the project, and a cycle is refused.
+    pub fn plan(
+        &self,
+        db: &Db,
+        branch: &str,
+        ns: &str,
+        tasks: &[crate::plans::PlanTask],
+        plan_file: Option<&str>,
+        by: Option<&str>,
+    ) -> Result<Json, BoardError> {
+        let mut tasks = tasks.to_vec();
+        for task in &mut tasks {
+            validate_id(&task.id)?;
+            task.title = clip(&task.title, MAX_TITLE_CHARS);
+            task.detail = task
+                .detail
+                .as_deref()
+                .map(|d| clip(d, MAX_DETAIL_CHARS))
+                .filter(|d| !d.is_empty());
+            task.accept = crate::plans::normalise_accept(task.accept.as_deref());
+        }
+        crate::plans::check_shape(&tasks).map_err(BoardError::Bad)?;
+        let prefix = namespace::prefix(ns, "task");
+        let leases = self.leases();
+        let ids: Vec<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let mut last_err = None;
+        for _ in 0..RETRIES {
+            let others = self.graph(db, branch, &prefix, &ids)?;
+            crate::plans::check_graph(&tasks, &others).map_err(BoardError::Bad)?;
+            let mut txn = db.begin(branch)?;
+            let mut replaced = Vec::new();
+            for task in &tasks {
+                let key = format!("{prefix}{}", task.id);
+                let mut fields = Map::new();
+                if let Some(old) = txn.get(&key) {
+                    let old = read_task(&old);
+                    if status_of(&old) != "open" || self.current(&leases, &key).is_some() {
+                        return Err(BoardError::Bad(format!(
+                            "task `{}` is already {}; a plan can replace only tasks that are \
+                             open and unclaimed, so give this one another id",
+                            task.id,
+                            if status_of(&old) == "done" {
+                                "done"
+                            } else {
+                                "claimed"
+                            }
+                        )));
+                    }
+                    replaced.push(task.id.clone());
+                    if let Some(claims) = old.get("claims") {
+                        fields.insert("claims".to_owned(), claims.clone());
+                    }
+                }
+                fields.insert("title".to_owned(), json!(task.title));
+                if let Some(detail) = &task.detail {
+                    fields.insert("detail".to_owned(), json!(detail));
+                }
+                plan_fields(&mut fields, task, plan_file);
+                fields.insert("status".to_owned(), json!("open"));
+                fields.insert("holder".to_owned(), Json::Null);
+                fields.entry("claims".to_owned()).or_insert(json!(0));
+                txn.put(&key, value(&fields, by))?;
+            }
+            match txn.commit(Some(format!("plan: {} tasks in {ns}", tasks.len()))) {
+                Ok(commit) => {
+                    drop(leases);
+                    let ready: Vec<String> = self
+                        .readiness(db, branch, ns)?
+                        .into_iter()
+                        .filter(|(id, waiting)| waiting.is_empty() && ids.contains(&id.as_str()))
+                        .map(|(id, _)| id)
+                        .collect();
+                    return Ok(json!({
+                        "action": "plan",
+                        "namespace": ns,
+                        "written": ids,
+                        "replaced": replaced,
+                        "ready": ready,
+                        "plan_file": plan_file,
+                        "commit": commit.to_hex(),
+                    }));
+                }
+                Err(e @ memfork_core::Error::Conflict { .. }) => last_err = Some(e),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(last_err.map_or_else(
+            || BoardError::Bad("the plan could not be committed".to_owned()),
+            BoardError::Engine,
+        ))
+    }
+
     /// The tasks in `ns`, with who holds each right now. `status` filters by
-    /// the status that is true now: `open`, `claimed`, `done` or `all`.
+    /// the status that is true now: `open`, `claimed`, `done`, `unfinished`,
+    /// `all`, or `ready` and `blocked` among the open ones.
     pub fn list(&self, db: &Db, branch: &str, ns: &str, status: &str) -> Result<Json, BoardError> {
-        if !matches!(status, "open" | "claimed" | "done" | "all" | "unfinished") {
+        if !matches!(
+            status,
+            "open" | "claimed" | "done" | "all" | "unfinished" | "ready" | "blocked"
+        ) {
             return Err(BoardError::Bad(format!(
-                "`status` must be open, claimed, done, unfinished or all; got `{status}`"
+                "`status` must be open, claimed, done, unfinished, ready, blocked or all; \
+                 got `{status}`"
             )));
         }
         let prefix = namespace::prefix(ns, "task");
         let entries = db.list(branch, &prefix, None)?;
+        let readiness = self.readiness(db, branch, ns)?;
         let mut tasks = Vec::new();
         let mut total = 0usize;
         for (key, entry) in &entries {
-            let view = self.view(key, entry, &prefix);
+            let mut view = self.view(key, entry, &prefix);
+            annotate(&mut view, &readiness);
             let now = view["status"].as_str().unwrap_or("open").to_owned();
+            let ready = view["ready"] == json!(true);
             let wanted = match status {
                 "all" => true,
                 "unfinished" => now != "done",
+                "ready" => now == "open" && ready,
+                "blocked" => now == "open" && !ready,
                 other => now == other,
             };
             if wanted {
@@ -578,6 +820,13 @@ impl Board {
         if let Some(by) = task.get("done_by") {
             out.insert("done_by".to_owned(), by.clone());
         }
+        let deps = depends_on(&task);
+        if !deps.is_empty() {
+            out.insert("depends_on".to_owned(), json!(deps));
+        }
+        if let Some(accept) = task.get("accept") {
+            out.insert("accept".to_owned(), accept.clone());
+        }
         out.insert("by".to_owned(), json!(entry.meta.get(WRITTEN_BY)));
         Json::Object(out)
     }
@@ -589,6 +838,49 @@ impl Board {
             .filter(|(_, l)| l.who == *who)
             .map(|(k, l)| (k.clone(), l.seconds))
             .collect()
+    }
+}
+
+/// The ids a task depends on, as it was written.
+fn depends_on(task: &Map<String, Json>) -> Vec<String> {
+    task.get("depends_on")
+        .and_then(Json::as_array)
+        .map(|deps| {
+            deps.iter()
+                .filter_map(Json::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A plan's fields on a task entry. Written only when present, so a task
+/// with none of them is stored exactly as a plain one is.
+fn plan_fields(task: &mut Map<String, Json>, planned: &crate::plans::PlanTask, file: Option<&str>) {
+    if !planned.depends_on.is_empty() {
+        task.insert("depends_on".to_owned(), json!(planned.depends_on));
+    }
+    if let Some(accept) = &planned.accept {
+        task.insert("accept".to_owned(), json!(accept));
+        if let Some(t) = planned.timeout_seconds {
+            task.insert("timeout_seconds".to_owned(), json!(t));
+        }
+        if let Some(file) = file {
+            task.insert("plan_file".to_owned(), json!(file));
+        }
+    }
+}
+
+/// Mark a task view ready, or blocked and by what. Done tasks are neither.
+pub fn annotate(view: &mut Json, readiness: &Readiness) {
+    let Some(id) = view["id"].as_str().map(str::to_owned) else {
+        return;
+    };
+    if let Some(waiting) = readiness.get(&id) {
+        view["ready"] = json!(waiting.is_empty());
+        if !waiting.is_empty() {
+            view["blocked_by"] = json!(waiting);
+        }
     }
 }
 
@@ -628,7 +920,7 @@ mod tests {
                 NewTask {
                     id: None,
                     title: "refunds",
-                    detail: None,
+                    ..NewTask::default()
                 },
                 Some("a"),
             )
@@ -664,7 +956,7 @@ mod tests {
                 NewTask {
                     id: Some("x"),
                     title: "t",
-                    detail: None,
+                    ..NewTask::default()
                 },
                 None,
             )
@@ -696,7 +988,7 @@ mod tests {
                 NewTask {
                     id: Some("x"),
                     title: "t",
-                    detail: None,
+                    ..NewTask::default()
                 },
                 None,
             )
@@ -704,11 +996,11 @@ mod tests {
         let (a, b) = (who("c1", "s1"), who("c2", "s2"));
         board.claim(&db, "main", "p:task:x", &a, 60).unwrap();
         assert_eq!(
-            board.done(&db, "main", "p:task:x", &b).unwrap()["changed"],
+            board.done(&db, "main", "p:task:x", &b, None).unwrap()["changed"],
             false
         );
         assert_eq!(
-            board.done(&db, "main", "p:task:x", &a).unwrap()["changed"],
+            board.done(&db, "main", "p:task:x", &a, None).unwrap()["changed"],
             true
         );
         let (again, outcome) = board.claim(&db, "main", "p:task:x", &b, 60).unwrap();
@@ -733,7 +1025,7 @@ mod tests {
                     NewTask {
                         id: Some("x"),
                         title: "t",
-                        detail: None,
+                        ..NewTask::default()
                     },
                     Some("c"),
                 )
@@ -742,7 +1034,7 @@ mod tests {
                 .claim(&db, "main", "p:task:x", &who("c", session), 30)
                 .unwrap();
             board
-                .done(&db, "main", "p:task:x", &who("c", session))
+                .done(&db, "main", "p:task:x", &who("c", session), None)
                 .unwrap();
             db.head("main").unwrap()
         };
@@ -775,7 +1067,7 @@ mod tests {
                 NewTask {
                     id: Some("x"),
                     title: "t",
-                    detail: None,
+                    ..NewTask::default()
                 },
                 None,
             )
@@ -806,7 +1098,7 @@ mod tests {
                 NewTask {
                     id: Some("a:b"),
                     title: "t",
-                    detail: None
+                    ..NewTask::default()
                 },
                 None
             )
@@ -819,7 +1111,7 @@ mod tests {
                 NewTask {
                     id: None,
                     title: "  ",
-                    detail: None
+                    ..NewTask::default()
                 },
                 None
             )
@@ -832,7 +1124,7 @@ mod tests {
                 NewTask {
                     id: Some("x"),
                     title: "t",
-                    detail: None,
+                    ..NewTask::default()
                 },
                 None,
             )
@@ -845,7 +1137,7 @@ mod tests {
                 NewTask {
                     id: Some("x"),
                     title: "t",
-                    detail: None
+                    ..NewTask::default()
                 },
                 None
             )

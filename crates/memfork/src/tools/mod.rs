@@ -14,8 +14,8 @@ pub mod schema;
 pub mod vendor;
 
 use schema::{
-    free_object, integer, no_arguments, number, number_array, object, string, string_array,
-    string_enum, JsonObject,
+    free_object, integer, no_arguments, number, number_array, object, object_array, string,
+    string_array, string_enum, JsonObject,
 };
 
 /// One tool: its name, what it is for, and the shape of its arguments.
@@ -404,13 +404,17 @@ pub fn all() -> Vec<ToolDef> {
             name: "memfork_task",
             title: "Share out work",
             description: format!(
-                "The task board, so agents never do the same work twice. Claim a \
-                 task before you start it: `action` claim with its `id`. A claim \
-                 lasts `lease_seconds` (default 300) and is kept alive while your \
-                 session is; if somebody else holds it you are told who, and should \
-                 pick another. Mark it done when finished, or release it if you \
-                 stop. Also: add (with a `title`), renew, and list (by `status`: \
-                 open, claimed, done, unfinished or all). {BRANCH_NOTE}"
+                "The task board, so agents never do the same work twice. To find \
+                 work, list with `status` ready: open tasks whose dependencies are \
+                 done. Claim a task before you start it: `action` claim with its \
+                 `id`. A claim lasts `lease_seconds` (default 300) and is kept alive \
+                 while your session is; if somebody else holds it you are told who, \
+                 and should pick another. Mark it done when finished, or release it \
+                 if you stop; a task with an acceptance command is done only when \
+                 that command passes, and is reopened with a lesson if it fails. \
+                 Also: add (with a `title`, and optionally `depends_on` and \
+                 `accept`), plan (several tasks at once, in `tasks`), renew, and \
+                 list by `status`. {BRANCH_NOTE}"
             ),
             schema: object(
                 &[
@@ -418,7 +422,7 @@ pub fn all() -> Vec<ToolDef> {
                         "action",
                         string_enum(
                             "What to do.",
-                            &["add", "claim", "renew", "release", "done", "list"],
+                            &["add", "plan", "claim", "renew", "release", "done", "list"],
                         ),
                     ),
                     (
@@ -431,6 +435,44 @@ pub fn all() -> Vec<ToolDef> {
                         string("When adding: anything more the task needs."),
                     ),
                     (
+                        "depends_on",
+                        string_array(
+                            "When adding: ids of tasks in this project that must be done first.",
+                        ),
+                    ),
+                    (
+                        "accept",
+                        string(
+                            "When adding: a command that exits 0 in the project when the task \
+                             is done. It runs only if the repository's plan file holds the \
+                             same command for this task.",
+                        ),
+                    ),
+                    (
+                        "timeout_seconds",
+                        integer(
+                            "When adding: how long the acceptance command may take, 1 to 3600.",
+                        ),
+                    ),
+                    (
+                        "tasks",
+                        object_array(
+                            "When planning: the tasks, each with an `id` and a `title`.",
+                            &[
+                                ("id", string("The task's id.")),
+                                ("title", string("What it is, in a line.")),
+                                ("detail", string("Anything more.")),
+                                ("depends_on", string_array("Ids that must be done first.")),
+                                ("accept", string("A command that exits 0 when it is done.")),
+                                (
+                                    "timeout_seconds",
+                                    integer("How long that command may take."),
+                                ),
+                            ],
+                            &["id", "title"],
+                        ),
+                    ),
+                    (
                         "lease_seconds",
                         integer("When claiming: how long the claim lasts, 1 to 3600."),
                     ),
@@ -438,7 +480,15 @@ pub fn all() -> Vec<ToolDef> {
                         "status",
                         string_enum(
                             "When listing: which tasks. Defaults to unfinished.",
-                            &["open", "claimed", "done", "unfinished", "all"],
+                            &[
+                                "ready",
+                                "blocked",
+                                "open",
+                                "claimed",
+                                "done",
+                                "unfinished",
+                                "all",
+                            ],
                         ),
                     ),
                     allow_secret_arg(),

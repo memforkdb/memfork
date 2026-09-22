@@ -98,6 +98,15 @@ pub fn string_array(description: &str) -> Value {
     })
 }
 
+/// An array of objects, each with the given properties.
+pub fn object_array(description: &str, properties: &[(&str, Value)], required: &[&str]) -> Value {
+    json!({
+        "type": "array",
+        "description": description,
+        "items": Value::Object(object(properties, required)),
+    })
+}
+
 /// A free-form object of string values.
 ///
 /// The subset has no `additionalProperties`, so an object with caller-chosen

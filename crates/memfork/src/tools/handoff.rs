@@ -314,6 +314,11 @@ pub fn briefing_with(
     let mut truncated = false;
     let mut omitted = std::collections::BTreeMap::new();
     let mut items = Vec::new();
+    // Ready or blocked, and by what, once the project's tasks depend on
+    // one another; a board without a plan is shown as it always was.
+    let readiness = shared
+        .filter(|s| s.board.uses_plans(db, branch, ns))
+        .and_then(|s| s.board.readiness(db, branch, ns).ok());
     let mut take = |kind: Kind,
                     name: &'static str,
                     list: &[(String, std::sync::Arc<Entry>)],
@@ -336,7 +341,13 @@ pub fn briefing_with(
                     view
                 }
                 Kind::Task => match shared {
-                    Some(s) => s.board.view(key, entry, &task_prefix),
+                    Some(s) => {
+                        let mut view = s.board.view(key, entry, &task_prefix);
+                        if let Some(readiness) = &readiness {
+                            crate::board::annotate(&mut view, readiness);
+                        }
+                        view
+                    }
                     None => item_json(key, entry, truncated),
                 },
                 Kind::Decision | Kind::Fact => item_json(key, entry, truncated),

@@ -322,10 +322,9 @@ pub fn event(e: &Event, style: &Style) -> String {
         _ => {
             let op = e.operation.as_deref().unwrap_or("?");
             let painted_op = match op {
-                "fork" | "merge" | "handoff" | "resume" | "claim" | "done" | "lesson" => {
-                    style.accent(op)
-                }
-                "discard" | "delete" | "del" | "release" => style.warn(op),
+                "fork" | "merge" | "handoff" | "resume" | "claim" | "done" | "lesson" | "ready"
+                | "plan" => style.accent(op),
+                "discard" | "delete" | "del" | "release" | "reopen" => style.warn(op),
                 _ => style.primary(op),
             };
             let mut parts = vec![

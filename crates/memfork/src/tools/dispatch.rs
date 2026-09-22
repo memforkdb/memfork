@@ -383,14 +383,19 @@ impl Session {
             Err(ToolError::Secret(crate::secrets::Refused::Secret(found))) => {
                 Some(format!("secret refused: {}", found.rule))
             }
+            Ok(r) if r.get("accepted") == Some(&json!(false)) => {
+                Some("acceptance failed; reopened".to_owned())
+            }
             _ => result.and_then(|r| {
                 r.get("held_by")
                     .and_then(Json::as_str)
                     .map(|h| format!("held by {h}"))
             }),
         };
-        let ok =
-            outcome.is_ok() && !result.is_some_and(|r| r.get("claimed") == Some(&json!(false)));
+        let ok = outcome.is_ok()
+            && !result.is_some_and(|r| {
+                r.get("claimed") == Some(&json!(false)) || r.get("accepted") == Some(&json!(false))
+            });
         events.publish(Event {
             operation: Some(operation),
             key,
@@ -409,6 +414,21 @@ impl Session {
                     .get("branch")
                     .and_then(Json::as_str)
                     .map(str::to_owned),
+                ..Event::about(&who, Some(&namespace))
+            });
+        }
+        // A task finished may be the last thing others were waiting for.
+        for id in result
+            .and_then(|r| r.get("now_ready"))
+            .and_then(Json::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Json::as_str)
+        {
+            events.publish(Event {
+                operation: Some("ready".to_owned()),
+                key: Some(crate::board::task_key(&namespace, id)),
+                branch: text("branch").or_else(|| Some(before.to_owned())),
                 ..Event::about(&who, Some(&namespace))
             });
         }
@@ -938,10 +958,13 @@ impl Session {
             "add" => {
                 let title = opt_str(args, "title")?.unwrap_or("");
                 let detail = opt_str(args, "detail")?;
+                let accept = opt_str(args, "accept")?;
+                let depends_on = opt_str_list(args, "depends_on")?.unwrap_or_default();
                 self.refuse_secrets(
                     args,
                     std::iter::once(("title".to_owned(), title))
-                        .chain(detail.map(|d| ("detail".to_owned(), d))),
+                        .chain(detail.map(|d| ("detail".to_owned(), d)))
+                        .chain(accept.map(|a| ("accept".to_owned(), a))),
                 )?;
                 board
                     .add(
@@ -952,7 +975,56 @@ impl Session {
                             id: opt_str(args, "id")?,
                             title,
                             detail,
+                            depends_on: &depends_on,
+                            accept,
+                            timeout_seconds: opt_u64(args, "timeout_seconds")?,
                         },
+                        self.writer().as_deref(),
+                    )
+                    .map_err(bad)
+            }
+            "plan" => {
+                let tasks: Vec<crate::plans::PlanTask> = match args.get("tasks") {
+                    Some(raw) => serde_json::from_value(raw.clone()).map_err(|e| {
+                        ToolError::BadArguments(format!(
+                            "`tasks` must be a list of tasks, each with an `id` and a \
+                             `title`, and optionally `detail`, `depends_on`, `accept` and \
+                             `timeout_seconds`: {e}"
+                        ))
+                    })?,
+                    None => {
+                        return Err(ToolError::BadArguments(
+                            "the `plan` action needs `tasks`".to_owned(),
+                        ))
+                    }
+                };
+                let mut fields = Vec::new();
+                for (i, t) in tasks.iter().enumerate() {
+                    fields.push((format!("tasks[{i}].id"), t.id.as_str()));
+                    fields.push((format!("tasks[{i}].title"), t.title.as_str()));
+                    if let Some(d) = &t.detail {
+                        fields.push((format!("tasks[{i}].detail"), d.as_str()));
+                    }
+                    if let Some(a) = &t.accept {
+                        fields.push((format!("tasks[{i}].accept"), a.as_str()));
+                    }
+                }
+                self.refuse_secrets(args, fields)?;
+                let plan_file = match opt_str(args, "plan_file")? {
+                    Some(file) => Some(
+                        crate::facts::normalise(&[file.to_owned()])
+                            .map_err(ToolError::BadArguments)?
+                            .remove(0),
+                    ),
+                    None => None,
+                };
+                board
+                    .plan(
+                        &self.db,
+                        branch,
+                        &ns,
+                        &tasks,
+                        plan_file.as_deref(),
                         self.writer().as_deref(),
                     )
                     .map_err(bad)
@@ -972,7 +1044,62 @@ impl Session {
             }
             "renew" => Ok(board.renew(&key()?, &who)),
             "release" => board.release(&self.db, branch, &key()?, &who).map_err(bad),
-            "done" => board.done(&self.db, branch, &key()?, &who).map_err(bad),
+            "done" => {
+                let key = key()?;
+                let id = req_str(args, "id")?;
+                // The acceptance result comes from where the project is: the
+                // proxy or the command line sends it; here only if this
+                // process can see the project itself.
+                let mut acceptance: Option<crate::plans::Acceptance> = match args.get("acceptance")
+                {
+                    Some(raw) => Some(serde_json::from_value(raw.clone()).map_err(|e| {
+                        ToolError::BadArguments(format!("`acceptance` is not usable: {e}"))
+                    })?),
+                    None => None,
+                };
+                if acceptance.is_none() {
+                    if let (Some(root), Some(entry)) = (&self.root, self.db.get(branch, &key)?) {
+                        let task: Json = serde_json::from_slice(&entry.value).unwrap_or(Json::Null);
+                        acceptance = crate::plans::prepare_done(root, id, &task)
+                            .map_err(ToolError::BadArguments)?;
+                    }
+                }
+                let before = board.readiness(&self.db, branch, &ns).map_err(bad)?;
+                let mut answer = board
+                    .done(&self.db, branch, &key, &who, acceptance.as_ref())
+                    .map_err(bad)?;
+                if answer["accepted"] == json!(false) {
+                    if let Some(ran) = &acceptance {
+                        let lesson = acceptance_lesson(id, ran);
+                        let rec = lessons::record_about_task(
+                            &self.db,
+                            branch,
+                            &lesson,
+                            id,
+                            &ns,
+                            self.writer().as_deref(),
+                        )?;
+                        self.count(|c| c.lessons_recorded += 1);
+                        answer["lesson"] = json!({
+                            "key": rec.key,
+                            "branch": rec.branch,
+                            "lesson": lesson,
+                        });
+                    }
+                } else if answer["status"] == "done" {
+                    // Which tasks this one was the last thing in the way of.
+                    let after = board.readiness(&self.db, branch, &ns).map_err(bad)?;
+                    let now_ready: Vec<&String> = after
+                        .iter()
+                        .filter(|(t, waiting)| {
+                            waiting.is_empty() && before.get(*t).is_some_and(|w| !w.is_empty())
+                        })
+                        .map(|(t, _)| t)
+                        .collect();
+                    answer["now_ready"] = json!(now_ready);
+                }
+                Ok(answer)
+            }
             "list" => board
                 .list(
                     &self.db,
@@ -982,7 +1109,7 @@ impl Session {
                 )
                 .map_err(bad),
             other => Err(ToolError::BadArguments(format!(
-                "`action` must be add, claim, renew, release, done or list; got `{other}`"
+                "`action` must be add, plan, claim, renew, release, done or list; got `{other}`"
             ))),
         }
     }
@@ -1000,6 +1127,30 @@ impl Session {
             }
         }
     }
+}
+
+/// The one line a failed acceptance leaves as a lesson: the command, how it
+/// ended, and its last line of output unless that looks like a credential.
+fn acceptance_lesson(id: &str, ran: &crate::plans::Acceptance) -> String {
+    let ended = if ran.timed_out {
+        "ran out of time".to_owned()
+    } else {
+        match ran.exit_code {
+            Some(code) => format!("exited {code}"),
+            None => "did not finish".to_owned(),
+        }
+    };
+    let mut lesson = format!("acceptance failed for task {id}: `{}` {ended}", ran.command);
+    if let Some(line) = ran.last_line() {
+        let safe = crate::secrets::check("output", line, &crate::secrets::Allow::default()).is_ok();
+        lesson.push_str(": ");
+        lesson.push_str(if safe {
+            line
+        } else {
+            "(its last line looked like a credential)"
+        });
+    }
+    lessons::tidy(&lesson).unwrap_or(lesson)
 }
 
 fn text(bytes: &[u8]) -> String {

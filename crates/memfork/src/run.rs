@@ -19,7 +19,9 @@ use clap::Parser;
 use memfork_core::Db;
 use serde_json::json;
 
-use crate::cli::{split_line, Cli, Command, GlobalArgs, PersistArgs, ScriptLine};
+use crate::cli::{
+    split_line, Cli, Command, GlobalArgs, PersistArgs, PlanAction, ScriptLine, TaskAction,
+};
 use crate::exec::{execute_in, ExecError, Outcome};
 
 /// Run the command line given to this process.
@@ -138,16 +140,29 @@ pub fn run(cli: Cli) -> ExitCode {
                     ..
                 } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
                 Command::Doctor => run_doctor(&mut stdout, cli.global.json),
+                Command::Plan {
+                    action: PlanAction::Check { file },
+                    allow_secret,
+                    ..
+                } => run_plan_check(
+                    &mut stdout,
+                    file.as_deref(),
+                    allow_secret.as_deref(),
+                    cli.global.json,
+                ),
                 // One operation. In memory, alone, with --ephemeral; on the
                 // shared store through the daemon otherwise.
                 command if cli.global.ephemeral => {
                     let db = Db::new();
-                    execute_in(&db, &cli.global.branch, command, &local_context()).and_then(
-                        |outcome| {
-                            emit(&mut stdout, command, &outcome, cli.global.json, &style)
-                                .map_err(io_err)
-                        },
-                    )
+                    let mut command = command.clone();
+                    prepare_here(&mut command).and_then(|()| {
+                        execute_in(&db, &cli.global.branch, &command, &local_context()).and_then(
+                            |outcome| {
+                                emit(&mut stdout, &command, &outcome, cli.global.json, &style)
+                                    .map_err(io_err)
+                            },
+                        )
+                    })
                 }
                 command => run_op(&mut stdout, command, &cli.global, choice, &style),
             }
@@ -254,6 +269,35 @@ fn run_op(
             *source_hashes = Some(hasher.record(&root, &clean));
         }
     }
+    prepare_here(&mut command)?;
+    // A task with an acceptance command is done only if that command passes,
+    // and it runs here, where the project is.
+    if let Command::Task {
+        action: TaskAction::Done { id, acceptance },
+        namespace: named,
+        ..
+    } = &mut command
+    {
+        let ns = named
+            .clone()
+            .or_else(|| namespace.clone())
+            .unwrap_or_else(|| crate::namespace::FALLBACK.to_owned());
+        let get = json!({
+            "branch": global.branch,
+            "command": Command::Get { key: crate::board::task_key(&ns, id) },
+            "namespace": namespace,
+        });
+        let (status, answer) = runtime()?
+            .block_on(daemon.post(serve::CLI_PATH, &get))
+            .map_err(ExecError::Usage)?;
+        let task = (status == 200)
+            .then(|| answer["json"]["value"].as_str())
+            .flatten()
+            .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok());
+        if let Some(task) = task {
+            *acceptance = crate::plans::prepare_done(&root, id, &task).map_err(ExecError::Usage)?;
+        }
+    }
     let request = json!({
         "branch": global.branch,
         "command": command,
@@ -294,6 +338,155 @@ fn run_op(
         let _ = runtime()?.block_on(daemon.post(serve::REPORT_PATH, &body));
     }
     emit(out, &command, &outcome, global.json, style).map_err(io_err)
+}
+
+/// What a command needs from the files here before it goes anywhere: a plan
+/// file, read and checked where it is.
+fn prepare_here(command: &mut Command) -> Result<(), ExecError> {
+    if let Command::Plan {
+        action:
+            PlanAction::Write {
+                file,
+                tasks,
+                plan_file,
+            },
+        allow_secret,
+        ..
+    } = command
+    {
+        let read = read_plan(file.as_deref(), allow_secret.as_deref())?;
+        *tasks = Some(read.tasks);
+        *plan_file = read.relative;
+    }
+    Ok(())
+}
+
+/// A plan file, as `memfork plan` reads it.
+struct ReadPlan {
+    tasks: Vec<crate::plans::PlanTask>,
+    /// Where it is, relative to the project, if it is inside it.
+    relative: Option<String>,
+    /// How to name it to a person.
+    shown: String,
+}
+
+/// Read a plan file: checked for credentials as a whole, so a refusal names
+/// the line in the file, then parsed. A plan with acceptance commands must be
+/// inside the project, since the file is what makes those commands trusted.
+fn read_plan(file: Option<&str>, allow: Option<&str>) -> Result<ReadPlan, ExecError> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let root = project_root();
+    let path = match file {
+        Some(f) => lexical(&cwd.join(f)),
+        None => root.join(crate::plans::DEFAULT_FILE),
+    };
+    let relative = path.strip_prefix(&root).ok().map(|rest| {
+        rest.components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/")
+    });
+    let shown = relative
+        .clone()
+        .unwrap_or_else(|| path.display().to_string());
+    let text = crate::plans::read_file(&path).map_err(|e| {
+        ExecError::Usage(match file {
+            None => format!(
+                "{e}; write one, or start from a template with `memfork plan new --template <name>`"
+            ),
+            Some(_) => e,
+        })
+    })?;
+    let allow = crate::secrets::Allow::parse(allow).map_err(|r| ExecError::Usage(r.to_string()))?;
+    crate::secrets::check(&format!("plan file {shown}"), &text, &allow)
+        .map_err(|r| ExecError::Usage(r.to_string()))?;
+    let tasks =
+        crate::plans::parse(&text).map_err(|e| ExecError::Usage(format!("{shown}: {e}")))?;
+    if relative.is_none() && tasks.iter().any(|t| t.accept.is_some()) {
+        return Err(ExecError::Usage(format!(
+            "{shown} is outside this project ({}), and it has acceptance commands, which run \
+             only from a plan file in the project; move it inside",
+            root.display()
+        )));
+    }
+    Ok(ReadPlan {
+        tasks,
+        relative,
+        shown,
+    })
+}
+
+/// A path with its `.` and `..` parts worked out, without touching the disk.
+fn lexical(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `memfork plan check`: a plan file on its own, written nowhere.
+fn run_plan_check(
+    out: &mut impl Write,
+    file: Option<&str>,
+    allow: Option<&str>,
+    json_out: bool,
+) -> Result<(), ExecError> {
+    let read = read_plan(file, allow)?;
+    let outside = crate::plans::check_alone(&read.tasks)
+        .map_err(|e| ExecError::Usage(format!("{}: {e}", read.shown)))?;
+    let first: Vec<&str> = read
+        .tasks
+        .iter()
+        .filter(|t| t.depends_on.is_empty())
+        .map(|t| t.id.as_str())
+        .collect();
+    let with_accept = read.tasks.iter().filter(|t| t.accept.is_some()).count();
+    if json_out {
+        let answer = json!({
+            "op": "plan check",
+            "file": read.shown,
+            "ok": true,
+            "tasks": read.tasks.len(),
+            "ready_first": first,
+            "with_acceptance": with_accept,
+            "outside": outside,
+        });
+        writeln!(out, "{answer}").map_err(io_err)?;
+        return Ok(());
+    }
+    let n = read.tasks.len();
+    let mut lines = vec![
+        format!(
+            "{}: {n} task{}, no cycle, {with_accept} with an acceptance command",
+            read.shown,
+            if n == 1 { "" } else { "s" }
+        ),
+        format!(
+            "  ready first: {}",
+            if first.is_empty() {
+                "none".to_owned()
+            } else {
+                first.join(", ")
+            }
+        ),
+    ];
+    if !outside.is_empty() {
+        lines.push(format!(
+            "  depends on tasks that must already be on the board: {}",
+            outside.join(", ")
+        ));
+    }
+    for line in lines {
+        writeln!(out, "{line}").map_err(io_err)?;
+    }
+    Ok(())
 }
 
 /// Where this command's project is: the repository's top level, or the
@@ -829,11 +1022,51 @@ fn call_through_daemon(
         client: Some(serve::CLI_WRITER.to_owned()),
         session: Some("cli".to_owned()),
     };
-    let params = rmcp::model::CallToolRequestParams::new(tool.to_owned()).with_arguments(args);
     runtime()?.block_on(async {
         let upstream = proxy::Upstream::connect(&endpoint, &hello)
             .await
             .map_err(|e| ExecError::Usage(e.to_string()))?;
+        // As a proxy would: a task's acceptance command runs here.
+        let wants_acceptance = tool == "memfork_task"
+            && args.get("action") == Some(&json!("done"))
+            && !args.contains_key("acceptance");
+        if let (true, Some(id)) = (wants_acceptance, args.get("id").and_then(|v| v.as_str())) {
+            let id = id.to_owned();
+            let ns = args
+                .get("namespace")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&namespace)
+                .to_owned();
+            let get = rmcp::model::CallToolRequestParams::new("memfork_get").with_arguments(
+                json!({"key": crate::board::task_key(&ns, &id)})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            let task = upstream
+                .call_tool(&get)
+                .await
+                .ok()
+                .and_then(|raw| {
+                    raw["structuredContent"]["value"]
+                        .as_str()
+                        .map(str::to_owned)
+                })
+                .and_then(|v| serde_json::from_str::<serde_json::Value>(&v).ok());
+            if let Some(task) = task {
+                match crate::plans::prepare_done(&root, &id, &task) {
+                    Ok(Some(ran)) => {
+                        args.insert("acceptance".to_owned(), json!(ran));
+                    }
+                    Ok(None) => {}
+                    Err(why) => {
+                        upstream.close().await;
+                        return Err(ExecError::Usage(why));
+                    }
+                }
+            }
+        }
+        let params = rmcp::model::CallToolRequestParams::new(tool.to_owned()).with_arguments(args);
         let answer = upstream.call_tool(&params).await;
         let raw = match answer {
             Ok(raw) => raw,
