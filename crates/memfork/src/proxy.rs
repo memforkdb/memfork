@@ -230,6 +230,48 @@ impl Upstream {
         .await;
     }
 
+    /// Tell autopilot what this proxy saw in the repository, and read what
+    /// the daemon did about it. Bounded: a proxy about to forward a tool
+    /// call must not wait long on the observation before it.
+    pub async fn autopilot(&self, body: &Json) -> Result<Json, UpstreamError> {
+        let url = self
+            .url
+            .replace(crate::serve::MCP_PATH, crate::serve::AUTOPILOT_PATH);
+        let unreachable = |reason: String| UpstreamError::Unreachable {
+            url: url.clone(),
+            reason,
+        };
+        let request = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri(&url)
+            .header(hyper::header::CONTENT_TYPE, "application/json")
+            .header(
+                hyper::header::AUTHORIZATION,
+                format!("Bearer {}", self.token),
+            )
+            .body(Full::new(Bytes::from(body.to_string())))
+            .map_err(|e| unreachable(format!("cannot build the request: {e}")))?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.http.request(request),
+        )
+        .await
+        .map_err(|_| unreachable("it did not answer in time".to_owned()))?
+        .map_err(|e| unreachable(e.to_string()))?;
+        let status = response.status();
+        let collected = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| unreachable(format!("the answer could not be read: {e}")))?;
+        let text = String::from_utf8_lossy(&collected.to_bytes()).into_owned();
+        if !status.is_success() {
+            return Err(UpstreamError::Unusable(format!("HTTP {status}: {text}")));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| UpstreamError::Unusable(format!("the answer did not parse: {e}")))
+    }
+
     /// Forward one tool call.
     pub async fn call_tool(&self, params: &CallToolRequestParams) -> Result<Json, UpstreamError> {
         let payload = serde_json::to_value(params)
@@ -384,6 +426,9 @@ pub struct Proxy {
     hasher: Arc<crate::facts::Hasher>,
     /// Tasks whose claims are being kept alive, by key.
     kept: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    /// The watch on the repository's git branch, when the project is a
+    /// repository. Whether it acts is the project's autopilot file's say.
+    follower: Arc<std::sync::Mutex<Option<crate::autopilot::follow::Follower>>>,
 }
 
 impl std::fmt::Debug for Proxy {
@@ -400,15 +445,86 @@ impl Proxy {
     /// what a handshake must not cost.
     pub fn new(connect: Reconnect, namespace: String) -> Self {
         let cwd = std::env::current_dir().unwrap_or_default();
+        let root = crate::facts::project_root(&cwd);
         Proxy {
             upstream: Arc::new(tokio::sync::RwLock::new(None)),
             connect,
             namespace,
             client: Arc::new(std::sync::Mutex::new(None)),
             session: crate::tools::dispatch::new_session_id(),
-            root: crate::facts::project_root(&cwd),
+            follower: Arc::new(std::sync::Mutex::new(
+                crate::autopilot::follow::Follower::open(&root),
+            )),
+            root,
             hasher: Arc::new(crate::facts::Hasher::default()),
             kept: Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new())),
+        }
+    }
+
+    /// Memory follows the git branch: look at the repository before a tool
+    /// call goes through, and tell the daemon when something changed, so
+    /// the call lands on the branch git is on. Only when the project's
+    /// autopilot file says so and the machine policy allows; and never in
+    /// the way, so anything that goes wrong here is forgotten rather than
+    /// reported.
+    async fn follow(&self) {
+        if !crate::policy::allows(crate::policy::Feature::Autopilot) {
+            return;
+        }
+        let follows = crate::autopilot::config::read(&self.root)
+            .config()
+            .is_some_and(crate::autopilot::config::Config::follows);
+        fn lock(
+            proxy: &Proxy,
+        ) -> std::sync::MutexGuard<'_, Option<crate::autopilot::follow::Follower>> {
+            proxy.follower.lock().unwrap_or_else(|e| e.into_inner())
+        }
+        if !follows {
+            // Switched off, or never on: the next time it is on, start over.
+            if let Some(f) = lock(self).as_mut() {
+                if f.started() {
+                    f.reset();
+                }
+            }
+            return;
+        }
+        let needs_cursor = match lock(self).as_ref() {
+            Some(f) => !f.started(),
+            None => return,
+        };
+        let Ok(up) = self.current().await else {
+            return;
+        };
+        if needs_cursor {
+            let worktree = match lock(self).as_ref() {
+                Some(f) => f.repo().worktree_key(),
+                None => return,
+            };
+            let remembered = up
+                .autopilot(&json!({ "action": "cursor", "worktree": worktree }))
+                .await
+                .ok()
+                .and_then(|a| a["cursor"].as_u64());
+            if let Some(f) = lock(self).as_mut() {
+                f.start(remembered);
+            }
+        }
+        let request = {
+            let mut guard = lock(self);
+            let Some(f) = guard.as_mut() else {
+                return;
+            };
+            f.observe()
+                .map(|o| o.to_request(&self.session, &self.namespace, f.repo()))
+        };
+        let Some(request) = request else {
+            return;
+        };
+        if up.autopilot(&request).await.is_err() {
+            // The daemon did not take it: look again from the start next time.
+            if let Some(f) = lock(self).as_mut() {
+                f.reset();
+            }
         }
     }
 
@@ -680,6 +796,9 @@ impl ServerHandler for Proxy {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let mut params = request.clone();
+        // The repository first: if git moved, the call should land where git
+        // is. The daemon starts here if it has to, as it would for the call.
+        self.follow().await;
         // A fact's sources are hashed here, where the files are: the daemon
         // has no working directory. It keeps the hashes beside the store.
         if params.name == "memfork_put" {
