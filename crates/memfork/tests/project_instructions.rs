@@ -202,7 +202,7 @@ fn dry_run_shows_every_file_and_the_exact_diff_and_writes_nothing() {
     let text = stdout(&out);
     // One block per file, and each file names the clients that read it.
     assert!(
-        text.contains("read by Cursor, Codex CLI, Grok Build"),
+        text.contains("read by Cursor, Codex CLI, Grok Build, Cline, OpenCode, Qwen Code"),
         "{text}"
     );
     assert!(text.contains("read by Claude Code"), "{text}");

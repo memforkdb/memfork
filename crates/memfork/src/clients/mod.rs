@@ -127,10 +127,11 @@ pub struct Client {
     pub cli: Option<ClientCli>,
     /// How to register by editing the client's config file.
     pub file: Option<ClientFile>,
-    /// A directory the client creates for itself, used to tell "installed but
-    /// never configured" apart from "not installed".
-    #[serde(default)]
-    pub detect_dir: Option<String>,
+    /// Directories the client creates for itself, used to tell "installed
+    /// but never configured" apart from "not installed". Any one existing is
+    /// enough; a client with a different home on each OS lists them all.
+    #[serde(default, alias = "detect_dir")]
+    pub detect_dirs: OneOrMany,
     /// The names this client gives in MCP `initialize`, so what it writes can
     /// be shown under `display`. A trailing `*` matches a prefix.
     #[serde(default)]
@@ -144,6 +145,31 @@ pub struct Client {
     /// and never silently assumed.
     #[serde(default)]
     pub unverified: Option<String>,
+}
+
+/// One string or a list of them, so a registry key can grow from one value
+/// to several without every entry changing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    /// Nothing.
+    #[default]
+    None,
+    /// One.
+    One(String),
+    /// Several.
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    /// As a slice, however it was written.
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            OneOrMany::None => &[],
+            OneOrMany::One(one) => std::slice::from_ref(one),
+            OneOrMany::Many(many) => many,
+        }
+    }
 }
 
 /// The files a client reads project instructions from.
@@ -165,8 +191,12 @@ pub struct ClientCli {
     pub binary: String,
     /// Argument template for adding a server.
     pub add: Vec<String>,
-    /// Argument template for asking whether a server is registered.
-    pub status: Vec<String>,
+    /// Argument template for asking whether a server is registered. Absent
+    /// for a client whose command can add a server but not say, outside an
+    /// interactive wizard, whether one is there; registration is then read
+    /// from its file.
+    #[serde(default)]
+    pub status: Option<Vec<String>>,
     /// Argument template for removing a registration, if the client documents
     /// one. Absent means MemFork will not try: it says what to run instead.
     #[serde(default)]
@@ -188,11 +218,14 @@ impl ClientCli {
         }
     }
 
-    /// Expand the `status` template into a concrete argument list.
-    pub fn status_args(&self) -> Vec<String> {
+    /// Expand the `status` template into a concrete argument list, if this
+    /// client has one.
+    pub fn status_args(&self) -> Option<Vec<String>> {
         // No `{command}` or `{args}` appears in a status template: asking
         // about a server takes its name, not the command behind it.
-        self.expand(&self.status, &[], &Launch::program(""))
+        self.status
+            .as_ref()
+            .map(|status| self.expand(status, &[], &Launch::program("")))
     }
 
     /// Expand the `add` template into a concrete argument list.
@@ -234,17 +267,28 @@ impl ClientCli {
 /// The client's configuration file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientFile {
-    /// `json` or `toml`.
+    /// `json`, `jsonc` or `toml`.
     pub format: Format,
     /// Key path to the table of servers, e.g. `["mcpServers"]`.
     pub server_map: Vec<String>,
-    /// Whether the entry carries `"type": "stdio"`.
+    /// The value of the entry's `type` key for a local server, if this
+    /// client wants one: `stdio` for most, `local` for some. Absent means no
+    /// `type` key is written.
     #[serde(default)]
-    pub emit_type_stdio: bool,
+    pub stdio_type: Option<String>,
+    /// How the command is written: `command` and `args` apart, or one
+    /// `command` list with the program first.
+    #[serde(default)]
+    pub command_style: CommandStyle,
+    /// Keys the client requires on every entry besides the command, written
+    /// as they stand: `tools = ["*"]` for one that lists allowed tools.
+    #[serde(default)]
+    pub extra: Option<toml::Table>,
     /// Which key a remote server's URL goes under. Encoded here
     /// because the clients disagree (DESIGN §6.1).
     pub http_url_key: String,
-    /// User-scope path template, with `$HOME`.
+    /// User-scope path template, with `$HOME` and the other variables
+    /// [`Vars`] expands.
     ///
     /// Absent when MemFork will not go near this client's user configuration —
     /// because the file holds more than MCP servers, and the client's own
@@ -252,7 +296,9 @@ pub struct ClientFile {
     #[serde(default)]
     pub user: Option<String>,
     /// Project-scope path template, relative to the working directory.
-    pub project: String,
+    /// Absent for a client that reads no configuration from a project.
+    #[serde(default)]
+    pub project: Option<String>,
     /// Per-OS overrides, keyed `user_windows`, `project_macos` and so on.
     #[serde(flatten)]
     overrides: BTreeMap<String, toml::Value>,
@@ -262,10 +308,113 @@ pub struct ClientFile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Format {
-    /// JSON, edited with key order preserved.
+    /// JSON. Edited by splicing one entry into the text, so everything else —
+    /// whitespace, key order, and any comments the client tolerates — stays
+    /// byte for byte.
     Json,
+    /// JSON with comments and trailing commas, as several editors write it.
+    /// Edited exactly as `json`; named apart so the registry says which
+    /// clients need the tolerance.
+    Jsonc,
     /// TOML, edited in place with comments and formatting preserved.
     Toml,
+}
+
+/// How a client's entry names the command to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CommandStyle {
+    /// `"command": "memfork", "args": ["mcp"]`.
+    #[default]
+    Split,
+    /// `"command": ["memfork", "mcp"]`.
+    Array,
+}
+
+/// The variables a path template may use, resolved for one OS.
+///
+/// Every one is derived from the home directory when it is not given, and
+/// when `MEMFORK_HOME` redirects the home directory they are all derived from
+/// it whatever the real environment says. That is what keeps a test, or a
+/// `memfork init` run against a stand-in home, from reaching the real
+/// `%APPDATA%\\Code\\User` on the machine it runs on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vars {
+    /// `$HOME`.
+    pub home: String,
+    /// `$APPDATA`: Windows roaming application data.
+    pub appdata: String,
+    /// `$LOCALAPPDATA`: Windows local application data.
+    pub localappdata: String,
+    /// `$XDG_CONFIG_HOME`.
+    pub xdg_config_home: String,
+    /// `$XDG_DATA_HOME`.
+    pub xdg_data_home: String,
+}
+
+impl Vars {
+    /// Every variable derived from the home directory, with the OS's own
+    /// defaults.
+    pub fn for_home(home: &str, os: Os) -> Self {
+        let home = home.trim_end_matches(['/', '\\']).to_owned();
+        let join = |parts: &[&str]| {
+            let mut s = home.clone();
+            for p in parts {
+                s.push(os.separator());
+                s.push_str(p);
+            }
+            s
+        };
+        Vars {
+            appdata: join(&["AppData", "Roaming"]),
+            localappdata: join(&["AppData", "Local"]),
+            xdg_config_home: join(&[".config"]),
+            xdg_data_home: join(&[".local", "share"]),
+            home,
+        }
+    }
+
+    /// The variables for this machine: from the real environment, unless
+    /// `MEMFORK_HOME` stands in for the home directory, in which case every
+    /// one is derived from that and the real environment is not consulted.
+    pub fn here(home: &str) -> Self {
+        let os = Os::current();
+        let mut vars = Vars::for_home(home, os);
+        if std::env::var_os("MEMFORK_HOME").is_some() {
+            return vars;
+        }
+        let real = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+        if let Some(v) = real("APPDATA") {
+            vars.appdata = v;
+        }
+        if let Some(v) = real("LOCALAPPDATA") {
+            vars.localappdata = v;
+        }
+        if let Some(v) = real("XDG_CONFIG_HOME") {
+            vars.xdg_config_home = v;
+        }
+        if let Some(v) = real("XDG_DATA_HOME") {
+            vars.xdg_data_home = v;
+        }
+        vars
+    }
+
+    /// Expand a template, normalising separators to the OS's own.
+    pub fn expand(&self, template: &str, os: Os) -> String {
+        // Longest names first, so `$XDG_CONFIG_HOME` is not read as `$XDG`
+        // followed by text, and `$LOCALAPPDATA` is not read as `$LOCAL`.
+        let expanded = template
+            .replace("$XDG_CONFIG_HOME", &self.xdg_config_home)
+            .replace("$XDG_DATA_HOME", &self.xdg_data_home)
+            .replace("$LOCALAPPDATA", &self.localappdata)
+            .replace("$APPDATA", &self.appdata)
+            .replace("$HOME", &self.home);
+        let sep = os.separator();
+        expanded
+            .split(['/', '\\'])
+            .collect::<Vec<_>>()
+            .join(&sep.to_string())
+    }
 }
 
 impl ClientFile {
@@ -280,39 +429,37 @@ impl ClientFile {
         }
         match scope {
             Scope::User => self.user.as_deref(),
-            Scope::Project => Some(&self.project),
+            Scope::Project => self.project.as_deref(),
         }
     }
 
-    /// Resolve the config path for a scope, an OS and a home directory.
+    /// Resolve the config path for a scope and an OS from a set of variables.
     ///
     /// Returns a string rather than a `PathBuf` so that one machine can render
     /// another platform's paths, which is what makes the three-OS fixtures
     /// testable from anywhere.
-    pub fn path_for(&self, scope: Scope, os: Os, home: &str) -> Option<String> {
+    pub fn path_for(&self, scope: Scope, os: Os, vars: &Vars) -> Option<String> {
         let template = self.template(scope, os)?;
-        let expanded = template.replace("$HOME", home.trim_end_matches(['/', '\\']));
-        let sep = os.separator();
-        Some(
-            expanded
-                .split(['/', '\\'])
-                .collect::<Vec<_>>()
-                .join(&sep.to_string()),
-        )
+        Some(vars.expand(template, os))
     }
 
     /// Resolve the config path on this machine.
     pub fn path_here(&self, scope: Scope, home: &str) -> Option<PathBuf> {
-        self.path_for(scope, Os::current(), home).map(PathBuf::from)
+        self.path_for(scope, Os::current(), &Vars::here(home))
+            .map(PathBuf::from)
     }
 }
 
 impl Client {
-    /// The client's own directory on this machine, if the registry names one.
-    pub fn detect_dir_here(&self, home: &str) -> Option<PathBuf> {
-        let template = self.detect_dir.as_ref()?;
-        let expanded = template.replace("$HOME", home.trim_end_matches(['/', '\\']));
-        Some(PathBuf::from(expanded))
+    /// The client's own directories on this machine, as the registry names
+    /// them.
+    pub fn detect_dirs_here(&self, home: &str) -> Vec<PathBuf> {
+        let vars = Vars::here(home);
+        self.detect_dirs
+            .as_slice()
+            .iter()
+            .map(|t| PathBuf::from(vars.expand(t, Os::current())))
+            .collect()
     }
 
     /// Whether MemFork may write this client's file for a scope.
@@ -323,16 +470,17 @@ impl Client {
         match (&self.file, scope) {
             (None, _) => false,
             (Some(f), Scope::User) => f.user.is_some(),
-            (Some(_), Scope::Project) => true,
+            (Some(f), Scope::Project) => f.project.is_some(),
         }
     }
 
     /// The command that asks this client whether MemFork is registered, if it
-    /// has one and it is installed.
+    /// has one, it can answer, and it is installed.
     pub fn status_command(&self) -> Option<(String, PathBuf, Vec<String>)> {
         let cli = self.cli.as_ref()?;
+        let args = cli.status_args()?;
         let resolved = crate::init::which(&cli.binary)?;
-        Some((cli.binary.clone(), resolved, cli.status_args()))
+        Some((cli.binary.clone(), resolved, args))
     }
 }
 
@@ -656,12 +804,13 @@ mod tests {
         assert_eq!(shared[0].1, ["cursor", "codex", "grok"]);
 
         // Every client, and each file it needs, with no file twice.
-        let every = pick(&["claude-code", "cursor", "codex", "gemini-cli", "grok"]);
+        let all_ids = ids();
+        let every = pick(&all_ids.iter().map(String::as_str).collect::<Vec<_>>());
         let files: Vec<&str> = every.iter().map(|(f, _)| f.as_str()).collect();
         let mut unique = files.clone();
         unique.dedup();
         assert_eq!(files, unique);
-        for id in ["claude-code", "cursor", "codex", "gemini-cli", "grok"] {
+        for id in &all_ids {
             assert!(
                 every
                     .iter()
@@ -669,9 +818,14 @@ mod tests {
                 "{id} is not reached by {every:?}"
             );
         }
+        // Three files reach everyone: AGENTS.md for most, CLAUDE.md for Claude
+        // Code, GEMINI.md for Gemini CLI.
+        assert_eq!(files.len(), 3, "{every:?}");
 
         // Stable: the same clients in another order give the same files.
-        let reversed = pick(&["grok", "gemini-cli", "codex", "cursor", "claude-code"]);
+        let mut backwards = all_ids.clone();
+        backwards.reverse();
+        let reversed = pick(&backwards.iter().map(String::as_str).collect::<Vec<_>>());
         let names =
             |v: &[(String, Vec<String>)]| v.iter().map(|(f, _)| f.clone()).collect::<Vec<_>>();
         assert_eq!(names(&every), names(&reversed));
@@ -682,7 +836,24 @@ mod tests {
         let clients = load().expect("the compiled-in registry parses");
         assert_eq!(
             ids(),
-            vec!["claude-code", "cursor", "codex", "gemini-cli", "grok"],
+            vec![
+                "claude-code",
+                "cursor",
+                "codex",
+                "gemini-cli",
+                "grok",
+                "cline",
+                "opencode",
+                "qwen-code",
+                "kiro",
+                "copilot-cli",
+                "devin",
+                "windsurf",
+                "zed",
+                "vscode",
+                "factory-droid",
+                "openhands",
+            ],
             "the registry is the list of supported clients"
         );
         for c in &clients {
@@ -698,27 +869,79 @@ mod tests {
                 "{} has no way to register at all",
                 c.id
             );
+            assert!(
+                !c.detect_dirs.as_slice().is_empty(),
+                "{} has no way to be detected",
+                c.id
+            );
+            if let Some(why) = &c.unverified {
+                assert!(why.len() > 20 && !why.ends_with('.'), "{}: {why}", c.id);
+            }
+            for name in &c.mcp_names {
+                assert!(!name.is_empty(), "{}", c.id);
+            }
         }
     }
 
     #[test]
+    fn what_could_not_be_verified_is_said_not_assumed() {
+        // A closed-source client whose initialize name nobody has seen in its
+        // source or a build has no `mcp_names`, and says so.
+        for id in ["cursor", "kiro", "devin", "windsurf", "vscode", "openhands"] {
+            let c = find(id).expect(id);
+            assert!(c.mcp_names.is_empty(), "{id} guesses a client name");
+            let why = c.unverified.as_deref().unwrap_or_default();
+            assert!(why.contains("MCP initialize"), "{id}: {why}");
+        }
+        // Copilot's name comes from logs in its own issue tracker: recorded,
+        // and marked as such.
+        let copilot = find("copilot-cli").expect("copilot");
+        assert_eq!(copilot.mcp_names, ["copilot-cli"]);
+        assert!(copilot
+            .unverified
+            .as_deref()
+            .is_some_and(|w| w.contains("issue tracker")));
+    }
+
+    fn vars(os: Os) -> Vars {
+        Vars::for_home(
+            match os {
+                Os::Linux => "/home/ada",
+                Os::MacOs => "/Users/ada",
+                Os::Windows => "C:\\Users\\ada",
+            },
+            os,
+        )
+    }
+
+    fn user_path(id: &str, os: Os) -> String {
+        find(id)
+            .and_then(|c| c.file)
+            .unwrap_or_else(|| panic!("{id} registers by file"))
+            .path_for(Scope::User, os, &vars(os))
+            .unwrap_or_else(|| panic!("{id} has no user path on {os:?}"))
+    }
+
+    fn project_path(id: &str, os: Os) -> Option<String> {
+        find(id)
+            .and_then(|c| c.file)
+            .unwrap_or_else(|| panic!("{id} registers by file"))
+            .path_for(Scope::Project, os, &vars(os))
+    }
+
+    #[test]
     fn paths_resolve_for_every_os() {
-        let cursor = find("cursor").expect("cursor is in the registry");
-        let file = cursor.file.expect("cursor registers by file");
+        assert_eq!(user_path("cursor", Os::Linux), "/home/ada/.cursor/mcp.json");
         assert_eq!(
-            file.path_for(Scope::User, Os::Linux, "/home/ada"),
-            Some("/home/ada/.cursor/mcp.json".to_owned())
+            user_path("cursor", Os::MacOs),
+            "/Users/ada/.cursor/mcp.json"
         );
         assert_eq!(
-            file.path_for(Scope::User, Os::MacOs, "/Users/ada"),
-            Some("/Users/ada/.cursor/mcp.json".to_owned())
+            user_path("cursor", Os::Windows),
+            "C:\\Users\\ada\\.cursor\\mcp.json"
         );
         assert_eq!(
-            file.path_for(Scope::User, Os::Windows, "C:\\Users\\ada"),
-            Some("C:\\Users\\ada\\.cursor\\mcp.json".to_owned())
-        );
-        assert_eq!(
-            file.path_for(Scope::Project, Os::Windows, "C:\\Users\\ada"),
+            project_path("cursor", Os::Windows),
             Some(".cursor\\mcp.json".to_owned())
         );
     }
@@ -727,8 +950,117 @@ mod tests {
     fn a_trailing_separator_on_home_does_not_double_up() {
         let cursor = find("cursor").and_then(|c| c.file).expect("cursor");
         assert_eq!(
-            cursor.path_for(Scope::User, Os::Linux, "/home/ada/"),
+            cursor.path_for(
+                Scope::User,
+                Os::Linux,
+                &Vars::for_home("/home/ada/", Os::Linux)
+            ),
             Some("/home/ada/.cursor/mcp.json".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_new_clients_paths_follow_each_os_convention() {
+        // VS Code and its extension keep user data in the roaming profile on
+        // Windows and Application Support on macOS.
+        assert_eq!(
+            user_path("vscode", Os::Windows),
+            "C:\\Users\\ada\\AppData\\Roaming\\Code\\User\\mcp.json"
+        );
+        assert_eq!(
+            user_path("vscode", Os::MacOs),
+            "/Users/ada/Library/Application Support/Code/User/mcp.json"
+        );
+        assert_eq!(
+            user_path("vscode", Os::Linux),
+            "/home/ada/.config/Code/User/mcp.json"
+        );
+        assert_eq!(
+            user_path("cline", Os::Windows),
+            "C:\\Users\\ada\\AppData\\Roaming\\Code\\User\\globalStorage\\saoudrizwan.claude-dev\\settings\\cline_mcp_settings.json"
+        );
+        assert_eq!(
+            user_path("cline", Os::MacOs),
+            "/Users/ada/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+        );
+        // Zed: XDG on Linux and macOS, the roaming profile on Windows.
+        assert_eq!(
+            user_path("zed", Os::Linux),
+            "/home/ada/.config/zed/settings.json"
+        );
+        assert_eq!(
+            user_path("zed", Os::MacOs),
+            "/Users/ada/.config/zed/settings.json"
+        );
+        assert_eq!(
+            user_path("zed", Os::Windows),
+            "C:\\Users\\ada\\AppData\\Roaming\\Zed\\settings.json"
+        );
+        // OpenCode uses the XDG layout everywhere, Windows included.
+        assert_eq!(
+            user_path("opencode", Os::Windows),
+            "C:\\Users\\ada\\.config\\opencode\\opencode.json"
+        );
+        // Devin: XDG on Unix, the roaming profile on Windows.
+        assert_eq!(
+            user_path("devin", Os::Linux),
+            "/home/ada/.config/devin/mcp_config.json"
+        );
+        assert_eq!(
+            user_path("devin", Os::Windows),
+            "C:\\Users\\ada\\AppData\\Roaming\\devin\\mcp_config.json"
+        );
+        // Plain dot-directories under home for the rest.
+        assert_eq!(
+            user_path("qwen-code", Os::Linux),
+            "/home/ada/.qwen/settings.json"
+        );
+        assert_eq!(
+            user_path("kiro", Os::Linux),
+            "/home/ada/.kiro/settings/mcp.json"
+        );
+        assert_eq!(
+            user_path("copilot-cli", Os::Windows),
+            "C:\\Users\\ada\\.copilot\\mcp-config.json"
+        );
+        assert_eq!(
+            user_path("windsurf", Os::MacOs),
+            "/Users/ada/.codeium/windsurf/mcp_config.json"
+        );
+        assert_eq!(
+            user_path("factory-droid", Os::Linux),
+            "/home/ada/.factory/mcp.json"
+        );
+        assert_eq!(
+            user_path("openhands", Os::Linux),
+            "/home/ada/.openhands/mcp.json"
+        );
+        // Some read no project file at all, and the registry says so.
+        for id in ["cline", "windsurf", "openhands"] {
+            assert_eq!(project_path(id, Os::Linux), None, "{id}");
+            assert!(!find(id).unwrap().file_writable(Scope::Project), "{id}");
+        }
+        assert_eq!(
+            project_path("copilot-cli", Os::Linux),
+            Some(".github/mcp.json".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_stand_in_home_keeps_every_variable_under_it() {
+        // MEMFORK_HOME is how the tests keep away from a real machine's
+        // configs; the Windows and XDG variables must follow it, not the
+        // real environment.
+        let v = Vars::for_home("/tmp/home", Os::Linux);
+        assert_eq!(v.xdg_config_home, "/tmp/home/.config");
+        assert_eq!(v.xdg_data_home, "/tmp/home/.local/share");
+        let w = Vars::for_home("C:\\tmp\\home", Os::Windows);
+        assert_eq!(w.appdata, "C:\\tmp\\home\\AppData\\Roaming");
+        assert_eq!(w.localappdata, "C:\\tmp\\home\\AppData\\Local");
+        // And the longer names are not mistaken for the shorter ones.
+        assert_eq!(
+            w.expand("$LOCALAPPDATA/x/$APPDATA/y", Os::Windows),
+            "C:\\tmp\\home\\AppData\\Local\\x\\C:\\tmp\\home\\AppData\\Roaming\\y"
         );
     }
 
@@ -766,6 +1098,51 @@ mod tests {
                 .unwrap(),
             vec!["mcp", "add", "memfork", "--", "memfork", "mcp"]
         );
+
+        // The new commands, as each documents them.
+        let args = |id: &str, scope| {
+            find(id)
+                .and_then(|c| c.cli)
+                .unwrap_or_else(|| panic!("{id} has a cli"))
+                .add_args(scope, &Launch::program("memfork"))
+        };
+        assert_eq!(
+            args("cline", Scope::User).unwrap(),
+            vec!["mcp", "add", "memfork", "--yes", "--", "memfork", "mcp"]
+        );
+        assert_eq!(
+            args("opencode", Scope::User).unwrap(),
+            vec!["mcp", "add", "memfork", "--", "memfork", "mcp"]
+        );
+        assert_eq!(
+            args("qwen-code", Scope::Project).unwrap(),
+            vec!["mcp", "add", "-s", "project", "memfork", "memfork", "mcp"]
+        );
+        assert_eq!(
+            args("copilot-cli", Scope::User).unwrap(),
+            vec!["mcp", "add", "memfork", "--", "memfork", "mcp"]
+        );
+        assert_eq!(
+            args("devin", Scope::User).unwrap(),
+            vec!["mcp", "add", "-s", "user", "memfork", "--", "memfork", "mcp"]
+        );
+        assert_eq!(
+            args("openhands", Scope::User).unwrap(),
+            vec![
+                "mcp",
+                "add",
+                "memfork",
+                "--transport",
+                "stdio",
+                "memfork",
+                "--",
+                "mcp"
+            ]
+        );
+        // Commands with no project scope say so, and the file is used.
+        for id in ["cline", "opencode", "copilot-cli", "openhands"] {
+            assert!(args(id, Scope::Project).is_none(), "{id}");
+        }
     }
 
     #[test]
@@ -782,6 +1159,18 @@ mod tests {
     }
 
     #[test]
+    fn a_cli_that_cannot_answer_has_no_status_command() {
+        // Cline's command adds but cannot list outside its wizard; OpenCode
+        // adds and lists but cannot remove.
+        let cline = find("cline").and_then(|c| c.cli).expect("cline cli");
+        assert!(cline.status_args().is_none());
+        assert!(cline.remove_args(Scope::User).is_some());
+        let opencode = find("opencode").and_then(|c| c.cli).expect("opencode cli");
+        assert!(opencode.status_args().is_some());
+        assert!(opencode.remove_args(Scope::User).is_none());
+    }
+
+    #[test]
     fn claude_codes_user_file_is_not_writable() {
         // It holds the OAuth session; MemFork goes through the CLI or not at all.
         let claude = find("claude-code").expect("claude-code");
@@ -789,7 +1178,7 @@ mod tests {
         assert!(claude.file_writable(Scope::Project));
 
         // Every other client's user file is ordinary and may be written.
-        for id in ["cursor", "codex", "gemini-cli", "grok"] {
+        for id in ids().iter().filter(|id| *id != "claude-code") {
             assert!(
                 find(id).expect(id).file_writable(Scope::User),
                 "{id} should be writable"
@@ -798,15 +1187,46 @@ mod tests {
     }
 
     #[test]
-    fn the_gemini_http_url_quirk_is_recorded() {
+    fn the_http_url_quirks_are_recorded() {
         // DESIGN §6.1 calls this out by name: it must be data, not code.
-        let gemini = find("gemini-cli")
-            .and_then(|c| c.file)
-            .expect("gemini file");
-        assert_eq!(gemini.http_url_key, "httpUrl");
-        for id in ["cursor", "codex", "grok", "claude-code"] {
+        for (id, key) in [
+            ("gemini-cli", "httpUrl"),
+            ("qwen-code", "httpUrl"),
+            ("windsurf", "serverUrl"),
+        ] {
+            let f = find(id).and_then(|c| c.file).expect(id);
+            assert_eq!(f.http_url_key, key, "{id}");
+        }
+        for id in [
+            "cursor",
+            "codex",
+            "grok",
+            "claude-code",
+            "vscode",
+            "zed",
+            "opencode",
+        ] {
             let f = find(id).and_then(|c| c.file).expect(id);
             assert_eq!(f.http_url_key, "url", "{id}");
         }
+    }
+
+    #[test]
+    fn the_entry_shapes_are_data() {
+        let shape = |id: &str| find(id).and_then(|c| c.file).expect(id);
+        assert_eq!(shape("claude-code").stdio_type.as_deref(), Some("stdio"));
+        assert_eq!(shape("vscode").stdio_type.as_deref(), Some("stdio"));
+        assert_eq!(shape("opencode").stdio_type.as_deref(), Some("local"));
+        assert_eq!(shape("copilot-cli").stdio_type.as_deref(), Some("local"));
+        assert_eq!(shape("cursor").stdio_type, None);
+        assert_eq!(shape("opencode").command_style, CommandStyle::Array);
+        assert_eq!(shape("vscode").command_style, CommandStyle::Split);
+        assert!(shape("copilot-cli")
+            .extra
+            .is_some_and(|e| e.contains_key("tools")));
+        assert_eq!(shape("zed").format, Format::Jsonc);
+        assert_eq!(shape("zed").server_map, ["context_servers"]);
+        assert_eq!(shape("vscode").server_map, ["servers"]);
+        assert_eq!(shape("opencode").server_map, ["mcp"]);
     }
 }

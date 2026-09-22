@@ -1086,3 +1086,115 @@ fn b2_doctor_says_when_no_client_was_detected_at_all() {
     let doc = run_json(world.memfork().args(["--json", "doctor"]));
     assert_eq!(doc["needs_init"], false);
 }
+
+// ---- the clients added in 0.3.0 ------------------------------------------------
+
+#[test]
+fn b2_a_new_clients_command_is_called_as_its_documentation_says() {
+    let world = World::new();
+    for shim in ["qwen", "copilot", "devin", "opencode"] {
+        world.add_shim(shim);
+    }
+    let doc = run_json(world.memfork().args(["--json", "init"]));
+    let exe = doc["command"]
+        .as_str()
+        .expect("the memfork path")
+        .to_owned();
+    let calls = world.shim_calls();
+    let has = |needle: &str| calls.iter().any(|c| c.contains(needle));
+    assert!(
+        has(&format!("qwen mcp add -s user memfork {exe} mcp")),
+        "{calls:?}"
+    );
+    assert!(
+        has(&format!("copilot mcp add memfork -- {exe} mcp")),
+        "{calls:?}"
+    );
+    assert!(
+        has(&format!("devin mcp add -s user memfork -- {exe} mcp")),
+        "{calls:?}"
+    );
+    assert!(
+        has(&format!("opencode mcp add memfork -- {exe} mcp")),
+        "{calls:?}"
+    );
+    for id in ["qwen-code", "copilot-cli", "devin", "opencode"] {
+        assert_eq!(client(&doc, id)["method"], "client command", "{id}");
+    }
+    // Re-running asks each command and changes nothing.
+    let again = run_json(world.memfork().args(["--json", "init"]));
+    for id in ["qwen-code", "copilot-cli", "devin", "opencode"] {
+        assert_eq!(client(&again, id)["action"], "already registered", "{id}");
+    }
+    assert_eq!(world.shim_calls().len(), calls.len());
+}
+
+#[test]
+fn b2_a_settings_file_with_comments_keeps_them() {
+    // Zed's settings.json: comments, a trailing comma, keys MemFork knows
+    // nothing about. Only the one member is added.
+    let world = World::new();
+    // Where Zed keeps its settings on this OS, as the registry resolves it
+    // for a stand-in home: %APPDATA%\Zed on Windows, ~/.config/zed elsewhere.
+    let home = world.home().display().to_string();
+    let config = PathBuf::from(
+        memfork::clients::find("zed")
+            .and_then(|c| c.file)
+            .expect("zed registers by file")
+            .path_for(
+                memfork::clients::Scope::User,
+                memfork::clients::Os::current(),
+                &memfork::clients::Vars::for_home(&home, memfork::clients::Os::current()),
+            )
+            .expect("a user path"),
+    );
+    std::fs::create_dir_all(config.parent().unwrap()).expect("dir");
+    let original = "// Zed settings\n{\n  \"theme\": \"One Dark\", // mine\n  \"context_servers\": {\n    \"other\": {\n      \"command\": \"other\",\n      \"args\": [\"serve\"],\n    },\n  },\n}\n";
+    std::fs::write(&config, original).expect("seeded");
+
+    let doc = run_json(world.memfork().args(["--json", "init", "--client", "zed"]));
+    assert_eq!(client(&doc, "zed")["method"], "config file");
+    assert_eq!(client(&doc, "zed")["action"], "add", "{doc}");
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        after.starts_with("// Zed settings\n{\n  \"theme\": \"One Dark\", // mine\n"),
+        "{after}"
+    );
+    assert!(
+        after.contains(
+            "\"other\": {\n      \"command\": \"other\",\n      \"args\": [\"serve\"],\n    },\n"
+        ),
+        "{after}"
+    );
+    assert!(after.contains("\"memfork\": {"), "{after}");
+    assert!(after.ends_with("  },\n}\n"), "{after}");
+
+    let again = run_json(world.memfork().args(["--json", "init", "--client", "zed"]));
+    assert_eq!(client(&again, "zed")["action"], "already registered");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), after);
+
+    // Doctor reads the same file and says it is registered.
+    let doc = run_json(world.memfork().args(["--json", "doctor"]));
+    assert_eq!(client(&doc, "zed")["registered"], true);
+}
+
+#[test]
+fn b2_doctor_says_what_a_registry_entry_could_not_confirm() {
+    let world = World::new();
+    let doc = run_json(world.memfork().args(["--json", "doctor"]));
+    let cursor = client(&doc, "cursor");
+    assert!(
+        cursor["unverified"]
+            .as_str()
+            .is_some_and(|w| w.contains("MCP initialize")),
+        "{cursor}"
+    );
+    assert!(client(&doc, "codex")["unverified"].is_null());
+    let text = world
+        .memfork()
+        .args(["doctor", "--verbose"])
+        .assert()
+        .success();
+    let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
+    assert!(text.contains("    unverified  "), "{text}");
+}

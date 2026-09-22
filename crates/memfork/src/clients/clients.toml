@@ -5,7 +5,10 @@
 #
 # `verified` is the date the entry was last checked against `docs`. Nothing in
 # this file was confirmed by running the client; it is what the vendor's own
-# documentation says on that date. Re-check before a release.
+# documentation, or the client's own source, says on that date. Re-check before
+# a release. `unverified` says, in a sentence, what could *not* be confirmed
+# on that date: it is shown by `memfork doctor`, and it is never left out to
+# make an entry look finished.
 #
 # Each entry has up to two ways in:
 #
@@ -15,11 +18,14 @@
 #                  the same command whether MemFork is registered, which is the
 #                  only answer that counts: a client may store its servers
 #                  somewhere MemFork does not model, or normalise what it was
-#                  given, and reading its file would then disagree with it.
+#                  given, and reading its file would then disagree with it. A
+#                  command with no `status` can add but not answer outside an
+#                  interactive wizard; registration is then read from its file.
 #   [client.file]  direct config editing. Used only when the client ships no
 #                  CLI, or its CLI cannot express the requested scope. A client
 #                  with no `user` path is one whose user configuration MemFork
-#                  will not touch at all.
+#                  will not touch at all; one with no `project` path reads no
+#                  configuration from a project.
 #
 # In `add`, `{scope}` expands to zero or more flag tokens, `{name}` to the
 # server name, `{command}` to the memfork binary path and `{args}` to its
@@ -30,6 +36,20 @@
 # that is gone. A client with no documented `remove` is left alone and the
 # command to run is printed instead, because guessing at a command that edits
 # somebody's configuration is not a thing to do.
+#
+# Paths may use `$HOME`, `$APPDATA`, `$LOCALAPPDATA`, `$XDG_CONFIG_HOME` and
+# `$XDG_DATA_HOME`, with `user_windows`, `user_macos`, `user_linux` (and the
+# `project_` equivalents) overriding `user` and `project` for one OS. Each
+# variable falls back to the OS's convention under the home directory, and
+# when MEMFORK_HOME stands in for the home directory they are all derived from
+# it, so a test never reaches the real one.
+#
+# `format` is `json`, `jsonc` (comments and trailing commas, edited the same
+# way — the JSON editor splices one entry and preserves everything else) or
+# `toml`. `stdio_type` is the value of a `type` key the client wants on a
+# local server, if any; `command_style = "array"` writes the command as one
+# list with the program first; `extra` holds keys the client requires on every
+# entry.
 #
 # `mcp_names` is what the client calls itself in MCP `initialize`, taken from
 # its source code or its shipped build, since none of these document it. It is
@@ -67,7 +87,7 @@ scope_project = ["--scope", "project"]
 [client.file]
 format = "json"
 server_map = ["mcpServers"]
-emit_type_stdio = true
+stdio_type = "stdio"
 http_url_key = "url"
 project = ".mcp.json"
 # No `user` path on purpose. This client keeps user-scope servers in
@@ -88,16 +108,22 @@ verified = "2026-09-21"
 id = "cursor"
 display = "Cursor"
 docs = "https://cursor.com/docs/context/mcp"
-verified = "2026-09-20"
+verified = "2026-09-22"
 # The directory this client creates for itself, so "installed but never
 # configured" is not mistaken for "not installed".
 detect_dir = "$HOME/.cursor"
-# Cursor ships no `mcp add` command, so the config file is the only way in.
+# Cursor ships no `mcp add`: its `agent` command lists, enables and disables
+# servers but cannot add one, so the config file is the only way in.
+#
+# No `mcp_names`: its source is closed, its documentation does not say, and
+# the only sightings are third-party logs (`cursor-vscode`, and `Cursor`),
+# which is not the standard the other entries meet. Its writes are shown under
+# whatever name it gives, and doctor says so.
+unverified = "the name it sends in MCP initialize: seen as `cursor-vscode` in third-party logs, never in its documentation or a build MemFork could read; its Windows user path, which the documentation gives only as `~/.cursor/mcp.json`"
 
 [client.file]
 format = "json"
 server_map = ["mcpServers"]
-emit_type_stdio = false
 http_url_key = "url"
 user = "$HOME/.cursor/mcp.json"
 project = ".cursor/mcp.json"
@@ -106,7 +132,7 @@ project = ".cursor/mcp.json"
 # Also `.cursor/rules/*.mdc`, which need front matter; AGENTS.md is plain text.
 reads = ["AGENTS.md"]
 docs = "https://cursor.com/docs/context/rules"
-verified = "2026-09-21"
+verified = "2026-09-22"
 
 [[client]]
 id = "codex"
@@ -133,7 +159,6 @@ scope_user = []
 [client.file]
 format = "toml"
 server_map = ["mcp_servers"]
-emit_type_stdio = false
 http_url_key = "url"
 user = "$HOME/.codex/config.toml"
 project = ".codex/config.toml"
@@ -166,7 +191,6 @@ scope_project = ["-s", "project"]
 [client.file]
 format = "json"
 server_map = ["mcpServers"]
-emit_type_stdio = false
 # The DESIGN §6.1 quirk: Gemini CLI uses `httpUrl` for streamable HTTP and `url`
 # for SSE, where most clients use `url` for streamable HTTP. Unused until the
 # shared daemon, encoded here so the difference is recorded once.
@@ -205,7 +229,6 @@ scope_project = ["--scope", "project"]
 [client.file]
 format = "toml"
 server_map = ["mcp_servers"]
-emit_type_stdio = false
 http_url_key = "url"
 user = "$HOME/.grok/config.toml"
 project = ".grok/config.toml"
@@ -215,3 +238,382 @@ project = ".grok/config.toml"
 reads = ["AGENTS.md", "CLAUDE.md"]
 docs = "https://docs.x.ai/build/features/project-rules"
 verified = "2026-09-21"
+
+# ---- added for 0.3.0 ----------------------------------------------------------
+
+[[client]]
+id = "cline"
+display = "Cline"
+docs = "https://docs.cline.bot/mcp/configuring-mcp-servers"
+verified = "2026-09-22"
+# The CLI's own directory, and the VS Code extension's storage on each OS.
+detect_dirs = [
+    "$HOME/.cline",
+    "$XDG_CONFIG_HOME/Code/User/globalStorage/saoudrizwan.claude-dev",
+    "$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev",
+    "$APPDATA/Code/User/globalStorage/saoudrizwan.claude-dev",
+]
+# `Cline` from apps/vscode/src/services/mcp/McpHub.ts; the newer SDK core
+# sends `@cline/core` (sdk/packages/core/src/extensions/mcp/client.ts).
+mcp_names = ["Cline", "@cline/core"]
+unverified = "whether its CLI can list servers outside its interactive wizard, so a registration made by the `cline` command is confirmed by reading its file; whether the extension reads a project's `.cline/mcp.json`, so MemFork does not write one"
+
+[client.cli]
+binary = "cline"
+# `--yes` installs without opening the wizard; the command and its arguments
+# follow `--`. From apps/cli/src/main.ts. Writes the CLI's own settings file,
+# `~/.cline/data/settings/cline_mcp_settings.json`, not the extension's.
+add = ["mcp", "add", "{name}", "--yes", "--", "{command}", "{args}"]
+remove = ["mcp", "remove", "{name}"]
+# No scope flag is documented.
+scope_user = []
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+# `type` is optional and defaults to stdio; written for clarity, as its
+# documentation's examples do not, so left out.
+http_url_key = "url"
+# The VS Code extension's file, which the documentation names; the CLI has
+# its own (`~/.cline/data/settings/cline_mcp_settings.json`), which the
+# `cline` command writes when it is installed.
+user_linux = "$XDG_CONFIG_HOME/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+user_macos = "$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+user_windows = "$APPDATA/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+user = "$XDG_CONFIG_HOME/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"
+# No `project` path: `.cline/mcp.json` is listed for the CLI's project layout
+# but its shape, and whether the extension reads it, are not documented.
+
+[client.instructions]
+# Also `.clinerules/` and `.cline/rules/`, which are directories of files.
+reads = ["AGENTS.md"]
+docs = "https://docs.cline.bot/features/cline-rules"
+verified = "2026-09-22"
+
+[[client]]
+id = "opencode"
+display = "OpenCode"
+docs = "https://opencode.ai/docs/mcp-servers/"
+verified = "2026-09-22"
+# Created at start-up on every OS; no APPDATA on Windows, by its own choice.
+detect_dirs = ["$XDG_CONFIG_HOME/opencode", "$XDG_DATA_HOME/opencode"]
+# From packages/opencode/src/mcp/index.ts.
+mcp_names = ["opencode"]
+unverified = "how to remove a server: its command has no `remove`, so a registration pointing at another MemFork is corrected by editing the file"
+
+[client.cli]
+binary = "opencode"
+# Non-interactive when a name and a command after `--` are given; it then
+# writes the user config and offers no scope flag.
+add = ["mcp", "add", "{name}", "--", "{command}", "{args}"]
+# Prints each server with its command.
+status = ["mcp", "list"]
+scope_user = []
+
+[client.file]
+# JSON or JSONC, its documentation says; comments are kept.
+format = "jsonc"
+server_map = ["mcp"]
+# A local server is `"type": "local"` with the command as one list, the
+# program first.
+stdio_type = "local"
+command_style = "array"
+http_url_key = "url"
+# `~/.config/opencode/opencode.json` on every OS: it uses the XDG layout on
+# Windows too.
+user = "$XDG_CONFIG_HOME/opencode/opencode.json"
+project = "opencode.json"
+
+[client.instructions]
+# CLAUDE.md is read only when there is no AGENTS.md.
+reads = ["AGENTS.md"]
+docs = "https://opencode.ai/docs/rules/"
+verified = "2026-09-22"
+
+[[client]]
+id = "qwen-code"
+display = "Qwen Code"
+docs = "https://qwenlm.github.io/qwen-code-docs/en/users/features/mcp/"
+verified = "2026-09-22"
+detect_dir = "$HOME/.qwen"
+# From packages/core/src/tools/mcp-client.ts: `qwen-cli-mcp-client-<server>`
+# and `qwen-code-mcp-client`.
+mcp_names = ["qwen-*"]
+
+[client.cli]
+binary = "qwen"
+# The command and its arguments are positional, as in Gemini CLI, which this
+# client descends from.
+add = ["mcp", "add", "{scope}", "{name}", "{command}", "{args}"]
+# Prints each server with its command.
+status = ["mcp", "list"]
+remove = ["mcp", "remove", "{scope}", "{name}"]
+scope_user = ["-s", "user"]
+scope_project = ["-s", "project"]
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+# No `type`: the transport is inferred from `command`, `url` or `httpUrl`.
+http_url_key = "httpUrl"
+user = "$HOME/.qwen/settings.json"
+project = ".qwen/settings.json"
+
+[client.instructions]
+# QWEN.md is its own; it reads AGENTS.md as well when one is there.
+reads = ["QWEN.md", "AGENTS.md"]
+docs = "https://qwenlm.github.io/qwen-code-docs/en/users/features/memory/"
+verified = "2026-09-22"
+
+[[client]]
+id = "kiro"
+display = "Kiro"
+docs = "https://kiro.dev/docs/mcp/configuration/"
+verified = "2026-09-22"
+detect_dir = "$HOME/.kiro"
+# No `mcp_names`: the product's source is closed and no log of its
+# `initialize` was found.
+unverified = "the name it sends in MCP initialize (closed source); its Windows user path, which the documentation gives only as `~/.kiro/settings/mcp.json`; `kiro-cli mcp add` takes the command as one quoted string with no documented way to pass arguments, so MemFork edits the file instead"
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+# No `type`: a remote server is one with `url`.
+http_url_key = "url"
+user = "$HOME/.kiro/settings/mcp.json"
+project = ".kiro/settings/mcp.json"
+
+[client.instructions]
+# Also `.kiro/steering/*.md`, included always unless their front matter says
+# otherwise; AGENTS.md is picked up automatically.
+reads = ["AGENTS.md"]
+docs = "https://kiro.dev/docs/steering/"
+verified = "2026-09-22"
+
+[[client]]
+id = "copilot-cli"
+display = "GitHub Copilot CLI"
+docs = "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers"
+verified = "2026-09-22"
+detect_dir = "$HOME/.copilot"
+# Seen in wire logs pasted into the vendor's own issue tracker (issues 4525
+# and 4888), not in a build MemFork could read: it ships as a compressed
+# blob.
+mcp_names = ["copilot-cli"]
+unverified = "the name it sends in MCP initialize is taken from logs in the vendor's issue tracker, not from its source; its Windows user path, which the documentation gives only as `~/.copilot`"
+
+[client.cli]
+binary = "copilot"
+add = ["mcp", "add", "{name}", "--", "{command}", "{args}"]
+# Asks about one server by name.
+status = ["mcp", "get", "{name}"]
+remove = ["mcp", "remove", "{name}"]
+# No scope flag: the command writes the user configuration only.
+scope_user = []
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+# Its documentation lists `type` and `tools` as required on every server.
+stdio_type = "local"
+extra = { tools = ["*"] }
+http_url_key = "url"
+user = "$HOME/.copilot/mcp-config.json"
+# `.github/mcp.json`, the shared project file. It also reads `.mcp.json`,
+# which Claude Code owns in the registry; two clients writing one file with
+# different required keys is a way to break both.
+project = ".github/mcp.json"
+
+[client.instructions]
+# All three are read from the repository root.
+reads = [".github/copilot-instructions.md", "AGENTS.md", "CLAUDE.md"]
+docs = "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions"
+verified = "2026-09-22"
+
+[[client]]
+id = "devin"
+display = "Devin CLI"
+docs = "https://docs.devin.ai/cli/extensibility/mcp/configuration"
+verified = "2026-09-22"
+detect_dirs = ["$XDG_CONFIG_HOME/devin", "$APPDATA/devin"]
+# No `mcp_names`: the command is a downloaded binary with no public source,
+# and no log of its `initialize` was found.
+unverified = "the name it sends in MCP initialize (no public source); its macOS user path, which the documentation gives as `~/.config/devin`, with one page mentioning `~/Library/Application Support/devin`"
+
+[client.cli]
+binary = "devin"
+# Its default scope is `local`, a gitignored file in the project, so the
+# scope is always said.
+add = ["mcp", "add", "{scope}", "{name}", "--", "{command}", "{args}"]
+status = ["mcp", "get", "{name}"]
+remove = ["mcp", "remove", "{scope}", "{name}"]
+scope_user = ["-s", "user"]
+scope_project = ["-s", "project"]
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+# No `type` for a local server; a remote one has `transport`.
+http_url_key = "url"
+user = "$XDG_CONFIG_HOME/devin/mcp_config.json"
+user_windows = "$APPDATA/devin/mcp_config.json"
+project = ".devin/mcp_config.json"
+
+[client.instructions]
+reads = ["AGENTS.md", "CLAUDE.md"]
+docs = "https://docs.devin.ai/cli/extensibility/rules"
+verified = "2026-09-22"
+
+[[client]]
+id = "windsurf"
+display = "Windsurf"
+docs = "https://docs.devin.ai/desktop/cascade/mcp"
+verified = "2026-09-22"
+detect_dir = "$HOME/.codeium/windsurf"
+# No `mcp_names`: closed source, and no log of its `initialize` was found.
+#
+# The editor is being renamed Devin Desktop and its documentation now moves
+# under docs.devin.ai. Its Cascade agent's servers are added by editing the
+# file — it has no command for it — and the same documentation says the
+# editor's own discovery still reads this long-standing path. Its newer Devin
+# Local agent reads the Devin CLI's file, which the `devin` entry writes.
+unverified = "the name it sends in MCP initialize (closed source); which of `~/.codeium/windsurf/mcp_config.json` and `~/.config/devin/mcp_config.json` a given build reads, while the editor is renamed Devin Desktop and its documentation moves"
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+# The quirk: a remote server's address is `serverUrl` here.
+http_url_key = "serverUrl"
+user = "$HOME/.codeium/windsurf/mcp_config.json"
+# No project file is documented for Cascade.
+
+[client.instructions]
+# `AGENTS.md` at the root is always on; `.windsurf/rules/*.md` carry their own
+# triggers.
+reads = ["AGENTS.md"]
+docs = "https://docs.devin.ai/desktop/cascade/agents-md"
+verified = "2026-09-22"
+
+[[client]]
+id = "zed"
+display = "Zed"
+docs = "https://zed.dev/docs/ai/mcp"
+verified = "2026-09-22"
+# Its data directory on each OS, where extensions are kept.
+detect_dirs = [
+    "$XDG_DATA_HOME/zed",
+    "$HOME/Library/Application Support/Zed",
+    "$LOCALAPPDATA/Zed",
+    "$XDG_CONFIG_HOME/zed",
+]
+# From crates/context_server/src/context_server.rs.
+mcp_names = ["Zed"]
+# Zed ships no command for servers: its Settings UI and this file are the ways in.
+
+[client.file]
+# Its settings file carries comments.
+format = "jsonc"
+server_map = ["context_servers"]
+# No `type` or `source`: a local server is one with `command`.
+http_url_key = "url"
+user = "$XDG_CONFIG_HOME/zed/settings.json"
+user_macos = "$HOME/.config/zed/settings.json"
+user_windows = "$APPDATA/Zed/settings.json"
+project = ".zed/settings.json"
+
+[client.instructions]
+# Zed reads the *first* file it finds of `.rules`, `.cursorrules`,
+# `.windsurfrules`, `.clinerules`, `.github/copilot-instructions.md`,
+# `AGENT.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`. AGENTS.md is the one it
+# shares with the others; a repository with a `.rules` file shadows it.
+reads = ["AGENTS.md"]
+docs = "https://zed.dev/docs/ai/instructions"
+verified = "2026-09-22"
+
+[[client]]
+id = "vscode"
+display = "Visual Studio Code"
+docs = "https://code.visualstudio.com/docs/agents/reference/mcp-configuration"
+verified = "2026-09-22"
+detect_dirs = [
+    "$XDG_CONFIG_HOME/Code",
+    "$HOME/Library/Application Support/Code",
+    "$APPDATA/Code",
+]
+# Its source builds the name from its product configuration, which is
+# `Code - OSS` in the open repository and not published for the Microsoft
+# build.
+unverified = "the name it sends in MCP initialize: its source uses the product's long name, which is not published for the Microsoft build; `code --add-mcp` exists but cannot list or remove a server, so MemFork writes the file it would write"
+
+[client.file]
+format = "jsonc"
+server_map = ["servers"]
+stdio_type = "stdio"
+http_url_key = "url"
+user = "$XDG_CONFIG_HOME/Code/User/mcp.json"
+user_macos = "$HOME/Library/Application Support/Code/User/mcp.json"
+user_windows = "$APPDATA/Code/User/mcp.json"
+project = ".vscode/mcp.json"
+
+[client.instructions]
+# Each is on by default: `github.copilot.chat.codeGeneration.useInstructionFiles`,
+# `chat.useAgentsMdFile`, `chat.useClaudeMdFile`.
+reads = [".github/copilot-instructions.md", "AGENTS.md", "CLAUDE.md"]
+docs = "https://code.visualstudio.com/docs/agent-customization/custom-instructions"
+verified = "2026-09-22"
+
+[[client]]
+id = "factory-droid"
+display = "Factory Droid"
+docs = "https://docs.factory.ai/cli/configuration/mcp"
+verified = "2026-09-22"
+detect_dir = "$HOME/.factory"
+# Read out of the shipped build (`@factory/cli-win32-x64`, `bin/droid.exe`):
+# user servers are connected as `factory-cli`.
+mcp_names = ["factory-cli"]
+unverified = "`droid mcp add` takes the command and its arguments as one quoted string, so MemFork writes the file rather than guess at the quoting"
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+stdio_type = "stdio"
+http_url_key = "url"
+user = "$HOME/.factory/mcp.json"
+project = ".factory/mcp.json"
+
+[client.instructions]
+reads = ["AGENTS.md", "CLAUDE.md"]
+docs = "https://docs.factory.ai/cli/configuration/agents-md"
+verified = "2026-09-22"
+
+[[client]]
+id = "openhands"
+display = "OpenHands"
+docs = "https://docs.openhands.dev/openhands/usage/cli/mcp-servers"
+verified = "2026-09-22"
+detect_dir = "$HOME/.openhands"
+# No `mcp_names`: it sends the Python SDK's default, `mcp`, which names
+# nothing in particular and would mislabel every other client built on it.
+unverified = "the name it sends in MCP initialize is the SDK's default `mcp`, so its writes cannot be told from another such client's; on Windows it runs under WSL only, so its paths are WSL paths"
+
+[client.cli]
+binary = "openhands"
+# `--transport` is required; the command is positional and its arguments
+# follow `--`.
+add = ["mcp", "add", "{name}", "--transport", "stdio", "{command}", "--", "{args}"]
+status = ["mcp", "get", "{name}"]
+remove = ["mcp", "remove", "{name}"]
+# One file, no scope.
+scope_user = []
+
+[client.file]
+format = "json"
+server_map = ["mcpServers"]
+http_url_key = "url"
+user = "$HOME/.openhands/mcp.json"
+# No project file: it reads one file, in the home directory.
+
+[client.instructions]
+reads = ["AGENTS.md", "CLAUDE.md"]
+docs = "https://docs.openhands.dev/sdk/guides/skill.md"
+verified = "2026-09-22"

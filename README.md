@@ -171,7 +171,25 @@ has one. No client is special.
 | Cursor | its `mcp.json` |
 | Codex CLI | `codex mcp add` |
 | Gemini CLI | `gemini mcp add` |
-| Grok | `grok mcp add` |
+| Grok Build | `grok mcp add` |
+| Cline | `cline mcp add`, or the extension's settings file |
+| OpenCode | `opencode mcp add`, or `opencode.json` |
+| Qwen Code | `qwen mcp add` |
+| Kiro | its `mcp.json` |
+| GitHub Copilot CLI | `copilot mcp add`, or `mcp-config.json` |
+| Devin CLI | `devin mcp add`, or `mcp_config.json` |
+| Windsurf | its `mcp_config.json` |
+| Zed | `settings.json` (`context_servers`) |
+| Visual Studio Code | `mcp.json` (`servers`) |
+| Factory Droid | its `mcp.json` |
+| OpenHands | `openhands mcp add`, or `mcp.json` |
+
+Every entry is data in one registry file, checked against the client's own
+documentation on a recorded date. Where something could not be confirmed — a
+closed-source client's name in MCP `initialize`, a path the documentation
+gives for only one OS — the entry says so, and `memfork doctor --verbose`
+shows it, rather than guessing. A file MemFork edits keeps every other byte:
+comments, key order, whitespace and trailing commas included.
 
 Anything else that speaks MCP over stdio works too — point it at `memfork mcp`.
 

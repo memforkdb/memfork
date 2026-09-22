@@ -79,6 +79,15 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   naming its rule.
 - **MCP prompts** for the routines: resume, handoff, review-decisions,
   tidy-memory, next-task.
+- **Eleven more clients.** `memfork init` and `memfork doctor` know Cline,
+  OpenCode, Qwen Code, Kiro, GitHub Copilot CLI, Devin CLI, Windsurf, Zed,
+  Visual Studio Code, Factory Droid and OpenHands, each from its own
+  documentation on a recorded date. What could not be confirmed — a
+  closed-source client's name in MCP `initialize`, a Windows path given only
+  as `~/...` — is marked in the registry and shown by `doctor --verbose`,
+  never guessed. Config files that carry comments and trailing commas (VS
+  Code, Zed, OpenCode) are edited by splicing one entry in, so every other
+  byte stays as it was.
 - **A machine-wide policy file.** An administrator places one file
   (`%ProgramData%\memfork\policy.toml`, `/Library/Application
   Support/memfork/policy.toml` or `/etc/memfork/policy.toml`) to switch off the

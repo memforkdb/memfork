@@ -570,6 +570,40 @@ an entry + a fixture test, no new code. Known quirk to encode: Gemini CLI uses
 `httpUrl` for streamable HTTP and `url` for SSE, whereas most other clients use `url`
 for streamable HTTP. Verify every entry against the client's current docs.
 
+**[v0.14] Sixteen clients, and what an entry may say.** Eleven were added:
+Cline, OpenCode, Qwen Code, Kiro, GitHub Copilot CLI, Devin CLI, Windsurf,
+Zed, Visual Studio Code, Factory Droid and OpenHands. Fitting them needed the
+registry's vocabulary to grow, never its code: paths may use `$APPDATA`,
+`$LOCALAPPDATA`, `$XDG_CONFIG_HOME` and `$XDG_DATA_HOME` beside `$HOME`, each
+falling back to the OS's convention under the home directory and all derived
+from `MEMFORK_HOME` when it stands in, so a test can never reach a real
+`%APPDATA%`; a client may name several `detect_dirs`, one per OS; a command
+may have no `status` (Cline's adds but cannot list outside its wizard) or no
+`remove` (OpenCode), and a file may have no `project` path (three read one
+file in the home directory); an entry's shape is `stdio_type` (`stdio`,
+`local`, or none), `command_style` (`split` or one `array` with the program
+first, for OpenCode) and `extra` keys the client requires (`tools = ["*"]`
+for Copilot). Amazon Q Developer CLI was found and left out: its own README
+says it is no longer maintained and has become Kiro CLI.
+
+Every entry records what could not be confirmed in `unverified`, shown by
+`memfork doctor --verbose`: a closed-source client's `initialize` name, a
+Windows path the documentation gives only as `~/...`, a command that takes
+the whole command line as one quoted string (Kiro, Factory Droid), for which
+MemFork edits the file rather than guess at the quoting. Cursor's name stays
+unverified: it is seen as `cursor-vscode` in third-party logs and nowhere
+MemFork could read, and a name that is guessed is a name that is wrong
+quietly. Copilot CLI's `copilot-cli` is recorded from logs in the vendor's
+own issue tracker and marked as such.
+
+**[v0.14] The JSON editor splices.** Three of the new clients keep comments
+and trailing commas in their settings (VS Code, Zed, OpenCode), which
+`serde_json` would refuse or strip. The editor now scans the text for the
+servers object and MemFork's member and replaces or inserts only that stretch,
+so every other byte — whitespace, key order, comments, trailing commas — is
+untouched, for plain JSON as well. A file that is not an object, or that the
+scanner cannot follow, is refused and left alone as before.
+
 **Schema compatibility.** Tool input schemas use the conservative JSON Schema subset
 every vendor accepts: `type`, `properties`, `required`, `description`, `enum`, `items`.
 No `$ref`, `oneOf`/`anyOf`/`allOf`, `format`, `pattern`, or nested unions — some
@@ -1033,7 +1067,10 @@ about rather than by when they were written.
   merge and a fork → write → discard flow.
 - **B2** `memfork init` registers the server for Claude Code, Cursor, Codex CLI, Gemini CLI
   and Grok Build on the current OS (fixture-tested for all three OSes); re-running
-  changes nothing; `--dry-run` writes nothing.
+  changes nothing; `--dry-run` writes nothing. **[v0.14]** And for the eleven
+  clients added since, each path checked for all three OSes and each entry
+  shape (`type`, one-list commands, required keys) checked against a seeded
+  file with comments, which survives byte for byte.
 - **B4** `memfork tools --format openai|anthropic|gemini` output validates against each
   vendor's function-calling schema; `memfork call` round-trips every tool.
 - **B5** schema-subset CI test passes for every tool.

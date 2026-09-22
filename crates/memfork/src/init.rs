@@ -292,7 +292,7 @@ pub fn is_installed(client: &Client, home: &str) -> bool {
     cli_on_path
         || config_exists(Scope::User)
         || config_exists(Scope::Project)
-        || client.detect_dir_here(home).is_some_and(|p| p.is_dir())
+        || client.detect_dirs_here(home).iter().any(|p| p.is_dir())
 }
 
 /// Why a client is not being handled the way the caller asked.
