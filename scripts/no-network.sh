@@ -33,7 +33,13 @@ export MEMFORK_FORBID_PER_USER_DATA_DIR=1
 export MEMFORK_HOME="$work/home"
 unset MEMFORK_NAMESPACE
 
-fail() { printf 'not ok: %s\n' "$*" >&2; "$bin" stop >/dev/null 2>&1 || true; exit 1; }
+fail() {
+    printf 'not ok: %s\n' "$*" >&2
+    # What the last command said, when it said anything.
+    if [ -s "$work/last.err" ]; then sed 's/^/    | /' "$work/last.err" >&2; fi
+    "$bin" stop >/dev/null 2>&1 || true
+    exit 1
+}
 ok() { printf 'ok: %s\n' "$*"; }
 
 cd "$work/repo"
@@ -48,7 +54,7 @@ cd "$work/repo"
 ok "the command line works alone"
 
 # These start the daemon, which binds loopback, and talk to it there.
-"$bin" put repo:decision:store '{"why":"kept on this machine"}' >/dev/null || fail "put through the daemon"
+"$bin" put repo:decision:store '{"why":"kept on this machine"}' >/dev/null 2>"$work/last.err" || fail "put through the daemon"
 "$bin" fork attempt >/dev/null || fail "fork"
 "$bin" put --branch attempt repo:note:1 "on the fork" >/dev/null || fail "put on a branch"
 "$bin" merge attempt >/dev/null || fail "merge"
