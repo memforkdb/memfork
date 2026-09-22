@@ -86,7 +86,10 @@ jobs:
         # names `com.apple/*`. Loaded into a top-level anchor of their own,
         # the same rules were accepted and never consulted.
         run: |
-          printf 'pass out quick on lo0 all\nblock out quick proto { tcp udp } user root\n' \
+          # By destination, not by interface: a `pass on lo0` rule did not match
+          # root's loopback connections on the runner, so loopback is spared
+          # by address instead and everything else root sends is dropped.
+          printf 'block drop out quick inet proto { tcp udp } from any to ! 127.0.0.0/8 user root\nblock drop out quick inet6 proto { tcp udp } from any to ! ::1 user root\n' \
             | sudo pfctl -a com.apple/memfork-nonet -f -
           sudo pfctl -E || true
           sudo pfctl -a com.apple/memfork-nonet -vsr
