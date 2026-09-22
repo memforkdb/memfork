@@ -79,6 +79,17 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   naming its rule.
 - **MCP prompts** for the routines: resume, handoff, review-decisions,
   tidy-memory, next-task.
+- **A machine-wide policy file.** An administrator places one file
+  (`%ProgramData%\memfork\policy.toml`, `/Library/Application
+  Support/memfork/policy.toml` or `/etc/memfork/policy.toml`) to switch off the
+  dashboard, race, autopilot, maintenance tasks, sampling or secret overrides
+  for every user, and to pin the data directory. No flag, environment variable
+  or project setting overrides it; a file that cannot be read stops everything
+  but `memfork doctor`, which shows the policy in force.
+- **`memfork doctor` is short by default**: the binary, the data directory, the
+  daemon, the policy and one line per client. `--verbose` has the whole report.
+  On Windows, every path it and the other commands print now uses backslashes
+  throughout, however it was typed.
 - **The event stream is a documented contract.** Every line `memfork watch
   --json` prints carries `schema: 1`; the fields, the operation names and the
   rule for changing them are in `docs/EVENTS.md`, held by a test.

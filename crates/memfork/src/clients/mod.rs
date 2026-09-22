@@ -138,6 +138,12 @@ pub struct Client {
     /// Where this client reads a repository's instructions from.
     #[serde(default)]
     pub instructions: Option<ClientInstructions>,
+    /// What could not be confirmed against `docs` on `verified`, in a
+    /// sentence: a client name never seen in a shipped build, a path the
+    /// documentation does not give for one OS. Shown by `memfork doctor`
+    /// and never silently assumed.
+    #[serde(default)]
+    pub unverified: Option<String>,
 }
 
 /// The files a client reads project instructions from.

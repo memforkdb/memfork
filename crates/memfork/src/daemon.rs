@@ -95,7 +95,7 @@ fn check_version(dir: &Path, endpoint: &Endpoint) -> Result<(), DaemonError> {
         return Err(DaemonError::VersionMismatch {
             theirs: theirs.to_owned(),
             ours: crate::VERSION.to_owned(),
-            dir: dir.display().to_string(),
+            dir: crate::style::path(dir),
         });
     }
     Ok(())
@@ -220,12 +220,12 @@ fn did_not_start(
     let output = if tail.is_empty() {
         format!(
             "  Its own output goes to {} (nothing was written there).",
-            log.display()
+            crate::style::path(log)
         )
     } else {
         format!(
             "  Its own output is in {}, which ends:\n{}",
-            log.display(),
+            crate::style::path(log),
             tail.iter()
                 .map(|l| format!("      {l}"))
                 .collect::<Vec<_>>()
@@ -275,7 +275,7 @@ fn spawn(
     let argv = launch.argv(&[
         "serve",
         "--data-dir",
-        &dir.display().to_string(),
+        &crate::style::path(dir),
         "--port",
         "0",
         "--idle-timeout",
@@ -477,14 +477,14 @@ fn post_shutdown(port: u16, token: &str) -> Result<(), String> {
 /// Returns what happened, in words fit for printing.
 pub fn stop(dir: &Path) -> Result<String, String> {
     let Some(endpoint) = lock::owner(dir) else {
-        return Ok(format!("nothing is running on {}", dir.display()));
+        return Ok(format!("nothing is running on {}", crate::style::path(dir)));
     };
     let (Some(port), Some(token)) = (endpoint.port, endpoint.token.clone()) else {
         return Err(format!(
             "process {} owns {} but is not a daemon, so there is nothing to stop.\n\
              It will release the directory when it exits.",
             endpoint.pid,
-            dir.display()
+            crate::style::path(dir)
         ));
     };
 
@@ -497,7 +497,7 @@ pub fn stop(dir: &Path) -> Result<String, String> {
             return Ok(format!(
                 "stopped the daemon (process {}) on {}",
                 endpoint.pid,
-                dir.display()
+                crate::style::path(dir)
             ));
         }
         std::thread::sleep(POLL);
@@ -505,7 +505,7 @@ pub fn stop(dir: &Path) -> Result<String, String> {
     Err(format!(
         "asked process {} to stop, and it still holds {} ten seconds later",
         endpoint.pid,
-        dir.display()
+        crate::style::path(dir)
     ))
 }
 

@@ -39,6 +39,9 @@ struct ClientReport {
     user_path: Option<String>,
     /// The project-scope config path, which MemFork always knows.
     project_path: Option<String>,
+    /// What about this registry entry could not be confirmed against the
+    /// client's documentation, when something could not.
+    unverified: Option<String>,
 }
 
 impl ClientReport {
@@ -100,6 +103,7 @@ fn gather(home: Option<&str>) -> Vec<ClientReport> {
                 checked,
                 user_path,
                 project_path,
+                unverified: c.unverified.clone(),
             }
         })
         .collect()
@@ -120,11 +124,12 @@ impl Storage {
         match (&self.path, self.source) {
             (Some(path), Some(source)) => {
                 let why = match source {
+                    crate::persist::Source::Policy => "pinned by the machine policy",
                     crate::persist::Source::Environment => "from MEMFORK_DATA_DIR",
                     crate::persist::Source::Project => "this project's own",
                     crate::persist::Source::PerUser => "per-user",
                 };
-                format!("{} ({why})", path.display())
+                format!("{} ({why})", crate::style::path(path))
             }
             _ => match &self.why {
                 Some(why) => format!("(none: {})", why.lines().next().unwrap_or(why)),
@@ -167,6 +172,7 @@ impl Storage {
 
     fn source_name(&self) -> Option<&'static str> {
         self.source.map(|s| match s {
+            crate::persist::Source::Policy => "policy",
             crate::persist::Source::Environment => "environment",
             crate::persist::Source::Project => "project",
             crate::persist::Source::PerUser => "per-user",
@@ -202,16 +208,35 @@ fn describe(checked: &Checked) -> String {
     }
 }
 
-/// The report as text.
-pub fn text() -> String {
-    let home = clients::home_dir();
-    let mut out = String::new();
+/// The status word for a client, the same in both reports.
+fn status_word(r: &ClientReport) -> &'static str {
+    match &r.registration {
+        Registration::Yes => "registered",
+        // Not a detail: a client in this state shows no MemFork tools at
+        // all, and calling it "registered" is how somebody spends an hour
+        // wondering why.
+        Registration::Stale { .. } => "registered, but not to this MemFork",
+        Registration::No if r.installed => "not registered",
+        Registration::No => "not installed",
+        // A client that is not here at all is simply not installed; why
+        // MemFork could not ask it is beside the point.
+        Registration::Unknown(_) if !r.installed => "not installed",
+        Registration::Unknown(_) => "unknown",
+    }
+}
 
+/// The lines every report starts with: what this is, where memory is, and
+/// what is serving it.
+fn header(home: Option<&str>, storage: &Storage) -> String {
+    let mut out = String::new();
     out.push_str(&format!("memfork {}\n", env!("CARGO_PKG_VERSION")));
     // The path on its own. Printing the whole command line here made the
     // binary look as though it were called `memfork.exe mcp`.
     let launch = launch::resolve();
-    out.push_str(&format!("  binary        {}\n", launch.program.display()));
+    out.push_str(&format!(
+        "  binary        {}\n",
+        crate::style::path(&launch.program)
+    ));
     // And the command, when the command is more than that path: a wheel
     // installed without a console script is launched as `python -m memfork`,
     // and a client has to be told so. Appending the subcommand is not a
@@ -224,17 +249,140 @@ pub fn text() -> String {
     }
     out.push_str(&format!(
         "  home          {}\n",
-        home.as_deref().unwrap_or("(not found)")
+        home.map_or_else(
+            || "(not found)".to_owned(),
+            |h| crate::style::path(std::path::Path::new(h))
+        )
     ));
+    out.push_str(&format!("  data dir      {}\n", storage.describe_dir()));
+    out.push_str(&format!("  daemon        {}\n", storage.describe_daemon()));
+    out.push_str(&format!("  policy        {}\n", policy_line()));
+    out
+}
+
+/// The policy in one line: what is in force, or where a file would go.
+fn policy_line() -> String {
+    match crate::policy::current() {
+        Ok(p) if p.in_force() => p.summary(),
+        Ok(p) => format!(
+            "none (an administrator may place one at {})",
+            p.machine_path
+                .as_deref()
+                .map_or_else(|| "the machine location".to_owned(), crate::style::path)
+        ),
+        Err(e) => format!("UNREADABLE: {}", e.why),
+    }
+}
+
+/// The policy section of the full report.
+fn policy_section() -> String {
+    let mut out = String::from("Policy\n");
+    match crate::policy::current() {
+        Ok(p) => {
+            out.push_str(&format!(
+                "  machine file  {} ({})\n",
+                p.machine_path
+                    .as_deref()
+                    .map_or_else(|| "(no machine location)".to_owned(), crate::style::path),
+                if p.machine_present {
+                    "present, in force"
+                } else {
+                    "not present"
+                }
+            ));
+            match &p.extra_path {
+                Some(extra) => out.push_str(&format!(
+                    "  extra file    {} (from {}; the machine file wins where both speak)\n",
+                    crate::style::path(extra),
+                    crate::policy::EXTRA_ENV
+                )),
+                None => out.push_str(&format!(
+                    "  extra file    none ({} is not set)\n",
+                    crate::policy::EXTRA_ENV
+                )),
+            }
+            for feature in crate::policy::Feature::ALL {
+                out.push_str(&format!(
+                    "  {:<13} {}\n",
+                    feature.key(),
+                    if p.allows(feature) { "allowed" } else { "off" }
+                ));
+            }
+            out.push_str(&format!(
+                "  data_dir      {}\n",
+                p.data_dir()
+                    .map_or_else(|| "not pinned".to_owned(), crate::style::path)
+            ));
+        }
+        Err(e) => {
+            out.push_str(&format!("  file          {}\n", e.path));
+            out.push_str(&format!("  UNREADABLE    {}\n", e.why));
+            out.push_str("  Every command but this one stops until an administrator fixes it.\n");
+        }
+    }
+    out
+}
+
+/// The closing line: what, if anything, to do.
+fn closing(reports: &[ClientReport]) -> String {
+    // Only suggest `memfork init` when there is something for it to do.
+    // Printing it unconditionally told people to fix what was not broken.
+    let pending: Vec<&str> = reports
+        .iter()
+        .filter(|r| r.needs_init())
+        .map(|r| r.display.as_str())
+        .collect();
+    if !pending.is_empty() {
+        format!(
+            "Run `memfork init` to register with: {}.\n",
+            pending.join(", ")
+        )
+    } else if reports.iter().any(|r| r.registration == Registration::Yes) {
+        "Every detected client has MemFork registered.\n".to_owned()
+    } else {
+        "No MCP clients were detected here.\n".to_owned()
+    }
+}
+
+/// The short report: the header, one line per client, and what to do.
+pub fn short() -> String {
+    let home = clients::home_dir();
+    let storage = storage();
+    let mut out = header(home.as_deref(), &storage);
+    out.push('\n');
+    let reports = gather(home.as_deref());
+    out.push_str("Clients\n");
+    let width = reports.iter().map(|r| r.display.len()).max().unwrap_or(0);
+    for r in &reports {
+        let mut line = format!("  {:<width$}  {}", r.display, status_word(r));
+        if let Registration::Stale { found } = &r.registration {
+            line.push_str(&format!(
+                " (points at {})",
+                found.as_deref().unwrap_or("another MemFork")
+            ));
+        }
+        if r.unverified.is_some() {
+            line.push_str("  (registry entry unverified)");
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str(&closing(&reports));
+    out
+}
+
+/// The report as text.
+pub fn text() -> String {
+    let home = clients::home_dir();
+    let storage = storage();
+    let mut out = header(home.as_deref(), &storage);
     out.push_str(&format!(
         "  engine        memfork-core {}\n",
         memfork_core::VERSION
     ));
     out.push_str(&format!("  mcp tools     {}\n", tools::all().len()));
-    let storage = storage();
-    out.push_str(&format!("  data dir      {}\n", storage.describe_dir()));
     out.push_str(&format!("  lock          {}\n", storage.describe_lock()));
-    out.push_str(&format!("  daemon        {}\n", storage.describe_daemon()));
     out.push('\n');
 
     out.push_str("Persistence\n");
@@ -243,22 +391,13 @@ pub fn text() -> String {
     }
     out.push('\n');
 
+    out.push_str(&policy_section());
+    out.push('\n');
+
     let reports = gather(home.as_deref());
     out.push_str("Clients\n");
     for r in &reports {
-        let status = match &r.registration {
-            Registration::Yes => "registered",
-            // Not a detail: a client in this state shows no MemFork tools at
-            // all, and calling it "registered" is how somebody spends an hour
-            // wondering why.
-            Registration::Stale { .. } => "registered, but not to this MemFork",
-            Registration::No if r.installed => "not registered",
-            Registration::No => "not installed",
-            // A client that is not here at all is simply not installed; why
-            // MemFork could not ask it is beside the point.
-            Registration::Unknown(_) if !r.installed => "not installed",
-            Registration::Unknown(_) => "unknown",
-        };
+        let status = status_word(r);
         out.push_str(&format!("  {} ({})  [{status}]\n", r.display, r.id));
 
         match &r.cli {
@@ -293,26 +432,13 @@ pub fn text() -> String {
             out.push_str(&format!("    project     {path}\n"));
         }
         out.push_str(&format!("    verified    {} — {}\n", r.verified, r.docs));
+        if let Some(why) = &r.unverified {
+            out.push_str(&format!("    unverified  {why}\n"));
+        }
     }
 
-    // Only suggest `memfork init` when there is something for it to do.
-    // Printing it unconditionally told people to fix what was not broken.
-    let pending: Vec<&str> = reports
-        .iter()
-        .filter(|r| r.needs_init())
-        .map(|r| r.display.as_str())
-        .collect();
     out.push('\n');
-    if !pending.is_empty() {
-        out.push_str(&format!(
-            "Run `memfork init` to register with: {}.\n",
-            pending.join(", ")
-        ));
-    } else if reports.iter().any(|r| r.registration == Registration::Yes) {
-        out.push_str("Every detected client has MemFork registered.\n");
-    } else {
-        out.push_str("No MCP clients were detected here.\n");
-    }
+    out.push_str(&closing(&reports));
     out
 }
 
@@ -340,6 +466,10 @@ pub fn json() -> Json {
             "enabled": true,
             "note": DURABILITY_NOTE,
         },
+        "policy": match crate::policy::current() {
+            Ok(p) => p.to_json(),
+            Err(e) => json!({ "error": e.to_string(), "file": e.path }),
+        },
         "needs_init": reports.iter().any(ClientReport::needs_init),
         "clients": reports.iter().map(|r| json!({
             "id": r.id,
@@ -366,6 +496,7 @@ pub fn json() -> Json {
             "user_config": r.user_path,
             "project_config": r.project_path,
             "verified": r.verified,
+            "unverified": r.unverified,
             "docs": r.docs,
         })).collect::<Vec<_>>(),
     })

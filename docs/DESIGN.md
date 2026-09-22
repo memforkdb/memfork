@@ -290,7 +290,13 @@ Subcommands:
 - **[v0.9]** `memfork mcp --namespace <name>` names the project a session works
   in (§6.3); otherwise `MEMFORK_NAMESPACE`, otherwise the repository.
 - `memfork doctor` — print version, data dir, lock status, detected tools, and whether
-  each tool's config contains the MemFork entry.
+  each tool's config contains the MemFork entry. **[v0.14]** Short by default —
+  the binary, the data directory, the daemon, the policy in force (§5.4) and one
+  line per client — with the whole report, including how each client was asked
+  and where each registry entry was verified, behind `--verbose`. `--json` is
+  always the whole report. Every path a person reads is printed with the
+  running OS's own separator throughout (`style::path`): `MEMFORK_DATA_DIR` set
+  from a Unix shell on Windows used to print half one way and half the other.
 - `memfork put|get|del|ls|search|fork|merge|discard|branches|log|at|diff` — thin CLI
   over the core for humans and scripts. **[v0.3]** `search` is included so the CLI
   can exercise §4.2's search; every command takes `--branch` (default `main`) and
@@ -477,6 +483,43 @@ meaning; the field set is held by a test and every field is described in
 [`docs/EVENTS.md`](EVENTS.md), which a second test checks. There is no
 OpenTelemetry exporter: the Rust SDK is not a light dependency, and the
 versioned stream is the integration point.
+
+### 5.4 The machine policy
+**[v0.14]** An administrator can place one file that every MemFork on the
+machine obeys and no user can override: `%ProgramData%\memfork\policy.toml`
+on Windows, `/Library/Application Support/memfork/policy.toml` on macOS,
+`/etc/memfork/policy.toml` on Linux — the system-wide counterpart of the
+per-user data directory (§4.5), resolved the same way, against an explicit OS
+and environment so all three are tested from any one. It is TOML with every
+key optional: `dashboard`, `race`, `autopilot`, `maintenance_tasks`,
+`sampling` and `secret_overrides` are booleans that default to allowed, and
+`data_dir` pins where memory is kept for everyone.
+
+Precedence is the whole point, so it is structural rather than a rule per
+feature. The data directory is chosen in one function (`datadir::choose`)
+that every command with `--data-dir` goes through: a pinned directory is used
+whatever the flag, `MEMFORK_DATA_DIR` or a project's `.memfork` say, and a
+flag naming another is refused with the reason. `allow_secret` is read in one
+place (`secrets::Allow::parse`), which the tools, the command line and plan
+files share, so a policy that forbids overrides forbids them everywhere.
+Maintenance tasks are gated where they are added and `memfork maintain on` is
+refused. The features that do not exist yet — the dashboard, race, autopilot,
+sampling — are parsed and reported now, so a policy written today keeps
+holding when they land, and each consults `policy::allows` as it arrives.
+
+A second file may be named in `MEMFORK_POLICY_FILE`. It is how the tests, and
+a person trying a policy out, apply one without writing to a system
+directory, and it cannot weaken the machine file: the files are combined
+with the machine file applied last, so wherever both set a key the machine
+file wins, and the extra file can only ever add a restriction. A test holds
+that rule.
+
+A policy that cannot be read — malformed, or with a key this version does
+not know — stops every command except `memfork doctor`, which reports it.
+The alternative, running as though the file were empty, would turn an
+administrator's typo into no policy at all with nothing to say so. Doctor
+shows the policy in force in its first lines, and in full under `--verbose`:
+each file, whether it is present, every feature's answer, and the pin.
 
 ## 6. MCP tools
 All tools take an optional `branch` (default: the session's current branch).

@@ -442,8 +442,14 @@ pub enum Command {
         remove: bool,
     },
 
-    /// Report version, paths, persistence and which clients know about MemFork.
-    Doctor,
+    /// Report version, paths, the daemon, the policy in force and which
+    /// clients know about MemFork. Short by default; `--verbose` has it all.
+    Doctor {
+        /// The full report: how each client was asked, every config path,
+        /// where each registry entry was verified, and the persistence note.
+        #[arg(long)]
+        verbose: bool,
+    },
 
     /// Commit in a loop until killed, for the crash-recovery tests.
     ///
@@ -632,7 +638,7 @@ impl Command {
                 | Command::Stop
                 | Command::Watch { .. }
                 | Command::Init { .. }
-                | Command::Doctor
+                | Command::Doctor { .. }
         )
     }
 
@@ -665,7 +671,7 @@ impl Command {
             Command::Call { .. } => "call",
             Command::Serve { .. } => "serve",
             Command::Init { .. } => "init",
-            Command::Doctor => "doctor",
+            Command::Doctor { .. } => "doctor",
             Command::CrashWriter { .. } => "crash-writer",
             Command::Stop => "stop",
             Command::Watch { .. } => "watch",

@@ -466,6 +466,40 @@ The thing MemFork is for is the shape of agent work: try something, then either
 keep it or pretend it never happened. That is a branch, and branching state is
 what MemFork does that a key-value store does not.
 
+## For administrators
+
+One file switches features off for every user of a machine and can pin where
+memory is kept. Nothing a user sets — a flag, an environment variable, a
+project's own `.memfork` directory — overrides it. `memfork doctor` shows the
+policy in force and where the file goes on this machine:
+
+| OS | Policy file |
+|---|---|
+| Windows | `%ProgramData%\memfork\policy.toml` |
+| macOS | `/Library/Application Support/memfork/policy.toml` |
+| Linux | `/etc/memfork/policy.toml` |
+
+Every key is optional:
+
+```toml
+dashboard = false          # memfork ui
+race = false               # memfork race
+autopilot = false          # memory following the git branch, automatic forks
+maintenance_tasks = false  # tasks MemFork adds to tidy a project's memory
+sampling = false           # asking a client's model for a summary
+secret_overrides = false   # allow_secret / --allow-secret
+data_dir = "/srv/memfork"  # where memory is kept, for everyone
+```
+
+A file that cannot be read stops every command except `memfork doctor`, which
+says what is wrong with it: a typo in a machine-wide rule should be found, not
+quietly ignored. `MEMFORK_POLICY_FILE` names a second file for trying a policy
+out; where both set a key the machine file wins, so it can only add
+restrictions. The rest of what an organisation needs to know — what listens
+where, what is stored, how to audit it, how to install without reaching the
+internet — is in [docs/ADOPTING.md](docs/ADOPTING.md) and
+[SECURITY.md](SECURITY.md).
+
 ## What it does not do
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/icons/shield-check-dark.svg"><img src="docs/assets/icons/shield-check-light.svg" alt="" width="16"></picture>
@@ -586,7 +620,7 @@ to the server.
 | `mcp` | serve MCP over stdio — what clients run |
 | `serve` | run the shared server (started for you when needed) |
 | `stop` | shut it down |
-| `init`, `doctor` | register with clients; report what is going on |
+| `init`, `doctor` | register with clients; report what is going on (`doctor --verbose` for the whole report) |
 | `init --project` | write MemFork's instruction block into this repository's client instruction files |
 | `tools --format openai\|anthropic\|gemini` | the tool schemas in a vendor's format |
 

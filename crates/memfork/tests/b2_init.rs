@@ -652,7 +652,11 @@ fn b2_doctor_reports_what_init_did() {
 
     // And doctor says, in both renderings, where memory is kept.
     assert_eq!(doc["persistence"]["enabled"], true);
-    let text = world.memfork().arg("doctor").assert().success();
+    let text = world
+        .memfork()
+        .args(["doctor", "--verbose"])
+        .assert()
+        .success();
     let text = String::from_utf8_lossy(&text.get_output().stdout).into_owned();
     assert!(text.contains("survives restarts"), "{text}");
 }

@@ -105,6 +105,8 @@ pub enum Refused {
     Secret(Found),
     /// The override named a rule that does not exist.
     UnknownRule(String),
+    /// The machine policy does not allow overrides at all.
+    Forbidden(String),
     /// The shipped rules did not load. A test keeps this from happening.
     Rules(String),
 }
@@ -119,6 +121,7 @@ impl std::fmt::Display for Refused {
                 ids().join(", ")
             ),
             Refused::Rules(why) => write!(f, "the secret rules did not load: {why}"),
+            Refused::Forbidden(why) => write!(f, "{why}"),
         }
     }
 }
@@ -172,6 +175,13 @@ impl Allow {
         let Some(raw) = raw else {
             return Ok(Allow::default());
         };
+        // The one place an override is read, so the machine policy's answer
+        // reaches the tools, the command line and plan files alike.
+        if !crate::policy::allows(crate::policy::Feature::SecretOverrides) {
+            return Err(Refused::Forbidden(crate::policy::refusal(
+                crate::policy::Feature::SecretOverrides,
+            )));
+        }
         let known = ids();
         let mut out = Vec::new();
         for id in raw.split(',').map(str::trim).filter(|s| !s.is_empty()) {

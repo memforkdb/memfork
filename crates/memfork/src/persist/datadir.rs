@@ -9,7 +9,7 @@
 //! set of environment variables rather than against the machine it runs on, so
 //! all three platforms' answers are checked wherever the tests happen to run.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::clients::Os;
 
@@ -36,6 +36,8 @@ pub const FORBID_PER_USER_ENV: &str = "MEMFORK_FORBID_PER_USER_DATA_DIR";
 /// Why the data directory is where it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
+    /// The machine policy pins it (`crate::policy`), for every user.
+    Policy,
     /// `MEMFORK_DATA_DIR` said so.
     Environment,
     /// A `.memfork` directory already exists beside the working directory.
@@ -68,6 +70,22 @@ pub enum NoDataDir {
         /// The directory that was refused.
         path: PathBuf,
     },
+    /// The machine policy pins the data directory, and something asked for
+    /// another one.
+    #[error(
+        "the machine policy pins the data directory to {pinned}, so {asked} cannot be used. \
+         Drop --data-dir and {DATA_DIR_ENV}: memory for every user on this machine is kept \
+         where the policy says, and only an administrator can change that."
+    )]
+    Pinned {
+        /// Where the policy keeps it.
+        pinned: String,
+        /// What was asked for instead.
+        asked: String,
+    },
+    /// The policy file itself could not be read.
+    #[error("{0}")]
+    Policy(crate::policy::Error),
 }
 
 /// Look up an environment variable.
@@ -168,11 +186,19 @@ pub fn per_user(os: Os, env: &impl Env) -> Option<PathBuf> {
 
 /// Resolve the data directory on this machine.
 ///
-/// Refuses the per-user directory when [`FORBID_PER_USER_ENV`] is set, or when
-/// this is a test build of the library. Explicit choices — `MEMFORK_DATA_DIR`,
-/// or a project's own `.memfork` — are always honoured, so a test that says
-/// where its data goes is unaffected.
+/// The machine policy comes first: a pinned directory is used whatever the
+/// environment or the working directory say. Otherwise, refuses the per-user
+/// directory when [`FORBID_PER_USER_ENV`] is set, or when this is a test build
+/// of the library. Explicit choices — `MEMFORK_DATA_DIR`, or a project's own
+/// `.memfork` — are always honoured, so a test that says where its data goes
+/// is unaffected.
 pub fn here() -> Result<DataDir, NoDataDir> {
+    if let Some(pinned) = pinned()? {
+        return Ok(DataDir {
+            path: pinned,
+            source: Source::Policy,
+        });
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let resolved = resolve(Os::current(), &RealEnv, &cwd).ok_or(NoDataDir::Unknown)?;
     if resolved.source == Source::PerUser && per_user_is_forbidden() {
@@ -181,6 +207,36 @@ pub fn here() -> Result<DataDir, NoDataDir> {
         });
     }
     Ok(resolved)
+}
+
+/// The data directory to use when a command may name one with `--data-dir`.
+///
+/// The one place the flag is honoured, so that the machine policy's pin is
+/// applied to every command alike: a pinned directory is used, and a flag
+/// naming any other is refused with the reason.
+pub fn choose(explicit: Option<&str>) -> Result<DataDir, NoDataDir> {
+    match (pinned()?, explicit) {
+        (Some(pinned), Some(asked)) if Path::new(asked) != pinned => Err(NoDataDir::Pinned {
+            pinned: crate::style::path(&pinned),
+            asked: crate::style::path(Path::new(asked)),
+        }),
+        (Some(pinned), _) => Ok(DataDir {
+            path: pinned,
+            source: Source::Policy,
+        }),
+        (None, Some(asked)) => Ok(DataDir {
+            path: PathBuf::from(asked),
+            source: Source::Environment,
+        }),
+        (None, None) => here(),
+    }
+}
+
+/// The directory the machine policy pins, if it pins one.
+fn pinned() -> Result<Option<PathBuf>, NoDataDir> {
+    crate::policy::current()
+        .map(|p| p.data_dir().map(Path::to_path_buf))
+        .map_err(NoDataDir::Policy)
 }
 
 /// Whether this process may fall back to the real per-user directory.
@@ -300,6 +356,9 @@ mod tests {
                 assert!(path.ends_with("memfork"), "{path:?}");
             }
             Err(NoDataDir::Unknown) => {}
+            // A machine running the tests may carry a policy; that is its
+            // administrator's business, not this test's.
+            Err(NoDataDir::Pinned { .. } | NoDataDir::Policy(_)) => {}
             Ok(resolved) => assert_ne!(
                 resolved.source,
                 Source::PerUser,

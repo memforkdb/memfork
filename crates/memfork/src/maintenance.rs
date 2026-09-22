@@ -187,7 +187,9 @@ pub fn tend(
     ns: &str,
     shared: &Shared,
 ) -> Result<Vec<Json>, memfork_core::Error> {
-    if !shared.sidecar.maintenance_on(ns) {
+    if !shared.sidecar.maintenance_on(ns)
+        || !crate::policy::allows(crate::policy::Feature::MaintenanceTasks)
+    {
         return Ok(Vec::new());
     }
     let holding = firing(db, branch, ns, shared)?;

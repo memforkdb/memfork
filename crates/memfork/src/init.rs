@@ -343,7 +343,12 @@ pub fn apply(plan: &ClientPlan) -> Result<Option<String>, String> {
             let output = std::process::Command::new(resolved)
                 .args(args)
                 .output()
-                .map_err(|e| format!("cannot run `{binary}` ({}): {e}", resolved.display()))?;
+                .map_err(|e| {
+                    format!(
+                        "cannot run `{binary}` ({}): {e}",
+                        crate::style::path(resolved)
+                    )
+                })?;
             if output.status.success() {
                 Ok(None)
             } else {
@@ -389,7 +394,7 @@ pub fn apply(plan: &ClientPlan) -> Result<Option<String>, String> {
                 detail.trim()
             ))
         }
-        Action::WriteFile(e) => Ok(edit::apply(e)?.map(|p| p.display().to_string())),
+        Action::WriteFile(e) => Ok(edit::apply(e)?.map(|p| crate::style::path(&p))),
         Action::AlreadyRegistered { .. }
         | Action::StaleElsewhere { .. }
         | Action::NotInstalled

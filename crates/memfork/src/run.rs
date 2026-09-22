@@ -76,6 +76,19 @@ pub fn run(cli: Cli) -> ExitCode {
         _ => channel,
     };
     crate::style::set_preferences(choice, recorded);
+    // A machine policy that cannot be read stops everything but the command
+    // that reports it. Checked here, once, so no subcommand can forget.
+    if let Err(e) = crate::policy::current() {
+        if !matches!(cli.command, Command::Doctor { .. }) {
+            let mut stderr = std::io::stderr().lock();
+            if cli.global.json {
+                let _ = writeln!(stderr, "{}", json!({"error": e.to_string()}));
+            } else {
+                let _ = writeln!(stderr, "memfork: {e}");
+            }
+            return ExitCode::FAILURE;
+        }
+    }
     let persist = |p: &PersistArgs| PersistArgs {
         ephemeral: cli.global.ephemeral,
         data_dir: cli.global.data_dir.clone(),
@@ -139,7 +152,7 @@ pub fn run(cli: Cli) -> ExitCode {
                     scope,
                     ..
                 } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
-                Command::Doctor => run_doctor(&mut stdout, &cli.global),
+                Command::Doctor { verbose } => run_doctor(&mut stdout, &cli.global, *verbose),
                 Command::Plan {
                     action: PlanAction::Templates,
                     ..
@@ -217,14 +230,12 @@ fn emit(
     }
 }
 
-/// The data directory the global `--data-dir` names, or the usual one.
+/// The data directory the global `--data-dir` names, or the usual one — or
+/// the one the machine policy pins, whatever was asked.
 fn data_dir(global: &GlobalArgs) -> Result<std::path::PathBuf, ExecError> {
-    match &global.data_dir {
-        Some(path) => Ok(std::path::PathBuf::from(path)),
-        None => persist::datadir::here()
-            .map(|d| d.path)
-            .map_err(|e| ExecError::Usage(e.to_string())),
-    }
+    persist::datadir::choose(global.data_dir.as_deref())
+        .map(|d| d.path)
+        .map_err(|e| ExecError::Usage(e.to_string()))
 }
 
 /// The daemon for `dir`, starting it — which replays the log, so it can take a
@@ -401,7 +412,7 @@ fn read_plan(file: Option<&str>, allow: Option<&str>) -> Result<ReadPlan, ExecEr
     });
     let shown = relative
         .clone()
-        .unwrap_or_else(|| path.display().to_string());
+        .unwrap_or_else(|| crate::style::path(&path));
     let text = crate::plans::read_file(&path).map_err(|e| {
         ExecError::Usage(match file {
             None => format!(
@@ -419,7 +430,7 @@ fn read_plan(file: Option<&str>, allow: Option<&str>) -> Result<ReadPlan, ExecEr
         return Err(ExecError::Usage(format!(
             "{shown} is outside this project ({}), and it has acceptance commands, which run \
              only from a plan file in the project; move it inside",
-            root.display()
+            crate::style::path(&root)
         )));
     }
     Ok(ReadPlan {
@@ -525,11 +536,12 @@ fn run_plan_new(
     if path.exists() && !force {
         return Err(ExecError::Usage(format!(
             "{} is already there; write elsewhere, or pass --force to replace it",
-            path.display()
+            crate::style::path(&path)
         )));
     }
-    std::fs::write(&path, &template.text)
-        .map_err(|e| ExecError::Usage(format!("cannot write {}: {e}", path.display())))?;
+    std::fs::write(&path, &template.text).map_err(|e| {
+        ExecError::Usage(format!("cannot write {}: {e}", crate::style::path(&path)))
+    })?;
     let tasks = crate::plans::parse(&template.text)
         .map(|t| t.len())
         .unwrap_or(0);
@@ -545,7 +557,7 @@ fn run_plan_new(
     writeln!(
         out,
         "wrote {} from the `{name}` template: {tasks} tasks\n  fill in each empty `accept` with a command that exits 0 when that task is done, then run `memfork plan write`",
-        path.display()
+        crate::style::path(&path)
     )
     .map_err(io_err)
 }
@@ -646,7 +658,7 @@ fn run_watch(
                     eprintln!(
                         "memfork: no daemon is running for {}; waiting for one to start \
                          (a client's first tool call starts it)",
-                        dir.display()
+                        crate::style::path(&dir)
                     );
                     said_waiting = true;
                 }
@@ -717,7 +729,7 @@ fn watch_header(
             "127.0.0.1:{}, version {}, store {}",
             hello["port"],
             hello["version"].as_str().unwrap_or("?"),
-            dir.display()
+            crate::style::path(dir)
         ))
     )?;
     let clients: Vec<String> = hello["clients"]
@@ -834,7 +846,7 @@ fn open_database(
         persist::Store::open(&dir.path, options).map_err(|e| ExecError::Usage(e.to_string()))?;
     apply_eviction(&db, args);
 
-    let mut note = format!("data directory {}", dir.path.display());
+    let mut note = format!("data directory {}", crate::style::path(&dir.path));
     if !recovery.is_empty() {
         note.push_str(&format!(
             "; recovered {} change(s) from the snapshot and {} from the log",
@@ -895,12 +907,9 @@ fn run_crash_writer(args: &PersistArgs, progress: &str, limit: u64) -> Result<()
 
 /// Resolve the data directory a persistent command should use.
 fn resolve_dir(args: &PersistArgs) -> Result<std::path::PathBuf, ExecError> {
-    match &args.data_dir {
-        Some(path) => Ok(std::path::PathBuf::from(path)),
-        None => persist::datadir::here()
-            .map(|d| d.path)
-            .map_err(|e| ExecError::Usage(e.to_string())),
-    }
+    persist::datadir::choose(args.data_dir.as_deref())
+        .map(|d| d.path)
+        .map_err(|e| ExecError::Usage(e.to_string()))
 }
 
 /// Run the shared daemon.
@@ -942,12 +951,9 @@ fn run_serve(args: &PersistArgs, port: u16, session_seconds: u64) -> Result<(), 
 
 /// Stop the daemon for a data directory.
 fn run_stop(data_dir: Option<&str>) -> Result<(), ExecError> {
-    let dir = match data_dir {
-        Some(path) => std::path::PathBuf::from(path),
-        None => persist::datadir::here()
-            .map(|d| d.path)
-            .map_err(|e| ExecError::Usage(e.to_string()))?,
-    };
+    let dir = persist::datadir::choose(data_dir)
+        .map(|d| d.path)
+        .map_err(|e| ExecError::Usage(e.to_string()))?;
     let said = daemon::stop(&dir).map_err(ExecError::Usage)?;
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{said}").map_err(io_err)
@@ -1047,7 +1053,7 @@ fn run_mcp(args: &PersistArgs, namespace_flag: Option<&str>) -> Result<(), ExecE
     // on its behalf and left behind.
     eprintln!(
         "memfork: sharing the memory in {}; the daemon starts when a tool is called; {}",
-        dir.display(),
+        crate::style::path(&dir),
         describe_namespace(&namespace)
     );
 
@@ -1243,7 +1249,7 @@ fn run_init_project(
         ExecError::Usage(format!(
             "{} is not inside a repository (no `.git` above it). Run this from \
              the repository whose instruction files should carry the block.",
-            cwd.display()
+            crate::style::path(&cwd)
         ))
     })?;
 
@@ -1297,7 +1303,7 @@ fn run_init_project(
             } else {
                 "the MemFork block"
             },
-            root.display()
+            crate::style::path(&root)
         )
         .map_err(io_err)?;
     }
@@ -1543,13 +1549,13 @@ fn describe(action: &init::Action, dry_run: bool) -> (&'static str, String) {
                 (false, clients::edit::Change::Update) => "update",
                 (false, _) => "add",
             },
-            edit.path.display().to_string(),
+            crate::style::path(&edit.path),
         ),
         init::Action::AlreadyRegistered { checked } => (
             "already registered",
             match checked {
                 clients::Checked::Command(cmd) => format!("`{cmd}` says so"),
-                clients::Checked::File(path) => path.display().to_string(),
+                clients::Checked::File(path) => crate::style::path(path),
                 clients::Checked::Nothing => String::new(),
             },
         ),
@@ -1569,7 +1575,7 @@ fn past_tense(verb: &str) -> &'static str {
 }
 
 /// Report what this install is and what it is talking to.
-fn run_doctor(out: &mut impl Write, global: &GlobalArgs) -> Result<(), ExecError> {
+fn run_doctor(out: &mut impl Write, global: &GlobalArgs, verbose: bool) -> Result<(), ExecError> {
     let flags = doctor_flags(global);
     if global.json {
         let mut report = doctor::json();
@@ -1578,7 +1584,12 @@ fn run_doctor(out: &mut impl Write, global: &GlobalArgs) -> Result<(), ExecError
         }
         writeln!(out, "{report}").map_err(io_err)
     } else {
-        write!(out, "{}", doctor::text()).map_err(io_err)?;
+        let report = if verbose {
+            doctor::text()
+        } else {
+            doctor::short()
+        };
+        write!(out, "{report}").map_err(io_err)?;
         if let Some(flags) = flags {
             writeln!(
                 out,
@@ -1587,6 +1598,9 @@ fn run_doctor(out: &mut impl Write, global: &GlobalArgs) -> Result<(), ExecError
                 flags["count"]
             )
             .map_err(io_err)?;
+        }
+        if !verbose {
+            writeln!(out, "\n`memfork doctor --verbose` has the full report.").map_err(io_err)?;
         }
         Ok(())
     }

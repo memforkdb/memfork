@@ -345,23 +345,34 @@ pub fn execute_in(
 
         Command::Maintain { setting, namespace } => {
             let ns = namespace.clone().unwrap_or_else(|| ctx.namespace.clone());
+            let feature = crate::policy::Feature::MaintenanceTasks;
+            let policy_allows = crate::policy::allows(feature);
             match setting.as_str() {
+                "on" if !policy_allows => {
+                    return Err(ExecError::Usage(crate::policy::refusal(feature)));
+                }
                 "on" => ctx.shared.sidecar.set_maintenance(&ns, true),
                 "off" => ctx.shared.sidecar.set_maintenance(&ns, false),
                 _ => {}
             }
-            let on = ctx.shared.sidecar.maintenance_on(&ns);
+            let on = ctx.shared.sidecar.maintenance_on(&ns) && policy_allows;
             let fired = ctx.shared.sidecar.fired_all(&ns);
             let mut text = vec![format!(
-                "maintenance tasks are {} for `{ns}`",
-                if on { "on" } else { "off" }
+                "maintenance tasks are {} for `{ns}`{}",
+                if on { "on" } else { "off" },
+                if policy_allows {
+                    ""
+                } else {
+                    " (switched off by the machine policy)"
+                }
             )];
             for (trigger, task) in &fired {
                 text.push(format!("  {trigger}: {task} is outstanding"));
             }
             Ok(Outcome::new(
                 text,
-                json!({"op": "maintain", "namespace": ns, "on": on, "outstanding": fired}),
+                json!({"op": "maintain", "namespace": ns, "on": on, "outstanding": fired,
+                       "policy_allows": policy_allows}),
             ))
         }
 
@@ -784,7 +795,7 @@ pub fn execute_in(
         | Command::Serve { .. }
         | Command::Stop
         | Command::Watch { .. }
-        | Command::Doctor => Err(ExecError::Usage(format!(
+        | Command::Doctor { .. } => Err(ExecError::Usage(format!(
             "`memfork {}` is not an operation on a database",
             command.name()
         ))),

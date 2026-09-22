@@ -331,6 +331,23 @@ pub fn preferences() -> (ColorChoice, Channel) {
         .unwrap_or((ColorChoice::Never, Channel::Protocol))
 }
 
+/// A path as it is shown to a person: with this OS's own separator
+/// throughout.
+///
+/// A path arrives with whatever separators it was typed with — `MEMFORK_DATA_DIR`
+/// set from Git Bash on Windows has forward slashes — and printing it as it
+/// came showed `C:/Users/ada\.memfork`, half one thing and half the other.
+/// Windows accepts either when the path is used, so this changes only what is
+/// printed. On Unix a backslash is an ordinary character and is left alone.
+pub fn path(p: &std::path::Path) -> String {
+    let shown = p.display().to_string();
+    if cfg!(windows) {
+        shown.replace('/', "\\")
+    } else {
+        shown
+    }
+}
+
 /// A spinner on stderr, for something that really takes a while: starting the
 /// daemon (which replays the log), asking a client's own command.
 ///
@@ -584,5 +601,20 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "dark blues used as text: {bad:?}");
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    #[test]
+    fn a_shown_path_uses_one_separator_on_windows_and_is_untouched_elsewhere() {
+        let mixed = std::path::Path::new(r"C:/Users/ada\AppData/Local");
+        let shown = super::path(mixed);
+        if cfg!(windows) {
+            assert_eq!(shown, r"C:\Users\ada\AppData\Local");
+        } else {
+            assert_eq!(shown, r"C:/Users/ada\AppData/Local");
+        }
+        assert_eq!(super::path(std::path::Path::new("plain")), "plain");
     }
 }

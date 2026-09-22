@@ -217,6 +217,11 @@ fn the_phase_two_subcommands_work() {
         .arg("doctor")
         .assert()
         .success()
+        .stdout(predicate::str::contains("data dir"));
+    memfork()
+        .args(["doctor", "--verbose"])
+        .assert()
+        .success()
         .stdout(predicate::str::contains("survives restarts"));
 }
 
