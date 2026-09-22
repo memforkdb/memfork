@@ -131,7 +131,8 @@ jobs:
         run: |
           # The harness installs into MEMFORK_TEST_WORK/installer/install, the
           # path the rule above names, so the installed copy is blocked too.
-          export MEMFORK_TEST_WORK="$(cygpath -u "$MEMFORK_TEST_WORK")"
+          MEMFORK_TEST_WORK=$(cygpath -u "$MEMFORK_TEST_WORK")
+          export MEMFORK_TEST_WORK
           bash scripts/no-network.sh
       - name: Lift the block
         if: always()
