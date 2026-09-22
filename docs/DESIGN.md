@@ -307,6 +307,10 @@ Subcommands:
   global. `memfork call` goes through the daemon the same way, as an MCP session
   of its own. `memfork log --graph` draws every branch as a tree (§5.2).
 - **[v0.10]** `memfork watch` — the daemon's activity as it happens (§5.3).
+- **[v0.14]** `memfork completions <shell>` — a completion script for bash,
+  zsh, fish, PowerShell or elvish, generated at run time from the same clap
+  definition the command line parses with (`clap_complete`, MIT OR
+  Apache-2.0), so the two cannot drift; a test asks every shell for one.
 - **[v0.12]** `memfork task add|claim|renew|release|done|list`,
   `memfork find <text>`, `memfork facts [prefix]`, `memfork lessons` and
   `memfork stats` — the board (§6.5), text search (§6.6), every fact with its
@@ -595,6 +599,20 @@ unverified: it is seen as `cursor-vscode` in third-party logs and nowhere
 MemFork could read, and a name that is guessed is a name that is wrong
 quietly. Copilot CLI's `copilot-cli` is recorded from logs in the vendor's
 own issue tracker and marked as such.
+
+**[v0.14] A discover probe is answered before the SDK sees it.** One client
+(GitHub Copilot CLI, from its own issue tracker's wire logs) opens a stdio
+connection with `server/discover`, a 2026-07-28 request, then shakes hands the
+older way with `initialize` and continues with plain requests. rmcp 3.4 treats
+a discover as the opening of an inline session and thereafter refuses any
+request without per-request `_meta` — so the client connected, listed nothing
+and called nothing. `memfork mcp` now wraps its stdio transport
+(`mcp::Discoverable`): a `server/discover` request is answered there, with the
+discovery result the SDK would have given, and never reaches the SDK, which
+sees a connection that begins with `initialize`. A test drives both a
+well-formed probe and a bare one through a real `memfork mcp` and checks that
+`tools/list` and a tool call work after each. A client that would go on
+without `initialize` at all is not served; none is known to.
 
 **[v0.14] The JSON editor splices.** Three of the new clients keep comments
 and trailing commas in their settings (VS Code, Zed, OpenCode), which
@@ -988,6 +1006,39 @@ thinking is done by agents, as tasks.
   GitHub Release. **[v0.8]** Pinned to dist 0.33; every action pinned to a commit
   through `github-action-commits`, because a tag is a name somebody else can move.
   arm64 targets build on native runners rather than being cross-compiled.
+- **[v0.14] "latest" is resolved once.** GitHub's `releases/latest/download/<file>`
+  is a redirect answered per request; a release being published, or a stale
+  edge cache, answered two requests with two versions on 0.2.1 — an archive
+  from one release and a checksum from another. Both installers now ask
+  `releases/latest` once, read the tag from its redirect, say which version
+  that was, and download every file by that exact tag. The installer harness
+  serves a stand-in GitHub whose `latest/download` path returns junk, so any
+  use of that shape fails its checksum. `MEMFORK_GITHUB_BASE` points the
+  question at another host, for a GitHub Enterprise mirror or the tests.
+- **[v0.14] Attestations and an SBOM.** `github-attestations = true` in the
+  dist config signs a build provenance attestation for every artifact through
+  GitHub's Sigstore instance (`actions/attest`, pinned by commit like the rest);
+  `sbom.yml` runs `cargo-cyclonedx` once the Release workflow has finished
+  and attaches a CycloneDX SBOM per crate, attested too. Not dist's own
+  `cargo-cyclonedx` option: the step it generates in 0.33.0 reads
+  `steps.cargo-cyclonedx.output.paths` — `output`, not `outputs` — and so
+  uploads nothing, which actionlint caught. Both are free on a public
+  repository. `gh attestation verify <file> --repo memforkdb/memfork`
+  checks a download, offline too; the wheels are attested by PyPI's trusted
+  publishing (PEP 740). There is no paid code-signing certificate, and
+  SECURITY.md says so. Dependencies left out on purpose: none needed.
+- **[v0.14] No network, proven.** `crates/memfork/tests/no_network.rs` scans
+  the source: only `serve.rs`, `client.rs`, `proxy.rs` and `daemon.rs` may
+  open a socket, each names loopback and none names another host, no HTTP
+  client or TLS stack is in the dependency tree, and SECURITY.md carries the
+  same list. `no-network.yml` runs `scripts/no-network.sh` — the daemon,
+  `memfork mcp`, the command line, `watch`, and the installers against a
+  release served from loopback — on each OS with outbound traffic blocked per
+  process (a network namespace on Linux, a pf group rule on macOS, program
+  rules on Windows), and a control connection to the outside must fail.
+  Features added later extend the script as they land.
+- **[v0.14] Examples** in `crates/memfork/examples/` are compiled by CI and the
+  three that need no daemon are run there, so they cannot rot.
 - **[v0.8] The installers are written by hand**, not generated. dist's own installers
   "cannot run any kind of custom install logic", and an upgrade needs exactly that:
   stopping the daemon an older MemFork is running before replacing its binary, which
@@ -1292,6 +1343,10 @@ finished until it passes on all three.
 
 Not promises, and not in any order:
 
+- The names a few clients send in MCP `initialize`, which no documentation
+  states: Cursor, Kiro, Devin, Windsurf, Visual Studio Code. Each registry
+  entry says so until a build can be read or a vendor says.
+
 - A branch-aware approximate index, so search stops being linear in the number
   of entries with a vector.
 - Binding the durable store to Python, so `import memfork` can see what an MCP
@@ -1300,6 +1355,27 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.14 — reach
+1. **Sixteen clients in the registry** (§6.1), the eleven new ones verified
+   against their own documentation on a recorded date, with every gap said in
+   `unverified` and shown by doctor; the JSON editor splices, so comments and
+   trailing commas survive.
+2. **The event stream is a contract** (§5.3): `schema` on every line, the
+   field set held by a test, `docs/EVENTS.md`. No OpenTelemetry exporter,
+   with the reason.
+3. **A machine policy** (§5.4) that user settings never override, applied
+   where each choice is made, with `MEMFORK_POLICY_FILE` able only to add
+   restrictions.
+4. **Doctor is short by default** (§5), paths show one separator on Windows,
+   `memfork completions`, and the version-mismatch message covers a pip or
+   cargo upgrade.
+5. **"latest" resolved once** in the installers (§8), attestations and an
+   SBOM per release, and the no-network proof in two layers.
+6. **The trust pack**: SECURITY.md's threat model, `docs/ADOPTING.md`, and
+   an air-gapped install that the installer harness exercises.
+7. **Examples** that CI compiles and runs (§8), and doc examples on the
+   functions added in v0.12–v0.13.
 
 ### v0.13 — plans, memory that keeps itself, secrets
 1. **A lock race fixed** (§4.5): asking whether a directory is owned could stop

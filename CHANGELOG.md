@@ -79,6 +79,23 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   naming its rule.
 - **MCP prompts** for the routines: resume, handoff, review-decisions,
   tidy-memory, next-task.
+- **`memfork completions bash|zsh|fish|powershell|elvish`** prints a completion
+  script, generated from the command line's own definition.
+- **The installers resolve "latest" once** and download that exact version's
+  archive and checksum, so a stale cache can never mix two releases or
+  install an older build than the release page shows. `MEMFORK_GITHUB_BASE`
+  points them at a GitHub Enterprise host.
+- **No network, proven.** A test confines socket-capable code to four named
+  modules, all loopback; a CI job runs the daemon, `memfork mcp`, the command
+  line and the installers on each OS with outbound traffic blocked.
+- **Releases carry build provenance attestations and a CycloneDX SBOM.**
+  `gh attestation verify <file> --repo memforkdb/memfork` checks a download;
+  `docs/RELEASING.md` has the offline form.
+- **SECURITY.md has a threat model**, and `docs/ADOPTING.md` says how to roll
+  MemFork out in an organisation, switch features off, install from a mirror
+  or with no internet, and audit it.
+- **Examples** in `crates/memfork/examples/`: a memory loop, a handoff between
+  sessions, a plan worked by two clients, reading the event stream.
 - **Eleven more clients.** `memfork init` and `memfork doctor` know Cline,
   OpenCode, Qwen Code, Kiro, GitHub Copilot CLI, Devin CLI, Windsurf, Zed,
   Visual Studio Code, Factory Droid and OpenHands, each from its own
@@ -105,6 +122,12 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
 
 ### Fixed
 
+- **A client that probes `server/discover` before `initialize` can now use
+  the tools.** GitHub Copilot CLI sends that probe, then a legacy
+  `initialize`, then plain requests. The MCP SDK treated the probe as the
+  start of a metadata-carrying session and refused every plain request after
+  it; `memfork mcp` now answers the probe itself with the same discovery
+  result, and the SDK sees the ordinary session the client is in.
 - **A daemon could fail to start while something asked whether one was
   running.** Asking takes the directory lock for a moment, and a daemon trying
   for it at that moment exited with "in use"; a stale endpoint could also be

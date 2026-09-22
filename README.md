@@ -23,7 +23,7 @@ Your agent can fork everything it remembers before a risky step, merge the fork 
 
 That memory is shared. Claude Code, Codex, Cursor, Gemini and any other MCP client read and write the same store, so one agent can stop mid-task and leave a handoff, and another can resume from it: what was decided, why, what is done, and what comes next. No pasting context between tools. No starting over when you switch models.
 
-It runs in your own process or as a small local server, keeps what it stores, never leaves your machine, and is Apache-2.0.
+It runs in your own process or as a small local server, keeps what it stores, and is Apache-2.0. MemFork itself sends nothing anywhere: no cloud, no account, no telemetry. What an agent reads from it becomes part of that agent's prompt and goes wherever that agent already sends your code; with a local model the whole loop stays on your machine.
 
 You don't need five AI tools to benefit. With just one, your agent remembers across sessions and can undo its mistakes. With more, they share the work.
 
@@ -65,7 +65,28 @@ The install scripts put one file into a directory you own — `~/.memfork/bin` o
 They check the download against a published checksum, tell you how to
 uninstall, and if you are upgrading they stop the old version first. `pip` and
 `cargo` put the same `memfork` command wherever they put commands; run
-`memfork stop` before upgrading through either.
+`memfork stop` before upgrading through either. Installing from a mirror, or
+with no internet at all, is in [docs/ADOPTING.md](docs/ADOPTING.md).
+
+`memfork completions bash|zsh|fish|powershell|elvish` prints a completion
+script for your shell, to source or install where your shell looks.
+
+## Uninstall
+
+```sh
+memfork stop                          # end the background server
+memfork init --project --remove       # in each repository you ran init --project in
+rm -rf ~/.memfork/bin                 # the binary the install script put there
+```
+
+On Windows, `Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Programs\memfork\bin"`
+and take that directory out of your user `PATH`; the installer prints the
+exact line. If you installed with `pip` or `cargo`, uninstall with the same
+tool. Each MCP client keeps its own registration: `claude mcp remove memfork`,
+`codex mcp remove memfork`, and so on, or delete the `memfork` entry from the
+file `memfork doctor --verbose` names for that client. Your stored memory is
+the data directory `memfork doctor` prints; delete it if you want that gone
+too.
 
 ## Connect it to your tools
 
@@ -563,6 +584,16 @@ Said plainly, because finding out later is worse.
 ---
 
 # For developers
+
+## Examples
+
+Small runnable programs, one per idea — a single agent's memory loop, a
+handoff between two sessions, a plan worked by two scripted clients, reading
+the event stream — are in [examples/](examples/README.md):
+
+```sh
+cargo run -p memfork --example memory_loop
+```
 
 ## Rust
 
