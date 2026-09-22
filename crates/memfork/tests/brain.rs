@@ -1270,3 +1270,103 @@ fn the_machine_policy_can_switch_the_brain_off() {
         "{text}"
     );
 }
+
+// ---- export -----------------------------------------------------------------
+
+#[test]
+fn an_export_is_one_self_contained_file_with_credentials_withheld_and_no_token() {
+    let sandbox = Sandbox::new();
+    started(&sandbox);
+    furnish(&sandbox);
+    // Built at run time so this file never holds anything shaped like a key.
+    let key = format!("AKIA{}", "B".repeat(16));
+    let output = sandbox
+        .command()
+        .args([
+            "put",
+            "shop:note:cloud",
+            &format!("the access key is {key}"),
+            "--allow-secret",
+            "aws-access-key",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let (port, full, read) = tokens(&sandbox.wait_for_daemon(Duration::from_secs(20)).unwrap());
+
+    let preview = ask(
+        port,
+        Method::GET,
+        "/brain/export?ns=shop&preview=1",
+        None,
+        Some(&read),
+    );
+    assert_eq!(preview.status, StatusCode::OK, "{}", preview.body);
+    let p = preview.json();
+    assert_eq!(p["namespace"], "shop");
+    assert!(p["entries"].as_u64().unwrap() >= 6, "{p}");
+    assert!(p["bytes"].as_u64().unwrap() > 10_000);
+    let withheld = p["withheld"].as_array().unwrap();
+    assert!(
+        withheld.iter().any(|w| w["rule"] == "aws-access-key"),
+        "{withheld:?}"
+    );
+    assert!(p["file"].as_str().unwrap().ends_with(".html"));
+    assert!(
+        !preview.body.contains(&key),
+        "the preview carries the credential"
+    );
+
+    let file = ask(
+        port,
+        Method::GET,
+        "/brain/export?ns=shop",
+        None,
+        Some(&read),
+    );
+    assert_eq!(file.status, StatusCode::OK);
+    assert!(file
+        .header("content-type")
+        .unwrap()
+        .starts_with("text/html"));
+    assert_eq!(file.header("content-disposition"), Some("attachment"));
+    let html = &file.body;
+    assert_eq!(html.len() as u64, p["bytes"].as_u64().unwrap());
+    assert!(html.contains("window.MEMFORK_EXPORT"));
+    assert!(html.contains(memfork::brain::export::WITHHELD));
+    assert!(!html.contains(&key), "the export carries the credential");
+    assert!(
+        !html.contains(&read) && !html.contains(&full),
+        "the export carries a token"
+    );
+    // Self-contained: nothing loaded from anywhere, the page's own files included.
+    assert!(
+        !html.contains("href=\"/brain/"),
+        "the export links to the daemon"
+    );
+    assert!(
+        !html.contains("src=\"/brain/"),
+        "the export loads from the daemon"
+    );
+    assert!(
+        !html.contains("http://") && !html.contains("https://"),
+        "the export names an address"
+    );
+    assert!(html.contains("shop:decision:payments"));
+    assert!(html.contains("shop:fact:auth-entry"));
+    // The past, too.
+    let past = ask(
+        port,
+        Method::GET,
+        "/brain/export?ns=shop&at=2&preview=1",
+        None,
+        Some(&read),
+    );
+    assert_eq!(past.status, StatusCode::OK, "{}", past.body);
+    assert_eq!(past.json()["at"], 2);
+    assert!(past.json()["entries"].as_u64().unwrap() < p["entries"].as_u64().unwrap());
+}

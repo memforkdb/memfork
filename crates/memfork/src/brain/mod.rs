@@ -18,6 +18,7 @@
 //! `memfork brain` prints the page's address with the read token in the URL
 //! fragment, which a browser never sends to the server, and opens it.
 
+pub mod export;
 pub mod graph;
 pub mod summary;
 
@@ -57,7 +58,7 @@ pub const STATIC: &[(&str, &str, &str)] = &[
 /// Every route that answers with data, by the name after `/brain/`. Each
 /// answers `GET` only, needs a token, and reads; there is no other kind, and
 /// a test walks this list to prove it.
-pub const ROUTES: &[&str] = &["summary", "graph", "entry", "search", "diff"];
+pub const ROUTES: &[&str] = &["summary", "graph", "entry", "search", "diff", "export"];
 
 /// The families of key the page knows, as `<project>:<family>:<rest>`.
 pub const FAMILIES: &[&str] = &["decision", "fact", "task", "lesson", "handoff", "note"];
@@ -185,16 +186,24 @@ pub async fn handle(request: Request<Incoming>, context: Context) -> Response<Bo
     }
     let query = Query::parse(request.uri().query());
     let answer = tokio::task::spawn_blocking(move || match name.as_str() {
-        "summary" => summary::summary(&context, &query),
-        "graph" => graph_route(&context, &query),
-        "entry" => summary::entry(&context, &query),
-        "search" => summary::search(&context, &query),
-        "diff" => summary::diff(&context, &query),
+        "summary" => summary::summary(&context, &query).map(Answer::Json),
+        "graph" => graph_route(&context, &query).map(Answer::Json),
+        "entry" => summary::entry(&context, &query).map(Answer::Json),
+        "search" => summary::search(&context, &query).map(Answer::Json),
+        "diff" => summary::diff(&context, &query).map(Answer::Json),
+        "export" => export::build(&context, &query).map(|e| {
+            if query.get("preview").is_some() {
+                Answer::Json(e.preview)
+            } else {
+                Answer::Html(e.html)
+            }
+        }),
         _ => Err((StatusCode::NOT_FOUND, "no such route".to_owned())),
     })
     .await;
     let response = match answer {
-        Ok(Ok(value)) => json_response(StatusCode::OK, &value),
+        Ok(Ok(Answer::Json(value))) => json_response(StatusCode::OK, &value),
+        Ok(Ok(Answer::Html(html))) => html_response(&html),
         Ok(Err((status, why))) => json_response(status, &json!({ "error": why })),
         Err(e) => json_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -202,6 +211,28 @@ pub async fn handle(request: Request<Incoming>, context: Context) -> Response<Bo
         ),
     };
     with_page_headers(response)
+}
+
+/// What a route answers with.
+enum Answer {
+    /// Data for the page.
+    Json(Json),
+    /// A whole page, for the export.
+    Html(String),
+}
+
+/// A page to download: marked as a file, so the browser saves rather than
+/// shows it, and never cached.
+fn html_response(html: &str) -> Response<BoxBody> {
+    let body = http_body_util::Full::new(hyper::body::Bytes::from(html.to_owned()));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("content-disposition", "attachment")
+        .body(http_body_util::BodyExt::boxed(
+            http_body_util::BodyExt::map_err(body, |never| match never {}),
+        ))
+        .unwrap_or_else(|_| Response::new(BoxBody::default()))
 }
 
 /// The headers every Brain answer carries: the content security policy, no

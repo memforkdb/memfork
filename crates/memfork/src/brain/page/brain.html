@@ -29,6 +29,7 @@
 <div class="stopped" id="stopped" role="alert" hidden>
  <b>The server stopped.</b> This page was served by a MemFork daemon that is no longer running. Run <code>memfork brain</code> again for a fresh link. Nothing here updates any more.
 </div>
+<div class="stopped" id="exported" hidden></div>
 <div class="stopped" id="notoken" role="alert" hidden>
  <b>No token in this link.</b> The Brain opens from the address <code>memfork brain</code> prints, which carries the daemon's read token after the <code>#</code>. Run it again and open that link.
 </div>
@@ -90,7 +91,7 @@
 
 <div class="tools">
  <button id="compare" class="quiet"><svg class="icon" aria-hidden="true"><use href="#i-compare"/></svg>Compare branches</button>
- <button id="export" class="quiet" hidden><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg>Export this view</button>
+ <button id="export" class="quiet"><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg>Export this view</button>
  <button id="theme" class="quiet" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-theme"/></svg>Light theme</button>
 </div>
 

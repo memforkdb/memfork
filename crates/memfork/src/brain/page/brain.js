@@ -426,10 +426,41 @@ const Brain = (() => {
 
 if (typeof module !== "undefined" && module.exports) module.exports = Brain;
 
+// ---- an export: the same page, answered from embedded data --------------------
+// A file made by "Export this view" carries its data in the page. Every
+// request the page would make is answered from that, and none leaves it.
+function exportIo(data, window) {
+  const ok = (body) => ({ status: 200, ok: true, json: async () => body });
+  const gone = (why) => ({ status: 404, ok: false, json: async () => ({ error: why }) });
+  return {
+    TextDecoder: window.TextDecoder,
+    fetch: async (path) => {
+      const [pathname, query] = String(path).split("?");
+      const name = pathname.replace("/brain/", "");
+      const p = new URLSearchParams(query || "");
+      if (name === "summary") return ok(data.summary);
+      if (name === "graph") return ok(data.graph);
+      if (name === "entry") { const e = data.entries[p.get("key")]; return e ? ok(e) : gone("not in this export"); }
+      if (name === "search") {
+        const words = (p.get("q") || "").toLowerCase().split(/\s+/).filter(Boolean);
+        const hits = words.length
+          ? Object.entries(data.entries)
+              .filter(([k, e]) => words.every((w) => (k + " " + e.value).toLowerCase().includes(w)))
+              .slice(0, 50)
+              .map(([k]) => ({ key: k, score: 1, snippet: "" }))
+          : [];
+        return ok({ hits });
+      }
+      return gone("not part of an export");
+    },
+  };
+}
+
 // ---- the page ---------------------------------------------------------------
 function boot(document, window) {
   const $ = (id) => document.getElementById(id);
-  const io = { fetch: window.fetch.bind(window), TextDecoder: window.TextDecoder };
+  const exported = window.MEMFORK_EXPORT || null;
+  const io = exported ? exportIo(exported, window) : { fetch: window.fetch.bind(window), TextDecoder: window.TextDecoder };
   const session = Brain.makeSession(io);
   const t0 = window.performance.now();
   const now = () => window.performance.now();
@@ -445,10 +476,18 @@ function boot(document, window) {
   // ---- status -------------------------------------------------------------
   function showState(state) {
     const dot = $("dot");
-    dot.className = "dot" + (state === "connected" ? "" : state === "stopped" || state === "no-token" ? " off" : " wait");
+    dot.className = "dot" + (state === "connected" ? "" : state === "stopped" || state === "no-token" || state === "exported" ? " off" : " wait");
     $("state").textContent = state === "no-token" ? "no token" : state;
     $("stopped").hidden = state !== "stopped";
     $("notoken").hidden = state !== "no-token";
+    if (state === "exported") {
+      const d = exported;
+      $("exported").textContent = `An export of project ${d.namespace} on branch ${d.branch} at seq ${d.at == null ? d.seq : d.at}, made by MemFork ${d.version}. It carries a copy of the view and nothing moves. Search here is a plain word match, not the engine's ranking.${d.withheld ? ` ${Brain.plural(d.withheld, "value was", "values were")} withheld as a possible credential.` : ""}`;
+      $("exported").hidden = false;
+      for (const id of ["ns", "branch"]) $(id).disabled = true;
+      for (const id of ["compare", "export"]) $(id).hidden = true;
+      document.title = "MemFork · The Brain · export";
+    }
     if (state === "stopped") {
       stopped = true;
       document.title = "MemFork · The Brain · stopped";
@@ -796,7 +835,7 @@ function boot(document, window) {
           session.get("summary", { ns: view.ns, branch: view.branch }),
           session.get("graph", { ns: view.ns, branch: view.branch, at: view.scrub }),
         ]);
-        if (String(s.port) !== window.location.port) { session.set("stopped", "this page belongs to another daemon"); return; }
+        if (!exported && String(s.port) !== window.location.port) { session.set("stopped", "this page belongs to another daemon"); return; }
         view.ns = s.namespace; view.branch = s.branch;
         renderPanels(s);
         const fresh = Brain.loadGraph(g, gj, now());
@@ -883,11 +922,47 @@ function boot(document, window) {
     });
   });
 
+  // ---- export this view -----------------------------------------------------
+  // A preview first: what the file holds and what was withheld. Then the
+  // browser's own download; nothing is uploaded anywhere.
+  $("export").addEventListener("click", async () => {
+    openSheet('<div class="k">export</div><h3 id="sheet-title" tabindex="-1">Export this view</h3><div class="val">checking…</div>');
+    try {
+      const p = await session.get("export", { ns: view.ns, branch: view.branch, at: view.scrub, preview: 1 });
+      const withheld = p.withheld.length
+        ? `<h4>Withheld as possible credentials</h4>${p.withheld.map((w) => `<div class="h"><b class="mono">${Brain.esc(w.where)}</b><span class="stale">${Brain.esc(w.rule)}</span></div>`).join("")}`
+        : '<h4>Withheld</h4><div class="h">nothing looked like a credential</div>';
+      openSheet(`<div class="k">export</div><h3 id="sheet-title" tabindex="-1">Export this view</h3><div class="val">One self-contained file: this page, with ${Brain.plural(p.entries, "entry", "entries")} and ${Brain.plural(p.nodes, "node")} of ${Brain.esc(p.namespace)} on ${Brain.esc(p.branch)}${p.at != null ? ` as it was at seq ${p.at}` : ""}, about ${Math.round(p.bytes / 1024)} kB. It opens from disk, needs no daemon, and reaches out to nothing. It is read only, like this page. Your browser saves it where downloads go; nothing is uploaded.</div>${withheld}<div class="h"><button class="primary" id="export-go">Download ${Brain.esc(p.file)}</button></div><div id="export-out"></div>`);
+      $("export-go").addEventListener("click", async () => {
+        $("export-out").textContent = "making the file…";
+        try {
+          const r = await io.fetch(session.path("export", { ns: view.ns, branch: view.branch, at: view.scrub }), { headers: { authorization: `Bearer ${session.token}` }, cache: "no-store" });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const blob = await r.blob();
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = p.file;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+          $("export-out").textContent = "saved by your browser";
+        } catch (err) { $("export-out").textContent = String(err.message || err); }
+      });
+    } catch (err) { openSheet(`<div class="k">export</div><h3 id="sheet-title" tabindex="-1">Export this view</h3><div class="val">${Brain.esc(String(err.message || err))}</div>`); }
+  });
+
   // ---- start ----------------------------------------------------------------
-  const token = Brain.readToken(window.location.hash);
+  const token = exported ? "export" : Brain.readToken(window.location.hash);
   if (!token) { session.set("no-token"); return; }
   session.token = token;
   window.requestAnimationFrame(drawLive);
+
+  if (exported) {
+    view.ns = exported.namespace; view.branch = exported.branch;
+    load("export").then(() => session.set("exported"));
+    return;
+  }
 
   session.get("summary").then((s) => {
     if (String(s.port) !== window.location.port) { session.set("stopped", "this page belongs to another daemon"); return; }
