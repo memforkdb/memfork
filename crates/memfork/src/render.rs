@@ -112,6 +112,10 @@ pub fn stats(json: &Json, style: &Style) -> Vec<String> {
             n("claims"),
             n("claim_conflicts")
         ));
+        lines.push(format!(
+            "{indent}handoffs   {} picked up from another session through a briefing",
+            n("handoffs_picked_up")
+        ));
         lines.push(format!("{indent}finds      {}", n("finds")));
         lines
     };

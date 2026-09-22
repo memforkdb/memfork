@@ -97,9 +97,9 @@ fn briefing_record(
     seq: u64,
 ) -> crate::sidecar::Briefing {
     let mut keys = Vec::new();
-    let handoff = brief["handoff"]["key"].as_str().map(str::to_owned);
+    let handoff = brief["latest_handoff"]["key"].as_str().map(str::to_owned);
     keys.extend(handoff.clone());
-    for list in ["lessons", "decisions", "facts", "tasks"] {
+    for list in ["lessons", "recent_decisions", "facts", "open_tasks"] {
         for item in brief[list].as_array().into_iter().flatten() {
             if let Some(key) = item["key"].as_str() {
                 keys.push(key.to_owned());
@@ -123,7 +123,7 @@ fn briefing_record(
         bytes,
         keys,
         handoff,
-        since_commits: brief["since"]["commits"].as_u64(),
+        since_commits: brief["since_last"]["commits"].as_u64(),
         omitted,
         task: brief["task"].as_str().map(str::to_owned),
     }
@@ -1053,7 +1053,7 @@ impl Session {
                         self.shared
                             .sidecar
                             .note_briefing(&ns, briefing_record(&brief, &branch, &me, size, seq))
-                            && brief["handoff"]["by"].as_str() != Some(me.as_str())
+                            && brief["latest_handoff"]["by"].as_str() != Some(me.as_str())
                     }
                     None => false,
                 };

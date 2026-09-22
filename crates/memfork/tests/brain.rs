@@ -772,3 +772,321 @@ fn stores_written_by_earlier_versions_draw_as_graphs() {
         assert_eq!(graph["columns"].as_array().unwrap().len(), 7);
     }
 }
+
+// ---- the panels, one entry, search, and a branch comparison ------------------
+
+#[test]
+fn the_summary_carries_the_panels_and_the_headline_counts_real_things() {
+    let sandbox = Sandbox::new();
+    started(&sandbox);
+    furnish(&sandbox);
+    let (port, _, read) = tokens(&sandbox.wait_for_daemon(Duration::from_secs(20)).unwrap());
+    let a = ask(
+        port,
+        Method::GET,
+        "/brain/summary?ns=shop",
+        None,
+        Some(&read),
+    );
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    let s = a.json();
+    assert_eq!(s["headline"]["twice"], 0, "nothing has been served yet");
+    assert_eq!(s["tasks"].as_array().unwrap().len(), 2);
+    let schema = s["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "schema")
+        .unwrap();
+    assert_eq!(schema["status"], "open");
+    let checkout = s["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "checkout")
+        .unwrap();
+    assert_eq!(checkout["ready"], false, "{checkout}");
+    assert_eq!(s["facts"].as_array().unwrap().len(), 1);
+    assert_eq!(s["facts"][0]["key"], "shop:fact:auth-entry");
+    assert_eq!(s["facts"][0]["state"], "unverified", "{}", s["facts"][0]);
+    assert_eq!(s["lessons"].as_array().unwrap().len(), 1);
+    assert_eq!(s["lessons"][0]["branch"], "try-refunds");
+    assert_eq!(s["lessons"][0]["served"], 0);
+    assert!(s["handoffs"].as_array().unwrap().is_empty());
+    assert!(s["briefings"].as_array().unwrap().is_empty());
+    assert!(s["footer"]["store_bytes"].as_u64().unwrap() > 0);
+    assert!(s["footer"]["commits_retained"].as_u64().unwrap() > 0);
+
+    // A handoff, a resume by another client, and a stale fact: the panels
+    // and the headline follow.
+    let run = |args: &[&str]| {
+        let output = sandbox
+            .command()
+            .env(memfork::namespace::NAMESPACE_ENV, "shop")
+            .args(args)
+            .output()
+            .expect("ran");
+        assert!(
+            output.status.success(),
+            "`memfork {}`: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    run(&[
+        "put",
+        "shop:handoff:00000001",
+        r#"{"summary":"schema next","next":["design the schema"]}"#,
+    ]);
+    std::fs::write(
+        sandbox.root().join("src").join("auth").join("login.rs"),
+        "fn login() { changed }\n",
+    )
+    .unwrap();
+    // A resume through the tools, as another client, sees the handoff and
+    // the stale fact.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let transport = rmcp::transport::TokioChildProcess::new(
+            rmcp::transport::ConfigureCommandExt::configure(
+                tokio::process::Command::from({
+                    let mut c = sandbox.command();
+                    c.env(memfork::namespace::NAMESPACE_ENV, "shop");
+                    c
+                }),
+                |cmd| {
+                    cmd.arg("mcp");
+                    cmd.stderr(std::process::Stdio::null());
+                },
+            ),
+        )
+        .expect("spawned");
+        let client = rmcp::ServiceExt::serve((), transport)
+            .await
+            .expect("handshake");
+        let result = client
+            .call_tool(rmcp::model::CallToolRequestParams::new(
+                "memfork_resume".to_owned(),
+            ))
+            .await
+            .expect("resumed");
+        let brief = result.structured_content.expect("structured");
+        assert_eq!(
+            brief["latest_handoff"]["key"], "shop:handoff:00000001",
+            "{brief}"
+        );
+        client.cancel().await.expect("closed");
+    });
+
+    let s = ask(
+        port,
+        Method::GET,
+        "/brain/summary?ns=shop",
+        None,
+        Some(&read),
+    )
+    .json();
+    assert_eq!(
+        s["handoffs"].as_array().unwrap().len(),
+        1,
+        "{}",
+        s["handoffs"]
+    );
+    assert_eq!(s["handoffs"][0]["number"], "1");
+    assert!(
+        s["handoffs"][0]["picked_up"].is_object(),
+        "{}",
+        s["handoffs"][0]
+    );
+    assert_eq!(
+        s["briefings"].as_array().unwrap().len(),
+        1,
+        "{}",
+        s["briefings"]
+    );
+    assert!(s["briefings"][0]["bytes"].as_u64().unwrap() > 0);
+    assert_eq!(s["facts"][0]["state"], "stale", "{}", s["facts"][0]);
+    assert!(
+        s["attention"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["kind"] == "stale_fact"),
+        "{}",
+        s["attention"]
+    );
+    assert_eq!(s["headline"]["counts"]["briefings"], 1);
+    assert_eq!(s["headline"]["counts"]["handoffs_picked_up"], 1);
+    assert!(
+        s["headline"]["twice"].as_u64().unwrap() >= 2,
+        "{}",
+        s["headline"]
+    );
+    assert_eq!(s["lessons"][0]["served"], 1);
+}
+
+#[test]
+fn one_entry_comes_with_its_history_and_sources_and_a_script_tag_stays_text() {
+    let sandbox = Sandbox::new();
+    started(&sandbox);
+    furnish(&sandbox);
+    let sneaky = "<script>alert(1)</script><img src=x onerror=alert(2)>";
+    let output = sandbox
+        .command()
+        .args(["put", "shop:decision:payments", sneaky])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let (port, _, read) = tokens(&sandbox.wait_for_daemon(Duration::from_secs(20)).unwrap());
+    let a = ask(
+        port,
+        Method::GET,
+        "/brain/entry?key=shop%3Adecision%3Apayments",
+        None,
+        Some(&read),
+    );
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    let e = a.json();
+    // The value travels as JSON text, character for character, and the page
+    // renders it as text; nothing here turns it into markup.
+    assert_eq!(e["value"], sneaky);
+    assert_eq!(a.header("content-type"), Some("application/json"));
+    assert_eq!(e["by"], "memfork-cli");
+    let history = e["history"].as_array().unwrap();
+    assert_eq!(history.len(), 2, "{history:?}");
+    assert!(history[0]["seq"].as_u64() > history[1]["seq"].as_u64());
+    assert_eq!(history[0]["what"], "written");
+    assert!(e["sources"].is_null());
+
+    let fact = ask(
+        port,
+        Method::GET,
+        "/brain/entry?key=shop%3Afact%3Aauth-entry",
+        None,
+        Some(&read),
+    )
+    .json();
+    assert_eq!(fact["sources"][0]["path"], "src/auth/login.rs");
+    assert_eq!(fact["sources"][0]["state"], "unverified");
+
+    let missing = ask(
+        port,
+        Method::GET,
+        "/brain/entry?key=shop%3Anothing",
+        None,
+        Some(&read),
+    );
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    let none = ask(port, Method::GET, "/brain/entry", None, Some(&read));
+    assert_eq!(none.status, StatusCode::BAD_REQUEST);
+}
+
+#[test]
+fn search_is_the_engines_ranked_search_and_a_diff_is_what_a_merge_would_face() {
+    let sandbox = Sandbox::new();
+    started(&sandbox);
+    furnish(&sandbox);
+    let (port, _, read) = tokens(&sandbox.wait_for_daemon(Duration::from_secs(20)).unwrap());
+    let a = ask(
+        port,
+        Method::GET,
+        "/brain/search?ns=shop&q=checkout",
+        None,
+        Some(&read),
+    );
+    assert_eq!(a.status, StatusCode::OK, "{}", a.body);
+    let hits = a.json()["hits"].as_array().unwrap().clone();
+    assert!(!hits.is_empty());
+    assert!(
+        hits.iter().any(|h| h["key"] == "shop:decision:payments"),
+        "{hits:?}"
+    );
+    let scores: Vec<u64> = hits.iter().map(|h| h["score"].as_u64().unwrap()).collect();
+    assert!(scores.windows(2).all(|w| w[0] >= w[1]));
+    let again = ask(
+        port,
+        Method::GET,
+        "/brain/search?ns=shop&q=checkout",
+        None,
+        Some(&read),
+    );
+    assert_eq!(
+        again.json()["hits"],
+        serde_json::json!(hits),
+        "search is not deterministic"
+    );
+    let empty = ask(
+        port,
+        Method::GET,
+        "/brain/search?ns=shop",
+        None,
+        Some(&read),
+    )
+    .json();
+    assert!(empty["hits"].as_array().unwrap().is_empty());
+
+    let run = |args: &[&str]| {
+        let output = sandbox.command().args(args).output().expect("ran");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    run(&["fork", "try-eu"]);
+    run(&[
+        "put",
+        "--branch",
+        "try-eu",
+        "shop:decision:tax",
+        "EU VAT at checkout",
+    ]);
+    run(&[
+        "put",
+        "--branch",
+        "try-eu",
+        "shop:decision:payments",
+        "another provider",
+    ]);
+    let d = ask(
+        port,
+        Method::GET,
+        "/brain/diff?a=main&b=try-eu&ns=shop",
+        None,
+        Some(&read),
+    );
+    assert_eq!(d.status, StatusCode::OK, "{}", d.body);
+    let d = d.json();
+    assert_eq!(d["count"], 2, "{d}");
+    let kinds: Vec<(String, String)> = d["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["key"].as_str().unwrap().to_owned(),
+                c["kind"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert!(
+        kinds.contains(&("shop:decision:tax".to_owned(), "added".to_owned())),
+        "{kinds:?}"
+    );
+    assert!(
+        kinds.contains(&("shop:decision:payments".to_owned(), "modified".to_owned())),
+        "{kinds:?}"
+    );
+    let bad = ask(
+        port,
+        Method::GET,
+        "/brain/diff?a=main&b=nope",
+        None,
+        Some(&read),
+    );
+    assert_eq!(bad.status, StatusCode::NOT_FOUND);
+}

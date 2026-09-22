@@ -127,6 +127,8 @@ struct Data {
     maintenance: BTreeMap<String, Maintenance>,
     /// project -> the facts last found stale, by key
     stale: BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// project -> the facts last found fresh, by key
+    fresh: BTreeMap<String, std::collections::BTreeSet<String>>,
     /// project -> the briefings served, oldest first
     briefings: BTreeMap<String, Vec<Briefing>>,
 }
@@ -313,14 +315,22 @@ impl Sidecar {
             return;
         }
         let mut data = self.data();
-        let set = data.stale.entry(project.to_owned()).or_default();
+        let Data { stale, fresh, .. } = &mut *data;
+        let stale = stale.entry(project.to_owned()).or_default();
+        let fresh = fresh.entry(project.to_owned()).or_default();
         for (key, state) in facts {
             match state.as_str() {
-                "stale" if set.len() < MAX_STALE_KEPT => {
-                    set.insert(key.clone());
+                "stale" => {
+                    if stale.len() < MAX_STALE_KEPT {
+                        stale.insert(key.clone());
+                    }
+                    fresh.remove(key);
                 }
                 "fresh" => {
-                    set.remove(key);
+                    stale.remove(key);
+                    if fresh.len() < MAX_STALE_KEPT {
+                        fresh.insert(key.clone());
+                    }
                 }
                 _ => {}
             }
@@ -357,6 +367,15 @@ impl Sidecar {
             .briefings
             .get(project)
             .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The facts in `project` last found fresh.
+    pub fn fresh_facts(&self, project: &str) -> Vec<String> {
+        self.data()
+            .fresh
+            .get(project)
+            .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -484,6 +503,7 @@ fn add(total: &mut Counters, c: &Counters) {
     total.claims += c.claims;
     total.claim_conflicts += c.claim_conflicts;
     total.finds += c.finds;
+    total.handoffs_picked_up += c.handoffs_picked_up;
 }
 
 #[cfg(test)]

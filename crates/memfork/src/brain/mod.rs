@@ -19,6 +19,7 @@
 //! fragment, which a browser never sends to the server, and opens it.
 
 pub mod graph;
+pub mod summary;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -56,7 +57,7 @@ pub const STATIC: &[(&str, &str, &str)] = &[
 /// Every route that answers with data, by the name after `/brain/`. Each
 /// answers `GET` only, needs a token, and reads; there is no other kind, and
 /// a test walks this list to prove it.
-pub const ROUTES: &[&str] = &["summary", "graph"];
+pub const ROUTES: &[&str] = &["summary", "graph", "entry", "search", "diff"];
 
 /// The families of key the page knows, as `<project>:<family>:<rest>`.
 pub const FAMILIES: &[&str] = &["decision", "fact", "task", "lesson", "handoff", "note"];
@@ -112,8 +113,11 @@ pub async fn handle(request: Request<Incoming>, context: Context) -> Response<Bo
     }
     let query = Query::parse(request.uri().query());
     let answer = tokio::task::spawn_blocking(move || match name.as_str() {
-        "summary" => summary(&context, &query),
+        "summary" => summary::summary(&context, &query),
         "graph" => graph_route(&context, &query),
+        "entry" => summary::entry(&context, &query),
+        "search" => summary::search(&context, &query),
+        "diff" => summary::diff(&context, &query),
         _ => Err((StatusCode::NOT_FOUND, "no such route".to_owned())),
     })
     .await;
@@ -146,7 +150,7 @@ fn with_page_headers(mut response: Response<BoxBody>) -> Response<BoxBody> {
 }
 
 /// A route's failure: the status and a sentence.
-type Failure = (StatusCode, String);
+pub type Failure = (StatusCode, String);
 
 /// The query string, decoded.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -216,22 +220,6 @@ fn decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The branch a query names, or the default one; refused if it does not
-/// exist.
-fn branch_of(context: &Context, query: &Query) -> Result<String, Failure> {
-    let branch = query
-        .get("branch")
-        .unwrap_or_else(|| context.db.default_branch())
-        .to_owned();
-    if !context.db.has_branch(&branch) {
-        return Err((
-            StatusCode::NOT_FOUND,
-            format!("there is no branch `{branch}`"),
-        ));
-    }
-    Ok(branch)
-}
-
 /// Every project that has keys on a branch, in key order.
 pub fn namespaces(db: &memfork_core::Db, branch: &str) -> Result<Vec<String>, Failure> {
     let view = db
@@ -255,29 +243,11 @@ pub fn namespaces(db: &memfork_core::Db, branch: &str) -> Result<Vec<String>, Fa
     Ok(found)
 }
 
-/// The project a query names, or the one to show first: what a connected
-/// client is working in, else the first project on the branch, else the
-/// fallback.
-fn namespace_of(context: &Context, query: &Query, branch: &str) -> Result<String, Failure> {
-    if let Some(ns) = query.get("ns") {
-        crate::namespace::validate(ns)
-            .map_err(|why| (StatusCode::BAD_REQUEST, format!("`ns`: {why}")))?;
-        return Ok(ns.to_owned());
-    }
-    if let Some(connected) = context.events.connected().first() {
-        return Ok(connected.namespace.clone());
-    }
-    Ok(namespaces(&context.db, branch)?
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| crate::namespace::FALLBACK.to_owned()))
-}
-
 /// The memory graph of a project on a branch, now or at a past point, laid
 /// out.
 fn graph_route(context: &Context, query: &Query) -> Result<Json, Failure> {
-    let branch = branch_of(context, query)?;
-    let ns = namespace_of(context, query, &branch)?;
+    let branch = summary::branch_of(context, query)?;
+    let ns = summary::namespace_of(context, query, &branch)?;
     let at = query.number("at")?;
     let graph = graph::build(
         &context.db,
@@ -289,35 +259,6 @@ fn graph_route(context: &Context, query: &Query) -> Result<Json, Failure> {
     )
     .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(graph::to_json(&graph))
-}
-
-/// What the page needs first: where it is looking, who is connected, what
-/// else there is to look at.
-fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
-    let branch = branch_of(context, query)?;
-    let ns = namespace_of(context, query, &branch)?;
-    let view = context
-        .db
-        .read(&branch)
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
-    let branches: Vec<String> = context.db.branches().into_iter().map(|b| b.name).collect();
-    let policy = match crate::policy::current() {
-        Ok(p) => p.summary(),
-        Err(e) => format!("unreadable: {}", e.why),
-    };
-    Ok(json!({
-        "version": crate::VERSION,
-        "port": context.port,
-        "read_only": true,
-        "namespace": ns,
-        "branch": branch,
-        "seq": view.seq(),
-        "entries": view.len(),
-        "branches": branches,
-        "namespaces": namespaces(&context.db, &branch)?,
-        "clients": context.events.connected(),
-        "policy": policy,
-    }))
 }
 
 #[cfg(test)]
