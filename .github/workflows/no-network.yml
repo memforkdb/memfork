@@ -74,22 +74,22 @@ jobs:
       - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
       - name: Build the binary
         run: cargo build --release -p memfork
-      - name: Block outbound traffic for one group
-        # pf's `group` matches the group that opened the socket, and `set skip
-        # on lo0` leaves loopback alone. The script and everything it starts
-        # run as that group, so only they are cut off.
+      - name: Block outbound traffic for root
+        # pf's `user` matches the user that opened the socket, and `set skip
+        # on lo0` leaves loopback alone. The runner itself is not root, so its
+        # own connection to GitHub is untouched; the script and everything it
+        # starts run as root, and only they are cut off. (A dedicated group
+        # would be neater, but the runner's passwordless sudo does not cover
+        # `sudo -g`.)
         run: |
-          sudo dseditgroup -o create memfork-nonet
-          printf 'set skip on lo0\nblock out quick proto { tcp udp } group memfork-nonet\n' \
+          printf 'set skip on lo0\nblock out quick proto { tcp udp } user root\n' \
             | sudo pfctl -a memfork-nonet -f -
           sudo pfctl -E || true
-      - name: Run everything as the blocked group
-        run: sudo -g memfork-nonet --preserve-env=MEMFORK_FORBID_PER_USER_DATA_DIR,HOME,PATH bash scripts/no-network.sh
+      - name: Run everything as root, the blocked user
+        run: sudo --preserve-env=MEMFORK_FORBID_PER_USER_DATA_DIR,HOME,PATH bash scripts/no-network.sh
       - name: Lift the block
         if: always()
-        run: |
-          sudo pfctl -a memfork-nonet -F all || true
-          sudo dseditgroup -o delete memfork-nonet || true
+        run: sudo pfctl -a memfork-nonet -F all || true
 
   windows:
     name: no network (windows-latest)
@@ -114,11 +114,16 @@ jobs:
           $work = Join-Path $env:RUNNER_TEMP 'nonet'
           New-Item -ItemType Directory -Force $work | Out-Null
           "MEMFORK_TEST_WORK=$work" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Get-Service mpssvc | Format-Table Name, Status
+          # Two curls: the one on the Windows PATH and Git Bash's own, which is
+          # the one `curl` resolves to in the bash step below.
           $programs = @(
             (Resolve-Path 'target\release\memfork.exe').Path,
             (Join-Path $work 'installer\install\memfork.exe'),
             (Get-Command python).Source,
-            (Get-Command curl.exe).Source
+            (Get-Command curl.exe).Source,
+            'C:\Program Files\Git\mingw64\bin\curl.exe',
+            'C:\Program Files\Git\usr\bin\curl.exe'
           )
           $i = 0
           foreach ($p in $programs) {
