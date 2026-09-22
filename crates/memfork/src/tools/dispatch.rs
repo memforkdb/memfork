@@ -85,6 +85,9 @@ pub struct Session {
     /// `--ephemeral` server or the command line. The daemon has none; its
     /// proxies check facts instead.
     root: Option<std::path::PathBuf>,
+    /// What autopilot remembers about this session: the fork it is on, the
+    /// files edited since, and notes for the next result.
+    autopilot: Mutex<crate::autopilot::SessionState>,
 }
 
 /// The record the side structure keeps of a briefing: who it went to, how
@@ -188,7 +191,19 @@ impl Session {
             shared: Shared::in_memory(),
             session_id: Mutex::new(new_session_id()),
             root: None,
+            autopilot: Mutex::new(crate::autopilot::SessionState::default()),
         }
+    }
+
+    /// Autopilot's state for this session.
+    pub fn autopilot(&self) -> std::sync::MutexGuard<'_, crate::autopilot::SessionState> {
+        self.autopilot.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Move this session to `name`, which the caller has checked exists.
+    /// Autopilot's way of following git and settling a fork.
+    pub fn switch_to(&self, name: String) {
+        self.set_branch(name);
     }
 
     /// Share leases, statistics and fact hashes with every other session in
@@ -386,6 +401,12 @@ impl Session {
         }
         if let Json::Object(map) = &mut result {
             map.insert("current_branch".to_owned(), json!(self.branch()));
+            // What autopilot did since the last call, so the agent learns it
+            // from the tool it was calling anyway rather than being interrupted.
+            let notes = self.autopilot().take_notes();
+            if !notes.is_empty() {
+                map.insert("autopilot".to_owned(), Json::Array(notes));
+            }
         }
         Ok(result)
     }

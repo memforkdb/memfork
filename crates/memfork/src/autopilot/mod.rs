@@ -23,6 +23,7 @@
 //! side of both.
 
 pub mod config;
+pub mod engine;
 pub mod git;
 pub mod rules;
 

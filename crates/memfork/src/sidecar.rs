@@ -131,6 +131,23 @@ struct Data {
     fresh: BTreeMap<String, std::collections::BTreeSet<String>>,
     /// project -> the briefings served, oldest first
     briefings: BTreeMap<String, Vec<Briefing>>,
+    /// project -> what autopilot did and found there
+    autopilot: BTreeMap<String, AutopilotSide>,
+    /// worktree -> how far its reflog has been read, in bytes
+    reflog_cursors: BTreeMap<String, u64>,
+    /// repository -> the memory branches that were made or switched to by
+    /// following git there, so a branch git has since dropped can be named
+    followed: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+/// Autopilot's side of one project.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct AutopilotSide {
+    /// What it did, oldest first, at most [`crate::autopilot::MAX_JOURNAL`].
+    journal: Vec<crate::autopilot::JournalEntry>,
+    /// Memory branches whose git branch was gone at the last look.
+    orphans: Vec<String>,
 }
 
 /// A project's self-maintenance, as far as the side file keeps it.
@@ -448,6 +465,87 @@ impl Sidecar {
     /// The hashes a fact was written with, if they were kept.
     pub fn fact(&self, id: &str) -> Option<Hashes> {
         self.data().facts.get(id).map(|r| r.hashes.clone())
+    }
+
+    /// How far a worktree's reflog has been read, if it has been.
+    pub fn reflog_cursor(&self, worktree: &str) -> Option<u64> {
+        self.data().reflog_cursors.get(worktree).copied()
+    }
+
+    /// Remember how far a worktree's reflog has been read.
+    pub fn set_reflog_cursor(&self, worktree: &str, cursor: u64) {
+        let mut data = self.data();
+        if data.reflog_cursors.get(worktree) == Some(&cursor) {
+            return;
+        }
+        data.reflog_cursors.insert(worktree.to_owned(), cursor);
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The memory branches made or switched to by following git in
+    /// `repo`.
+    pub fn followed(&self, repo: &str) -> std::collections::BTreeSet<String> {
+        self.data().followed.get(repo).cloned().unwrap_or_default()
+    }
+
+    /// Note that memory followed git to `branch` in `repo`. At most
+    /// [`crate::autopilot::git::MAX_BRANCHES`] are kept per repository.
+    pub fn note_followed(&self, repo: &str, branch: &str) {
+        let mut data = self.data();
+        let set = data.followed.entry(repo.to_owned()).or_default();
+        if set.contains(branch) {
+            return;
+        }
+        if set.len() >= crate::autopilot::git::MAX_BRANCHES {
+            return;
+        }
+        set.insert(branch.to_owned());
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Remember which of a project's memory branches have no git branch.
+    pub fn set_orphans(&self, project: &str, orphans: Vec<String>) {
+        let mut data = self.data();
+        let side = data.autopilot.entry(project.to_owned()).or_default();
+        if side.orphans == orphans {
+            return;
+        }
+        side.orphans = orphans;
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The memory branches of `project` that had no git branch at the last
+    /// look.
+    pub fn orphans(&self, project: &str) -> Vec<String> {
+        self.data()
+            .autopilot
+            .get(project)
+            .map(|a| a.orphans.clone())
+            .unwrap_or_default()
+    }
+
+    /// Add to autopilot's journal for `project`, keeping the newest
+    /// [`crate::autopilot::MAX_JOURNAL`].
+    pub fn journal(&self, project: &str, mut entry: crate::autopilot::JournalEntry) {
+        let mut data = self.data();
+        entry.order = data.next_order;
+        data.next_order += 1;
+        let side = data.autopilot.entry(project.to_owned()).or_default();
+        side.journal.push(entry);
+        if side.journal.len() > crate::autopilot::MAX_JOURNAL {
+            let excess = side.journal.len() - crate::autopilot::MAX_JOURNAL;
+            side.journal.drain(..excess);
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Autopilot's journal for `project`, oldest first.
+    pub fn journal_entries(&self, project: &str) -> Vec<crate::autopilot::JournalEntry> {
+        self.data()
+            .autopilot
+            .get(project)
+            .map(|a| a.journal.clone())
+            .unwrap_or_default()
     }
 
     /// Every counter, by project and client, with totals.

@@ -51,6 +51,9 @@ pub const CLI_PATH: &str = "/cli";
 /// The path a proxy reports facts it has checked to.
 pub const REPORT_PATH: &str = "/report";
 
+/// The path a proxy and a client's hook post what they saw for autopilot to.
+pub const AUTOPILOT_PATH: &str = crate::autopilot::PATH;
+
 /// How often the side structure is written while it changes.
 const SIDECAR_FLUSH: Duration = Duration::from_secs(5);
 
@@ -170,11 +173,14 @@ pub async fn run(
         // `initialize` says which project and client it is (see
         // `crate::mcp::adopt`), and from then on it reports what it does.
         move || {
-            Ok(MemforkServer::new(Arc::new(
+            let session = Arc::new(
                 Session::new(shared.clone())
                     .reporting_to(Arc::clone(&hub))
                     .sharing(Arc::clone(&side_for_sessions)),
-            )))
+            );
+            // Listed, so autopilot can reach it by its client or its id.
+            side_for_sessions.sessions.register(&session);
+            Ok(MemforkServer::new(session))
         },
         Arc::new(sessions),
         // Our tools are request-and-response, so the server can answer in
@@ -426,6 +432,15 @@ impl tower_service::Service<Request<Incoming>> for Guard {
             return Box::pin(async move { Ok(take_report(request, events, side).await) });
         }
 
+        if request.uri().path() == AUTOPILOT_PATH {
+            let context = crate::autopilot::engine::Context {
+                db: self.db.clone(),
+                shared: Arc::clone(&self.side),
+                events: Some(Arc::clone(&self.events)),
+            };
+            return Box::pin(async move { Ok(run_autopilot(request, context).await) });
+        }
+
         let mut inner = self.inner.clone();
         Box::pin(async move {
             match tower_service::Service::call(&mut inner, request).await {
@@ -574,6 +589,54 @@ async fn take_report(
         StatusCode::OK,
         &serde_json::json!({ "recorded": checked.facts.len() }),
     )
+}
+
+/// One autopilot request, from a proxy or a client's hook: `POST` only,
+/// behind the daemon's own token, refused outright when the machine policy
+/// switches autopilot off.
+async fn run_autopilot(
+    request: Request<Incoming>,
+    context: crate::autopilot::engine::Context,
+) -> Response<BoxBody> {
+    if request.method() != hyper::Method::POST {
+        return text(StatusCode::METHOD_NOT_ALLOWED, "autopilot takes POST\n");
+    }
+    if !crate::policy::allows(crate::policy::Feature::Autopilot) {
+        return json_response(
+            StatusCode::FORBIDDEN,
+            &serde_json::json!({ "error": crate::policy::refusal(crate::policy::Feature::Autopilot) }),
+        );
+    }
+    let bytes = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &serde_json::json!({ "error": format!("the request could not be read: {e}") }),
+            )
+        }
+    };
+    let body: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(body) => body,
+        Err(e) => {
+            return json_response(
+                StatusCode::BAD_REQUEST,
+                &serde_json::json!({ "error": format!("the request did not parse: {e}") }),
+            )
+        }
+    };
+    let outcome = tokio::task::spawn_blocking(move || context.handle(&body)).await;
+    match outcome {
+        Ok(Ok(answer)) => json_response(StatusCode::OK, &answer),
+        Ok(Err((status, why))) => json_response(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_REQUEST),
+            &serde_json::json!({ "error": why }),
+        ),
+        Err(e) => json_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": format!("the request did not finish: {e}") }),
+        ),
+    }
 }
 
 async fn run_cli(
