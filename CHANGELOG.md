@@ -15,6 +15,26 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
 
 ### Added
 
+- **The Brain.** `memfork brain` opens a read-only page, served by the local
+  daemon on `127.0.0.1` only, that shows the memory graph — entries, agents,
+  files and briefings, with the relations the engine knows and nothing
+  inferred — with lenses, time travel, the engine's ranked search, a side
+  sheet with each entry's sources, history and connections, panels for
+  handoffs, coordination, freshness, dead ends, briefings served and what
+  needs attention, branch comparison, and an export to one self-contained
+  file with credentials withheld. Nothing on it changes memory. The address
+  carries a read token in its fragment, which the daemon refuses on every
+  route that writes; when the daemon stops, the page says so and asks to be
+  opened again. `memfork doctor` shows the address; the machine policy's
+  `brain = false` switches it off.
+- **`memfork demo`.** A scripted session on a throwaway store, with the
+  Brain open on it and two stand-in clients over the real MCP transport:
+  nothing spent, nothing of yours touched, removed on exit.
+- **A read token and a Host check.** The daemon mints a second token for the
+  routes that read, and refuses a `Host` header that is not its own listener
+  on every route.
+- **Handoffs picked up** in `memfork stats`, and briefings remembered beside
+  the store so the Brain can show what each carried.
 - **`memfork_task`, a task board.** Add a task, claim it, mark it done, release
   it, list the board. Of two agents claiming one task, one gets it and the
   other is told who has it, even when both are sessions of the same tool. A

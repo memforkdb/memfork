@@ -44,16 +44,18 @@ MemFork is one executable. It runs in three shapes:
 - **The daemon** (`memfork serve`, started for you). One per data directory.
   It owns the store, listens on **`127.0.0.1` only**, on a port the operating
   system assigns at each start, and requires a bearer token on every request.
-  The port and token are in `memfork.endpoint` in the data directory; a process
-  that cannot read that file cannot talk to the daemon. It exits after ten
-  minutes with nothing to do.
+  It carries two tokens: its own, which every route accepts, and a read token,
+  which only the routes that read accept: the event stream and the Brain's.
+  Both are in `memfork.endpoint` in the data directory; a process that cannot
+  read that file cannot talk to the daemon. It exits after ten minutes with
+  nothing to do; a Brain tab left open does not keep it alive.
 - **The command line** (`memfork put`, `memfork watch`, and so on), which
   connects to the daemon the same way, or with `--ephemeral` runs alone in
   memory and touches no file.
 
-Nothing binds any other address, and there is no flag to make it. The listener
-rejects a `Host` header that is not loopback, as a second line against DNS
-rebinding.
+Nothing binds any other address, and there is no flag to make it. Every route
+rejects a `Host` header that is not this listener, as a second line against
+DNS rebinding.
 
 ### Network: MemFork itself sends nothing anywhere
 
@@ -109,7 +111,7 @@ In it: the write-ahead log and snapshots (memory itself, every branch and
 every retained commit); `memfork-sidecar.json`, which holds usage counts and
 the blake3 hashes of files that facts were recorded from, with their paths
 relative to the project and no file contents; `memfork.endpoint`, with the
-daemon's port and token, and `memfork.lock`; and `memfork-daemon.log`, the
+daemon's port and its two tokens, and `memfork.lock`; and `memfork-daemon.log`, the
 daemon's own diagnostics, rewritten by each start. Claims on tasks are kept
 only in the running daemon's memory.
 
@@ -146,6 +148,26 @@ only in the running daemon's memory.
   one marked block into the instruction files of a repository, and `--remove`
   takes only that block out. `--dry-run` shows every change first. Nothing
   else MemFork does writes outside the data directory.
+- **The Brain.** `memfork brain` opens a page served by the daemon, on the
+  same loopback listener. Every route the page can reach answers `GET` only,
+  reads the store and the side file, and writes neither; a test posts to
+  every one and checks that memory is unchanged. The page holds the read
+  token, in the fragment of its address, and the daemon refuses that token
+  on every route that writes, so nothing the page could do reaches them. The
+  page's own files are served without a token and carry no data; every
+  answer carries a content security policy that allows nothing but those
+  files, no CORS header, and no cookie; the page stores nothing in the
+  browser. Memory contents reach it as JSON and are rendered as text, never
+  as markup, and a stored script tag is a test. It makes no request that
+  leaves the machine, and a test fails on any outside address in its files.
+  `memfork brain` opens the browser with the address as one argument, never
+  through a shell. The export is one file the browser saves, with every
+  value passed through the credential rules and any match withheld; nothing
+  is uploaded. What this does not contain: the read token is in the address,
+  so it is in the browser's history until the daemon stops, which is when
+  it stops working; and anything that can read `memfork.endpoint` could
+  read memory anyway. `memfork demo` runs the same page on a temporary
+  store of its own and removes it on exit.
 - **Git.** MemFork never runs `git`. It finds a repository by looking for
   `.git` and reads nothing inside it.
 - **Credentials.** Every write is checked against rules for private keys,

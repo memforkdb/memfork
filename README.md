@@ -155,6 +155,14 @@ Swap `discard` for `merge attempt` and the change comes back to the main line
 instead. Nothing is copied either way: a branch shares structure with the
 branch it came from until one of them changes.
 
+Or watch the whole thing move: `memfork demo` starts a store of its own in a
+temporary directory, opens [the Brain](#the-brain) on it, and plays a scripted
+session with two stand-in clients: a fact and a decision, a plan worked, a
+fork discarded with a lesson, a handoff picked up by the other client, a fact
+going stale, a decision disputed across branches. Nothing is spent, no AI tool
+is needed, your own memory is not touched, and the store is removed when you
+press Ctrl+C.
+
 ## What your agent gets
 
 Sixteen tools, in four groups.
@@ -489,6 +497,72 @@ not a secret, write it again naming the rule: `allow_secret`, or
 review-decisions, tidy-memory, next-task — which Claude Code, Gemini CLI, VS
 Code and Cline show as slash commands.
 
+## The Brain
+
+`memfork brain` opens a page in your browser that shows what the engine knows
+and what it did with it: the memory graph, the handoffs, the plan, which facts
+are fresh, the dead ends, the briefings it served, and what needs a look. It is
+served by the local daemon, on `127.0.0.1` only, and it is a view of a
+database engine, not a control panel.
+
+**Nothing on the page changes memory.** There is no button that forks, merges,
+discards, releases or stops anything; every write stays with your agents and
+the command line. The one control is time travel: drag the timeline and the
+graph shows memory as it was at that point, read only.
+
+What is on it:
+
+- **The headline**: *N things your agents did not have to learn twice*, where
+  N is dead ends not repeated, stale facts caught, claim conflicts avoided and
+  handoffs picked up, counted from what actually happened.
+- **The graph.** Every node is a real entry or a connected client: agents,
+  briefings, decisions and handoffs, lessons, the plan, facts and source files,
+  in columns left to right. Every edge is a relation the engine already knows —
+  a fact's source files, a decision citing a fact, a lesson about a decision, a
+  task's dependencies, a handoff's next tasks, a briefing and what it carried —
+  and nothing is inferred by a model. The same store draws the same picture on
+  every machine, and adding a node never moves another. Hover for the value,
+  click for the side sheet: the value, sources with fresh or stale per file,
+  the entry's history across commits, and what it is connected to.
+- **Motion is evidence.** A pulse travels from an agent to what it wrote, from
+  an agent to the task it claimed, from a changed file back to the fact and on
+  to what cited it, and from what a briefing gathered to the agent it was
+  served to. Nothing moves when nothing happened, and nothing moves at all
+  when your system asks for reduced motion.
+- **Lenses** show the same graph through handoffs, coordination, freshness,
+  dead ends or briefings. **Search** at the top runs the engine's own ranked
+  text search and lights up the hits.
+- **Panels**, all read only: handoffs and who picked each up, the board with
+  who holds what and what is blocked, facts and what changed, lessons and how
+  often each was served since, briefings served with bytes and approximate
+  tokens, and what needs attention.
+- **Compare branches** lists the keys two branches disagree on, the same view a
+  merge would face. **Export this view** makes one self-contained file, after a
+  preview, with anything shaped like a credential withheld; your browser saves
+  it and nothing is uploaded anywhere.
+
+The address it prints carries the daemon's read token after the `#`, which a
+browser never sends to a server. That token can only read: the daemon refuses
+it on every route that writes. It dies with the daemon: after `memfork stop`
+the page says the server stopped and asks you to run `memfork brain` again,
+and it never scans or retries other ports. `memfork brain --no-open` prints
+the address without opening a browser; `memfork doctor` shows the address
+without the token; `MEMFORK_BROWSER` names another program to open it with,
+or `none`. The page is black; add `?light` to the address for a light theme.
+The whole page works from the keyboard: the graph takes arrow keys, Enter and
+Escape, and `/` goes to search. On a phone-width window the panels stack and
+the graph shows the current lens.
+
+What to look for, with your own tools working in one project: a handoff left
+by one and picked up by another as a pulse into a briefing; a fact going amber
+when its file changes; a lesson appearing when a fork is discarded; the
+timeline dragged back across all of it; the window narrowed to phone width;
+then `memfork stop`, and the page reporting that the server stopped. The same
+with one tool alone.
+
+An administrator can switch the Brain and the demo off for a machine with
+`brain = false` in the [machine policy](#for-administrators).
+
 ## Why not Redis, or a vector database?
 
 | | MemFork | Redis | Vector DBs |
@@ -663,7 +737,9 @@ to the server.
 | `plan write\|check\|show\|new\|templates` | plans: tasks with dependencies and acceptance commands |
 | `flags` | duplicates and contradictions worth a look |
 | `maintain on\|off\|status` | whether MemFork adds maintenance tasks to this project |
-| `stats` | briefings, bytes, lessons, facts and claims, per project and tool |
+| `stats` | briefings, bytes, lessons, facts, claims and handoffs picked up, per project and tool |
+| `brain` | open the Brain: the memory graph and what the engine did, read only, on this machine only; `--no-open` prints the address |
+| `demo` | play a scripted session on a throwaway store with the Brain open on it; `--fast`, `--exit`, `--agents A,B` |
 | `put --source <path>`, `discard --lesson <text>` | store a fact; keep a lesson |
 | `run <file\|->` | a script of the above against one in-memory database |
 | `mcp` | serve MCP over stdio — what clients run |

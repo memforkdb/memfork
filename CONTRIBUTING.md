@@ -79,6 +79,7 @@ All of it, before every commit:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+node --test crates/memfork/src/brain/page/tests/brain.test.mjs   # the Brain's page logic
 cargo deny --workspace --all-features check
 ```
 

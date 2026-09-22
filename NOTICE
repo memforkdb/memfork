@@ -20,7 +20,7 @@ the License.
 THIRD-PARTY MATERIAL INCLUDED IN THIS REPOSITORY
 
 Icons — Lucide
-  docs/assets/icons/
+  docs/assets/icons/, crates/memfork/src/brain/page/brain.html
   Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as
   part of Feather (MIT). All other copyright (c) for Lucide are held by
   Lucide Contributors 2022.

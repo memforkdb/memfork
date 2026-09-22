@@ -93,6 +93,12 @@ grep -q '"memfork_put"' "$work/mcp.out" || fail "memfork mcp did not list its to
 grep -q '"id":3' "$work/mcp.out" || fail "memfork mcp did not answer a tool call: $(head -c 400 "$work/mcp.out")"
 ok "memfork mcp shakes hands and answers a tool call"
 
+# The Brain's address, from the daemon on loopback; and the demo, on a
+# throwaway store of its own, with the page not opened.
+"$bin" brain --no-open 2>"$work/last.err" | grep -q '/brain#t=' || fail "brain --no-open"
+"$bin" demo --no-open --fast --exit >/dev/null 2>"$work/last.err" || fail "demo"
+ok "the Brain and the demo work on loopback"
+
 "$bin" stop >/dev/null || fail "stop"
 ok "the daemon stopped"
 

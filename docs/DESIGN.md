@@ -281,6 +281,10 @@ Subcommands:
   usefulness.
 - **[v0.6]** `memfork stop` — shut the daemon down gracefully: flush, release
   the directory, remove the endpoint file. Use it before upgrading.
+- **[v0.15]** `memfork brain` — find or start the daemon, print the Brain's
+  address with the read token in its fragment, open the browser (§5.5).
+  `--no-open` prints only. `memfork demo` — the same page on a throwaway
+  store, with two scripted agents playing a session (§5.5).
 - `memfork init` — detect installed clients and register the MCP server with each.
   Driven by the client adapter registry (§6.1), never by hard-coded per-client logic.
   Idempotent. Prints exactly what it changed. `--dry-run` and `--client <name>` supported.
@@ -508,7 +512,7 @@ place (`secrets::Allow::parse`), which the tools, the command line and plan
 files share, so a policy that forbids overrides forbids them everywhere.
 Maintenance tasks are gated where they are added and `memfork maintain on` is
 refused. `memfork brain` and `memfork demo` consult it before starting a
-daemon (§5.6). The features that do not exist yet — race, autopilot,
+daemon (§5.5). The features that do not exist yet — race, autopilot,
 sampling — are parsed and reported now, so a policy written today keeps
 holding when they land, and each consults `policy::allows` as it arrives.
 
@@ -525,6 +529,125 @@ The alternative, running as though the file were empty, would turn an
 administrator's typo into no policy at all with nothing to say so. Doctor
 shows the policy in force in its first lines, and in full under `--verbose`:
 each file, whether it is present, every feature's answer, and the pin.
+
+### 5.5 The Brain
+
+**[v0.15]** A read-only page, served by the daemon on its existing loopback
+listener, that shows what the engine knows and what it decided. A view of a
+database engine, not a control panel: nothing on it changes memory, and a
+test proves the HTTP surface has no route that could.
+
+*Routes.* Everything is under `/brain`. The page, its style and its script
+are three files compiled into the binary (`brain/page/`) and served without
+a token, since a browser's first navigation cannot carry one; they hold no
+data. Every data route (`summary`, `attention`, `graph`, `entry`,
+`search`, `diff`, `export`) answers `GET` only and needs a token, and
+`brain::ROUTES` is the list a test walks: every method but `GET` gets 405,
+no token gets 401, and after every route has been hit with every method and
+bad parameters, the log and the branches are what they were. A Brain route
+does not touch the daemon's idle clock, like the event stream, so a tab left
+open lets the daemon exit as usual.
+
+*Two tokens.* The daemon mints a second random token at start, the read
+token, and publishes it in the endpoint file beside its own. `serve::Guard`
+accepts it only on the routes that read — the Brain's and `/events` — and
+refuses it on `/mcp`, `/cli`, `/report` and `/shutdown` with a message
+that says so. The page holds the read token and never the other, so "the
+page cannot write" is true by construction. The token travels in the URL
+fragment (`#t=`), which the browser keeps to itself, and from there into a
+closure and the `Authorization` header of every fetch; the event stream is
+read with `fetch` and a stream reader for that reason, not `EventSource`.
+No cookie, no storage, no query string: tests scan the script for each.
+
+*Host, policy, headers.* `Guard` refuses a `Host` that is not
+`127.0.0.1:<port>` or `localhost:<port>` on every route, which rmcp had
+done only on `/mcp`. Every Brain answer carries a content security policy
+allowing nothing but the page's own files, `nosniff`, no referrer, no
+caching, and no CORS header. The markup has no inline script, no inline style
+and no handler attribute, so the policy has nothing to except. Memory
+contents reach the page as JSON and go through one escaping function or
+`textContent`; a stored script tag is a test on both sides.
+
+*The graph.* `brain::graph` builds nodes from the entries of a project on a
+branch — decisions, facts, tasks, lessons, handoffs, plain entries — plus
+source files, briefings served (from the side file) and agents (writers and
+connected clients), and edges from the relations the engine already knows:
+source of, cited by (a decision naming a fact key), about (a lesson naming a
+decision key), for (a lesson's task), depends on, next (a handoff's items
+naming a task by id, or by title while the board has at most 2,000 tasks),
+in and served to (a briefing), holds and wrote (an agent). Nothing is
+inferred. Layout is computed here, not on the page: seven fixed columns in
+the order agents, briefings, decisions and handoffs, lessons, plan, facts,
+files; within a column, a node's height is the top sixteen bits of the
+FNV-1a 64 hash of its id, so adding a node never moves another, and a column
+with twelve or fewer nodes is spaced evenly in id order instead. Nodes are
+sorted by column then id, edges sorted and deduplicated, so the same store
+gives the same JSON on every machine (`brain.rs` builds one store, restarts
+the daemon, and compares). A past point is `Db::at`; leases and
+connections are the present's and are left out of the past. The JSON is
+arrays, with kinds and writers as indexes and derivable labels omitted:
+about 9 MB for a hundred thousand nodes.
+
+*The page.* Two canvases. The static layer holds column labels, edges, nodes
+and labels, and is redrawn only when the graph, the lens, the time or the
+size changes; at more than three thousand visible nodes it draws points with
+`fillRect`, and labels only where a column has room, or for the hovered,
+focused and searched nodes. The moving layer draws pulses, glows, focus and
+search hits each frame. An event from the stream is applied at once by a
+pure reducer (`Brain.applyEvent`): a new node is placed by the same hash
+the daemon uses, and the pulse it earns is one real event — a write, a
+claim, a release, a stale fact running from its files to what cited it, a
+briefing gathering what it carried — then a reconcile fetch, debounced and
+spaced by the size of the graph, replaces the picture with the daemon's,
+keeping every existing node's birth time so nothing re-animates. Hit
+testing is a bucket grid. The keyboard moves focus to the nearest visible
+node in a direction. The timeline hides nodes written after the chosen
+point at once and fetches the exact past view when the drag settles.
+Reduced motion draws no pulse. The theme is a query parameter, since the
+page stores nothing.
+
+*A dead daemon.* The page keeps `/events` open. When the stream ends, it
+makes exactly one probe to `summary` on the same address; a connection
+error, or a 401 from a new daemon that took the port, puts it in the stopped
+state, with the word and a sentence saying to run `memfork brain` again.
+It never retries and never tries another port. The hello line's port is
+checked against the page's own.
+
+*Export.* `brain::export` inlines the page, its style and its script, and
+embeds the summary, the graph and every entry as data in a script element,
+with `</` and `<!--` escaped so no value can end it. Every string that is
+a value goes through the credential rules first and a match is replaced by a
+marker; ids and names are left alone so the graph still holds. The page
+shows a preview — size, counts, what was withheld — and then the browser's
+own download; the answer carries `Content-Disposition: attachment`. An
+export opens from disk with every request answered from its own data.
+
+*The demo.* `memfork demo` makes a temporary directory with a store and a
+small fake repository, starts a daemon on it with a short idle timeout,
+prints and opens the address, and drives two `agent::FakeAgent`s — clients
+over the real MCP transport, named after the first two registry entries
+whose MCP name is confirmed, hashing and checking facts the way a proxy does
+— through nine narrated steps. Ctrl+C or `--exit` stops the daemon and
+removes the directory; `--fast` drops the pauses. It never resolves the
+real data directory, and a test checks the sandbox's store is byte for byte
+what it was.
+
+*Tests, in three layers.* The HTTP surface, the tokens, the Host check, the
+headers, the assets and the graph's determinism are Rust tests against a real
+daemon in the sandbox (`brain.rs`, `demo.rs`). The page's logic runs under
+Node's own test runner on all three CI runners, with no packages
+(`brain/page/tests`): escaping, the token, the session's verdicts, stream
+parsing, the hash against the daemon's vectors, loading and spacing, lenses
+and the timeline, every event's effect, and the time one event takes. The
+budgets are a release-mode test on a hundred thousand entries
+(`brain_budget.rs`) that prints every figure and fails on any over budget:
+on a laptop, the summary the first paint waits for takes about 110 ms
+(budget 200), attention 150 ms (400), the graph built, laid out and encoded
+650 ms (1,000), layout 4 ms (50), the engine's ranked search 360 ms (800) at
+a hundred thousand entries and 32 ms (50) at ten thousand. What only a
+browser can show — pixels, the policy enforced, fetch streaming, the narrow
+layout, first paint and frame rate as perceived — is measured by the page
+itself and checked by hand (README, *The Brain*).
 
 ## 6. MCP tools
 All tools take an optional `branch` (default: the session's current branch).
@@ -1356,6 +1479,25 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.15 — the brain
+1. **A read token** (§5.5) beside the daemon's own, accepted only by the
+   routes that read, and a `Host` check on every route rather than on the
+   MCP path alone.
+2. **The Brain** (§5.5): the memory graph with relations the engine knows and
+   a layout computed in the daemon, panels, lenses, time travel, search, the
+   side sheet, the keyboard, a dead-daemon verdict without retries, export
+   with credentials withheld, and `memfork brain` to open it.
+3. **`memfork demo`** (§5.5) with scripted agents over the real transport,
+   on a throwaway store.
+4. **Briefings remembered beside the store** (§6.8), a hundred per project,
+   and `handoffs_picked_up` in the statistics; fresh facts remembered beside
+   stale ones, so a fact can say unverified.
+5. **The client registry parsed once per process**; it was parsed for every
+   writer's name.
+6. **Tests in three layers** (§5.5, §8): Rust against a real daemon, the
+   page's logic under Node on every runner, and release-mode budgets on a
+   hundred thousand entries.
 
 ### v0.14 — reach
 1. **Sixteen clients in the registry** (§6.1), the eleven new ones verified

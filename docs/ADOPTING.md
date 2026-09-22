@@ -50,6 +50,13 @@ cannot write a command into shared memory and have another tool run it.
 **Nothing else.** No hooks, no services, no scheduled tasks, no changes to
 `PATH` beyond the directory the installer puts the binary in (and says so).
 
+**The Brain**, `memfork brain`, is a page the daemon serves on the same
+loopback listener, read only: every route it can reach answers `GET`, and the
+token it holds is refused on every route that writes. It makes no request that
+leaves the machine, and its export is a file the browser saves, with anything
+shaped like a credential withheld. `brain = false` in the machine policy
+switches it and `memfork demo` off.
+
 ## How to roll it out
 
 1. **Install** with the script for the platform, `pip`, `cargo`, or from a
