@@ -437,6 +437,7 @@ mod windows_handles {
 /// children started after this call. Windows only: elsewhere a child gets
 /// the three handles it is given and nothing else.
 #[cfg(windows)]
+#[cfg_attr(not(feature = "brain"), allow(dead_code))]
 pub(crate) fn stop_inheriting_std_handles() {
     windows_handles::stop_inheriting_std_handles();
 }

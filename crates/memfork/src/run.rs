@@ -113,6 +113,14 @@ pub fn run(cli: Cli) -> ExitCode {
             session_timeout,
         } => run_serve(&persist(p), *port, *session_timeout),
         Command::Stop => run_stop(cli.global.data_dir.as_deref()),
+        // Long-running, and it starts a daemon: like `serve`, it keeps
+        // stdout's lock to itself.
+        Command::Demo {
+            no_open,
+            fast,
+            exit,
+            agents,
+        } => run_demo(*no_open, *fast, *exit, agents.clone(), choice, channel),
         command => {
             let mut stdout = std::io::stdout().lock();
             let style = Style::for_stdout(choice, channel);
@@ -1671,6 +1679,44 @@ fn run_brain(
         crate::brain::open_in_browser(&url).map_err(ExecError::Usage)?;
     }
     Ok(())
+}
+
+/// `memfork demo`: the whole product moving, on a store that is thrown away.
+#[cfg(feature = "brain")]
+fn run_demo(
+    no_open: bool,
+    fast: bool,
+    exit: bool,
+    agents: Option<String>,
+    choice: ColorChoice,
+    channel: Channel,
+) -> Result<(), ExecError> {
+    let style = Style::for_stdout(choice, channel);
+    let options = crate::demo::Options {
+        no_open,
+        fast,
+        exit,
+        agents,
+    };
+    let mut stdout = std::io::stdout();
+    crate::demo::run(&mut stdout, &options, &style).map_err(ExecError::Usage)
+}
+
+#[cfg(not(feature = "brain"))]
+fn run_demo(
+    _no_open: bool,
+    _fast: bool,
+    _exit: bool,
+    _agents: Option<String>,
+    _choice: ColorChoice,
+    _channel: Channel,
+) -> Result<(), ExecError> {
+    Err(ExecError::Usage(
+        "this build of MemFork was made without the Brain (the `brain` cargo feature), \
+         and the demo plays on it. Install a release build, or build with the default \
+         features, to use it."
+            .to_owned(),
+    ))
 }
 
 /// The same command in a build made without the Brain: it says so.

@@ -82,7 +82,9 @@ jiff = "0.2"
 regex-lite = "0.1"
 # The exact diff `memfork init --project --dry-run` prints.
 similar = { version = "2", default-features = false, features = ["text"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync", "time", "net", "process"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "io-std", "io-util", "macros", "sync", "time", "net", "process", "signal"] }
+# The throwaway store `memfork demo` plays on, removed when it ends.
+tempfile = "3.27"
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 # Windows only, and for one call: marking this process's standard handles

@@ -60,6 +60,8 @@
 
 #![warn(missing_docs)]
 
+#[cfg(feature = "brain")]
+pub mod agent;
 pub mod board;
 #[cfg(feature = "brain")]
 pub mod brain;
@@ -67,6 +69,8 @@ pub mod cli;
 pub mod client;
 pub mod clients;
 pub mod daemon;
+#[cfg(feature = "brain")]
+pub mod demo;
 pub mod doctor;
 pub mod events;
 pub mod exec;

@@ -532,6 +532,27 @@ pub enum Command {
         #[arg(long)]
         no_open: bool,
     },
+
+    /// Play a scripted session on a throwaway store, with the Brain open on
+    /// it: two scripted clients store, plan, fork, discard, hand off and
+    /// resume, and the page shows it all moving. Nothing is spent, no AI
+    /// tool is needed, and your own memory is never touched; the store is
+    /// removed when the demo ends.
+    Demo {
+        /// Print the page's address and do not open a browser.
+        #[arg(long)]
+        no_open: bool,
+        /// No pauses between steps.
+        #[arg(long)]
+        fast: bool,
+        /// Stop when the script ends, rather than waiting for Ctrl+C.
+        #[arg(long)]
+        exit: bool,
+        /// The two clients to stand in for, comma separated. Defaults to
+        /// the first two in the client registry.
+        #[arg(long, value_name = "A,B")]
+        agents: Option<String>,
+    },
 }
 
 /// What `memfork plan` does.
@@ -663,6 +684,7 @@ impl Command {
                 | Command::Stop
                 | Command::Watch { .. }
                 | Command::Brain { .. }
+                | Command::Demo { .. }
                 | Command::Init { .. }
                 | Command::Doctor { .. }
                 | Command::Completions { .. }
@@ -704,6 +726,7 @@ impl Command {
             Command::Stop => "stop",
             Command::Watch { .. } => "watch",
             Command::Brain { .. } => "brain",
+            Command::Demo { .. } => "demo",
         }
     }
 }
