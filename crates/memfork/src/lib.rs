@@ -80,6 +80,7 @@ pub mod mcp;
 pub mod namespace;
 pub mod persist;
 pub mod plans;
+pub mod prompts;
 pub mod proxy;
 pub mod render;
 pub mod run;

@@ -1,0 +1,42 @@
+# The MCP prompts MemFork offers: its routines as one-step commands, for the
+# clients that show MCP prompts to the person using them.
+#
+# Each has a `name`, a `description`, the `text` the client puts in front of
+# its model, and at most one optional `argument` whose value, when given, is
+# added on a line of its own after `label`. `{project}` becomes the project
+# the session works in. Keep them short, imperative and about no particular
+# model or client.
+
+[[prompt]]
+name = "resume"
+description = "Pick up this project where the last agent left it"
+text = """Call memfork_resume, saying in `task` what you are about to do. Read the latest handoff, the lessons, and what changed since you last looked (`since_last`). Continue from there: do not redo what is done, and do not reverse a recorded decision without a new reason."""
+argument = "task"
+argument_description = "What you are about to do"
+label = "Task"
+
+[[prompt]]
+name = "handoff"
+description = "Record where the work stands before stopping"
+text = """Before you stop: store each decision you made that is not recorded yet with memfork_put under `{project}:decision:<topic>`, with its reason. Then call memfork_handoff with `summary` (where the work stands), `done`, `next`, `blockers` and `questions`, so the next agent can continue from you."""
+argument = "note"
+argument_description = "Anything the handoff must mention"
+label = "Make sure the handoff mentions"
+
+[[prompt]]
+name = "review-decisions"
+description = "Check this project's recorded decisions for ones that are outdated or conflict"
+text = """Call memfork_resume, then memfork_list with the prefix `{project}:decision:`. For each decision, ask whether it is still true and its reason still sound. Report the ones that look outdated, and any the briefing flags as conflicting, with what you would change. Change nothing without asking."""
+
+[[prompt]]
+name = "tidy-memory"
+description = "Tidy this project's memory on a fork, checked before it is merged"
+text = """Call memfork_task with `action` list. If a maintenance task (its id starts `maintain-`) is open, claim it and follow its detail exactly, then mark it done with `fork` naming your fork. If there is none, say so, and ask before tidying anything."""
+
+[[prompt]]
+name = "next-task"
+description = "Take the next ready task from the board and do it"
+text = """Call memfork_task with `action` list and `status` ready. Claim the first that fits with `action` claim; if somebody holds it, take another. Do it, then mark it done; if it has an acceptance command, marking it done runs it, and a failure reopens it with a lesson. Before you stop, call memfork_handoff."""
+argument = "area"
+argument_description = "Prefer tasks about this"
+label = "Prefer tasks about"

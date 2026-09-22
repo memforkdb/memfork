@@ -31,9 +31,10 @@ use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
-    InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, GetPromptRequestParams,
+    GetPromptResponse, Implementation, InitializeRequestParams, InitializeResult,
+    ListPromptsResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
+    Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -609,13 +610,38 @@ fn as_mcp_error(e: &UpstreamError) -> ErrorData {
 }
 
 impl ServerHandler for Proxy {
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        Ok(ListPromptsResult::with_all_items(crate::prompts::list()))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        crate::prompts::get(&request.name, request.arguments.as_ref(), &self.namespace)
+            .map(Into::into)
+            .map_err(|why| ErrorData::invalid_params(why, None))
+    }
+
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(
-                Implementation::new("memfork", crate::VERSION)
-                    .with_title("MemFork — branchable agent memory"),
-            )
-            .with_instructions(crate::mcp::instructions(&self.namespace))
+        // Prompts are answered here, from the same data the daemon has, so
+        // listing them costs no daemon, as listing tools does not.
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_server_info(
+            Implementation::new("memfork", crate::VERSION)
+                .with_title("MemFork — branchable agent memory"),
+        )
+        .with_instructions(crate::mcp::instructions(&self.namespace))
     }
 
     async fn initialize(
