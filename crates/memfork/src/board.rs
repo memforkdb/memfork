@@ -474,6 +474,19 @@ impl Board {
         self.finish(db, branch, key, who, "open")
     }
 
+    /// Open a task again and drop its claim: a check it had to pass failed.
+    pub fn reopen(&self, db: &Db, branch: &str, key: &str, who: &Who) -> Result<Json, BoardError> {
+        self.finish(db, branch, key, who, "reopen")
+    }
+
+    /// The client holding `key`, if it is somebody other than `who`.
+    pub fn held_elsewhere(&self, key: &str, who: &Who) -> Option<String> {
+        let leases = self.leases();
+        self.current(&leases, key)
+            .filter(|l| l.who != *who)
+            .map(|l| l.who.client.clone())
+    }
+
     /// Mark a task done. A task with an acceptance command needs the result
     /// of running it, from where the project is: done if it passed, and
     /// reopened, with the claim dropped, if it did not.

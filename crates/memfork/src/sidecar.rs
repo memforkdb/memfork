@@ -33,6 +33,9 @@ pub const MAX_FACT_RECORDS: usize = 50_000;
 /// Most "last seen" records kept, across every project, client and branch.
 pub const MAX_SEEN_RECORDS: usize = 10_000;
 
+/// Most stale facts remembered per project.
+pub const MAX_STALE_KEPT: usize = 1000;
+
 /// Counters for one client in one project.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -87,6 +90,21 @@ struct Data {
     next_order: u64,
     /// project -> client -> branch -> the head that client last saw there
     seen: BTreeMap<String, BTreeMap<String, BTreeMap<String, SeenRecord>>>,
+    /// project -> maintenance: switched off, and the triggers that have fired
+    maintenance: BTreeMap<String, Maintenance>,
+    /// project -> the facts last found stale, by key
+    stale: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+/// A project's self-maintenance, as far as the side file keeps it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Maintenance {
+    off: bool,
+    /// trigger -> the task it added, while that is outstanding
+    fired: BTreeMap<String, String>,
+    /// The number the next maintenance task takes.
+    next: u64,
 }
 
 /// The side structure, and where it is kept.
@@ -251,6 +269,94 @@ impl Sidecar {
             .and_then(|c| c.get(client))
             .and_then(|b| b.get(branch))
             .map(|r| (r.commit.clone(), r.seq))
+    }
+
+    /// Remember the verdicts checking facts found, so the project's stale
+    /// facts can be counted. At most [`MAX_STALE_KEPT`] per project.
+    pub fn note_facts(&self, project: &str, facts: &[(String, String)]) {
+        if facts.is_empty() {
+            return;
+        }
+        let mut data = self.data();
+        let set = data.stale.entry(project.to_owned()).or_default();
+        for (key, state) in facts {
+            match state.as_str() {
+                "stale" if set.len() < MAX_STALE_KEPT => {
+                    set.insert(key.clone());
+                }
+                "fresh" => {
+                    set.remove(key);
+                }
+                _ => {}
+            }
+        }
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The facts in `project` last found stale.
+    pub fn stale_facts(&self, project: &str) -> Vec<String> {
+        self.data()
+            .stale
+            .get(project)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether MemFork may add maintenance tasks to `project`.
+    pub fn maintenance_on(&self, project: &str) -> bool {
+        !self.data().maintenance.get(project).is_some_and(|m| m.off)
+    }
+
+    /// Switch maintenance tasks on or off for `project`.
+    pub fn set_maintenance(&self, project: &str, on: bool) {
+        self.data()
+            .maintenance
+            .entry(project.to_owned())
+            .or_default()
+            .off = !on;
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The maintenance task a trigger added and that is still outstanding.
+    pub fn fired(&self, project: &str, trigger: &str) -> Option<String> {
+        self.data()
+            .maintenance
+            .get(project)
+            .and_then(|m| m.fired.get(trigger).cloned())
+    }
+
+    /// Every trigger that has fired in `project`, with its task.
+    pub fn fired_all(&self, project: &str) -> BTreeMap<String, String> {
+        self.data()
+            .maintenance
+            .get(project)
+            .map(|m| m.fired.clone())
+            .unwrap_or_default()
+    }
+
+    /// Note that `trigger` fired in `project`: the task takes the next number,
+    /// and `key_for` turns it into the task's key, which is returned.
+    pub fn fire(
+        &self,
+        project: &str,
+        trigger: &str,
+        key_for: impl FnOnce(u64) -> String,
+    ) -> String {
+        let mut data = self.data();
+        let m = data.maintenance.entry(project.to_owned()).or_default();
+        m.next += 1;
+        let key = key_for(m.next);
+        m.fired.insert(trigger.to_owned(), key.clone());
+        self.dirty.store(true, Ordering::Relaxed);
+        key
+    }
+
+    /// Let `trigger` fire again in `project`.
+    pub fn rearm(&self, project: &str, trigger: &str) {
+        if let Some(m) = self.data().maintenance.get_mut(project) {
+            m.fired.remove(trigger);
+        }
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// The hashes a fact was written with, if they were kept.

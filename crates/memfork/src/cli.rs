@@ -290,6 +290,17 @@ pub enum Command {
         namespace: Option<String>,
     },
 
+    /// Maintenance tasks: whether MemFork may add them to a project when its
+    /// memory needs tidying.
+    Maintain {
+        /// on, off, or status.
+        #[arg(value_parser = ["on", "off", "status"])]
+        setting: String,
+        /// The project. Defaults to the one this directory belongs to.
+        #[arg(long, value_name = "NAME")]
+        namespace: Option<String>,
+    },
+
     /// Duplicates and contradictions in a project worth a look: decisions
     /// made differently on different branches, the same value under
     /// near-identical keys, facts from the same files that disagree. MemFork
@@ -585,6 +596,10 @@ pub enum TaskAction {
     Done {
         /// The task's id.
         id: String,
+        /// For a maintenance task: the fork the work was done on, to be
+        /// checked and merged.
+        #[arg(long, value_name = "BRANCH")]
+        fork: Option<String>,
         /// The acceptance command's result, worked out here before the
         /// command is sent, since the daemon cannot see the project.
         #[arg(skip)]
@@ -642,6 +657,7 @@ impl Command {
             Command::Facts { .. } => "facts",
             Command::Lessons { .. } => "lessons",
             Command::Flags { .. } => "flags",
+            Command::Maintain { .. } => "maintain",
             Command::Stats { .. } => "stats",
             Command::Run { .. } => "run",
             Command::Mcp { .. } => "mcp",

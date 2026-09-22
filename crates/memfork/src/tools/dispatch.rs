@@ -99,6 +99,7 @@ pub fn record_checked(
     if checked.is_empty() {
         return;
     }
+    shared.sidecar.note_facts(ns, &checked.facts);
     shared.sidecar.count(ns, client, |c| {
         c.facts_fresh += checked.fresh;
         c.facts_stale += checked.stale;
@@ -409,9 +410,10 @@ impl Session {
             Err(ToolError::Secret(crate::secrets::Refused::Secret(found))) => {
                 Some(format!("secret refused: {}", found.rule))
             }
-            Ok(r) if r.get("accepted") == Some(&json!(false)) => {
-                Some("acceptance failed; reopened".to_owned())
-            }
+            Ok(r) if r.get("accepted") == Some(&json!(false)) => Some(match r.get("reason") {
+                Some(_) => "not merged; reopened".to_owned(),
+                None => "acceptance failed; reopened".to_owned(),
+            }),
             _ => result.and_then(|r| {
                 r.get("held_by")
                     .and_then(Json::as_str)
@@ -962,6 +964,7 @@ impl Session {
                 )?;
                 let written =
                     handoff::write(&self.db, &branch, &ns, &note, self.writer().as_deref())?;
+                self.tend(&branch, &ns)?;
                 Ok(json!({
                     "namespace": ns,
                     "branch": branch,
@@ -974,6 +977,7 @@ impl Session {
 
             "memfork_resume" => {
                 let ns = self.namespace_arg(args)?;
+                self.tend(&branch, &ns)?;
                 let me = self.writer();
                 let ask = handoff::Ask {
                     task: opt_str(args, "task")?.map(str::to_owned),
@@ -1132,6 +1136,9 @@ impl Session {
             "done" => {
                 let key = key()?;
                 let id = req_str(args, "id")?;
+                if let Some(answer) = self.done_maintenance(branch, &ns, &key, &who, args)? {
+                    return Ok(answer);
+                }
                 // The acceptance result comes from where the project is: the
                 // proxy or the command line sends it; here only if this
                 // process can see the project itself.
@@ -1197,6 +1204,112 @@ impl Session {
                 "`action` must be add, plan, claim, renew, release, done or list; got `{other}`"
             ))),
         }
+    }
+
+    /// `done` on a maintenance task: check the fork it was done on, then merge
+    /// it, or discard it with a lesson and reopen the task. `None` for any
+    /// other task.
+    fn done_maintenance(
+        &self,
+        branch: &str,
+        ns: &str,
+        key: &str,
+        who: &Who,
+        args: &JsonObject,
+    ) -> Result<Option<Json>, ToolError> {
+        // Called from the fork itself, the task is on the branch it came from.
+        let fork_arg = opt_str(args, "fork")?;
+        let parent;
+        let branch = if fork_arg == Some(branch) {
+            parent = lessons::parent_of(&self.db, branch);
+            parent.as_str()
+        } else {
+            branch
+        };
+        let Some(entry) = self.db.get(branch, key)? else {
+            return Ok(None);
+        };
+        let task: Json = serde_json::from_slice(&entry.value).unwrap_or(Json::Null);
+        if task.get("maintenance").is_none() || task["status"] == "done" {
+            return Ok(None);
+        }
+        let board = &self.shared.board;
+        if let Some(holder) = board.held_elsewhere(key, who) {
+            return Ok(Some(json!({
+                "action": "done",
+                "key": key,
+                "changed": false,
+                "held_by": holder,
+            })));
+        }
+        let Some(fork) = opt_str(args, "fork")? else {
+            return Err(ToolError::BadArguments(format!(
+                "`{key}` is maintenance: do the work on a fork, then mark it done with `fork` \
+                 naming that fork, so MemFork can check it before merging"
+            )));
+        };
+        let bad = |e: crate::board::BoardError| match e {
+            crate::board::BoardError::Bad(m) => ToolError::BadArguments(m),
+            crate::board::BoardError::Engine(e) => ToolError::Engine(e),
+        };
+        let checked = crate::maintenance::check(&self.db, branch, fork, ns, key, &task)
+            .and_then(|()| crate::maintenance::merge(&self.db, branch, fork));
+        // Whichever way it goes the fork is gone; a session on it moves back.
+        if self.branch() == fork && !self.db.has_branch(fork) {
+            *self.branch.lock().unwrap_or_else(|e| e.into_inner()) = branch.to_owned();
+        }
+        match checked {
+            Ok(()) => {
+                let mut answer = board.done(&self.db, branch, key, who, None).map_err(bad)?;
+                answer["accepted"] = json!(true);
+                answer["merged"] = json!(fork);
+                Ok(Some(answer))
+            }
+            Err(reason) => {
+                let lesson =
+                    lessons::tidy(&format!("maintenance on {fork} was not merged: {reason}"))
+                        .unwrap_or_else(|_| reason.clone());
+                let recorded = if self.db.has_branch(fork) && fork != branch {
+                    let rec =
+                        lessons::record(&self.db, fork, &lesson, ns, self.writer().as_deref())?;
+                    self.db.discard(fork)?;
+                    if self.branch() == fork {
+                        *self.branch.lock().unwrap_or_else(|e| e.into_inner()) = branch.to_owned();
+                    }
+                    self.count(|c| c.lessons_recorded += 1);
+                    Some(json!({"key": rec.key, "branch": rec.branch, "lesson": lesson}))
+                } else {
+                    None
+                };
+                let mut answer = board.reopen(&self.db, branch, key, who).map_err(bad)?;
+                answer["accepted"] = json!(false);
+                answer["reason"] = json!(reason);
+                if let Some(rec) = recorded {
+                    answer["lesson"] = rec;
+                    answer["discarded"] = json!(fork);
+                }
+                Ok(Some(answer))
+            }
+        }
+    }
+
+    /// Add any maintenance tasks the project's triggers call for, and say so
+    /// in the feed.
+    fn tend(&self, branch: &str, ns: &str) -> Result<(), ToolError> {
+        let added = crate::maintenance::tend(&self.db, branch, ns, &self.shared)?;
+        if let Some(events) = &self.events {
+            let who = self.writer().unwrap_or_else(|| "unknown client".to_owned());
+            for task in &added {
+                events.publish(Event {
+                    operation: Some("maintain".to_owned()),
+                    key: task["key"].as_str().map(str::to_owned),
+                    branch: Some(branch.to_owned()),
+                    detail: task["trigger"].as_str().map(str::to_owned),
+                    ..Event::about(&who, Some(ns))
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The namespace a handoff or resume call works in: the one it names, if

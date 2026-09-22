@@ -286,7 +286,7 @@ fn run_op(
     // A task with an acceptance command is done only if that command passes,
     // and it runs here, where the project is.
     if let Command::Task {
-        action: TaskAction::Done { id, acceptance },
+        action: TaskAction::Done { id, acceptance, .. },
         namespace: named,
         ..
     } = &mut command

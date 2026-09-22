@@ -486,6 +486,13 @@ pub fn all() -> Vec<ToolDef> {
                         integer("When claiming: how long the claim lasts, 1 to 3600."),
                     ),
                     (
+                        "fork",
+                        string(
+                            "When marking a maintenance task done: the fork you did the work on. \
+                             MemFork checks it and merges it, or discards it with a lesson.",
+                        ),
+                    ),
+                    (
                         "status",
                         string_enum(
                             "When listing: which tasks. Defaults to unfinished.",

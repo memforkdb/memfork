@@ -323,7 +323,7 @@ pub fn event(e: &Event, style: &Style) -> String {
             let op = e.operation.as_deref().unwrap_or("?");
             let painted_op = match op {
                 "fork" | "merge" | "handoff" | "resume" | "claim" | "done" | "lesson" | "ready"
-                | "plan" => style.accent(op),
+                | "plan" | "maintain" => style.accent(op),
                 "discard" | "delete" | "del" | "release" | "reopen" | "flag" => style.warn(op),
                 _ => style.primary(op),
             };

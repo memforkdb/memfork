@@ -75,6 +75,7 @@ pub mod history;
 pub mod init;
 pub mod launch;
 pub mod lessons;
+pub mod maintenance;
 pub mod mcp;
 pub mod namespace;
 pub mod persist;

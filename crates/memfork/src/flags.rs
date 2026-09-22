@@ -96,6 +96,12 @@ pub fn near(a: &str, b: &str) -> bool {
             .to_owned()
     };
     let (ta, tb) = (topic(a), topic(b));
+    // Numbered entries, such as handoffs, lessons and tasks, differ by their
+    // numbers on purpose.
+    let numbered = |t: &str| !t.is_empty() && t.chars().all(|c| c.is_ascii_digit());
+    if numbered(&ta) && numbered(&tb) {
+        return false;
+    }
     let (na, nb) = (normal(&ta), normal(&tb));
     na == nb || (ta.chars().count() >= 8 && tb.chars().count() >= 8 && within(&na, &nb, 2))
 }
@@ -256,6 +262,7 @@ mod tests {
         assert!(!near("p:decision:db", "p:decision:dbs2"));
         assert!(!near("p:decision:auth", "p:decision:cache"));
         assert!(!near("p:decision:x", "p:decision:x"));
+        assert!(!near("p:handoff:00000001", "p:handoff:00000002"));
     }
 
     #[test]

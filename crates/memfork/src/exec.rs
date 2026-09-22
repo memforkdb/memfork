@@ -253,8 +253,12 @@ pub fn execute_in(
                 }
                 TaskAction::Renew { id } => json!({"action": "renew", "id": id}),
                 TaskAction::Release { id } => json!({"action": "release", "id": id}),
-                TaskAction::Done { id, acceptance } => {
-                    let mut args = json!({"action": "done", "id": id});
+                TaskAction::Done {
+                    id,
+                    fork,
+                    acceptance,
+                } => {
+                    let mut args = json!({"action": "done", "id": id, "fork": fork});
                     if let Some(ran) = acceptance {
                         args["acceptance"] = json!(ran);
                     }
@@ -337,6 +341,28 @@ pub fn execute_in(
                 crate::facts::check(&mut json, root, &ctx.shared.hasher);
             }
             Ok(Outcome::new(Vec::new(), json))
+        }
+
+        Command::Maintain { setting, namespace } => {
+            let ns = namespace.clone().unwrap_or_else(|| ctx.namespace.clone());
+            match setting.as_str() {
+                "on" => ctx.shared.sidecar.set_maintenance(&ns, true),
+                "off" => ctx.shared.sidecar.set_maintenance(&ns, false),
+                _ => {}
+            }
+            let on = ctx.shared.sidecar.maintenance_on(&ns);
+            let fired = ctx.shared.sidecar.fired_all(&ns);
+            let mut text = vec![format!(
+                "maintenance tasks are {} for `{ns}`",
+                if on { "on" } else { "off" }
+            )];
+            for (trigger, task) in &fired {
+                text.push(format!("  {trigger}: {task} is outstanding"));
+            }
+            Ok(Outcome::new(
+                text,
+                json!({"op": "maintain", "namespace": ns, "on": on, "outstanding": fired}),
+            ))
         }
 
         Command::Flags { namespace } => {
