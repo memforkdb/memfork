@@ -1,0 +1,62 @@
+# A software bill of materials for every release (SECURITY.md, RELEASING.md).
+#
+# Runs when the Release workflow has finished for a tag, so the GitHub Release
+# exists to attach to, and adds one CycloneDX file per crate, each with a build
+# provenance attestation of its own. Hand-written rather than dist's own step:
+# dist 0.33.0 generates a step that produces the files and then reads
+# `steps.cargo-cyclonedx.output.paths` — `output`, not `outputs` — so nothing
+# it makes is uploaded. This is the same tool, run where its result reaches
+# the release.
+
+name: SBOM
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  sbom:
+    name: CycloneDX SBOM per crate
+    # Only a tag's release, and only one that succeeded. `head_branch` is the
+    # tag name for a tag push.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.event.workflow_run.head_branch }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - name: Install cargo-cyclonedx
+        # Pinned, and built from its published source rather than fetched as a
+        # binary: the tool that describes the supply chain should itself have a
+        # traceable one.
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+      - name: Generate one SBOM per crate
+        run: |
+          set -eux
+          cargo cyclonedx --format json --spec-version 1.5 --describe crate --all
+          mkdir -p sbom
+          find crates -name '*.cdx.json' -exec sh -c 'cp "$1" "sbom/$(basename "$(dirname "$1")")-${TAG}.cdx.json"' _ '{}' ';'
+          ls -l sbom
+      - name: Attest the SBOM files
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: sbom/*.cdx.json
+      - name: Attach them to the release
+        run: gh release upload "$TAG" sbom/*.cdx.json --clobber

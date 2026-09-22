@@ -3,10 +3,13 @@
 How to cut a release, in order, and what cannot be undone.
 
 Pushing a version tag runs two workflows. `release.yml` builds six binaries
-with checksums, attaches the installers, and publishes a GitHub Release.
-`wheels.yml` builds eight wheels and an sdist, installs each one on a runner
-of its own architecture to prove it needs no compiler, and uploads them to
-PyPI. The crates go to crates.io separately, by hand.
+with checksums, attaches the installers, signs a build provenance attestation
+for every artifact, uploads a CycloneDX software bill of materials for each
+crate, and publishes a GitHub Release. `wheels.yml` builds eight wheels and an
+sdist, installs each one on a runner of its own architecture to prove it needs
+no compiler, and uploads them to PyPI, where the publishing action attaches
+PEP 740 attestations of its own. The crates go to crates.io separately, by
+hand.
 
 ## Two things that cannot be undone
 
@@ -151,6 +154,53 @@ Every one should report the new version. `releases/latest` ignores
 prereleases, so the install one-liners only pick up a release once it is a
 real one. Check that the README's badges for crates.io, docs.rs and PyPI show
 the new version too; docs.rs builds a few minutes after publishing.
+
+Wait for the **Release** workflow, not only **Wheels**, before installing from
+`releases/latest`: the installers resolve "latest" to one tag and download
+that tag's files, so a half-published release fails cleanly rather than mixing
+versions, but a release with no archives yet is still a failed install.
+
+## 6. Check the attestations
+
+Each archive, installer and checksum file on the release carries a build
+provenance attestation, signed through GitHub's Sigstore instance by the
+workflow that built it (`github-attestations = true` in the dist config).
+Anyone with the `gh` command can check a download against it:
+
+```sh
+gh attestation verify memfork-x86_64-unknown-linux-musl.tar.xz --repo memforkdb/memfork
+```
+
+The output names the workflow, the commit and the tag. To verify on a machine
+with no network, download the attestation and the trusted root first, on one
+that has:
+
+```sh
+gh attestation download memfork-x86_64-unknown-linux-musl.tar.xz --repo memforkdb/memfork
+gh attestation trusted-root > trusted_root.jsonl
+# then, offline:
+gh attestation verify memfork-x86_64-unknown-linux-musl.tar.xz --repo memforkdb/memfork \
+  --bundle sha256:<digest>.jsonl --custom-trusted-root trusted_root.jsonl
+```
+
+The wheels are attested by PyPI's trusted publishing (PEP 740). To check one:
+
+```sh
+pip install pypi-attestations
+pypi-attestations verify pypi --repository https://github.com/memforkdb/memfork <wheel URL>
+```
+
+Each release also carries a CycloneDX SBOM per crate (`<crate>-vX.Y.Z.cdx.json`),
+made by `cargo-cyclonedx` in `sbom.yml`, which runs once the Release workflow
+has finished and attaches the files, each with an attestation of its own. It
+is a workflow of ours rather than dist's option because dist 0.33.0's
+generated step never uploads what it makes (it reads
+`steps.cargo-cyclonedx.output.paths`, with `output` for `outputs`). Check
+that the SBOM job ran too: it starts a minute or two after Release ends.
+
+GitHub's attestations are free for public repositories. A private fork of
+this repository would need GitHub Enterprise Cloud for the same, and `dist`
+would say so on the first run.
 
 ## When the release does not start
 

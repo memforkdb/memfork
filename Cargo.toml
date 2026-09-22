@@ -16,6 +16,9 @@ memfork-core = { path = "crates/memfork-core", version = "0.2.1" }
 blake3 = "1.8"
 bytes = "1.12"
 clap = { version = "4.6", features = ["derive"] }
+# Shell completions for `memfork completions <shell>`, generated at run time
+# from the same clap definition the command line parses with.
+clap_complete = "4.6"
 parking_lot = "0.12"
 rpds = "1.2"
 serde = { version = "1.0", features = ["derive"] }
@@ -53,6 +56,15 @@ github-release = "auto"
 checksum = "sha256"
 # Whether to install an updater program
 install-updater = false
+# Build provenance attestations, signed through GitHub's Sigstore instance,
+# for every artifact: archives, installers, checksums. Free on a public
+# repository; `gh attestation verify <file> --repo memforkdb/memfork` checks
+# one (SECURITY.md, docs/RELEASING.md).
+github-attestations = true
+# The SBOM is not dist's: its generated step (0.33.0) uploads nothing, because
+# it reads `steps.cargo-cyclonedx.output.paths` — `output`, not `outputs` — and
+# the files never reach the release. `sbom.yml` runs cargo-cyclonedx itself
+# once the Release workflow has finished, and attaches the result.
 # The wheels are deliberately not a dist publish job. They were, until the
 # release failed to start at all: a job that calls a reusable workflow *and*
 # asks for `id-token: write` — which dist emits for publish jobs, and which
@@ -74,6 +86,7 @@ build = ["cp", "installers/install.sh", "installers/install.ps1", "."]
 "actions/upload-artifact" = "ea165f8d65b6e75b540449e92b4886f43607fa02"
 "actions/download-artifact" = "d3f86a106a0bac45b974a628896c90dbdf5c8093"
 "actions/attest-build-provenance" = "977bb373ede98d70efdf65b84cb5f73e068dcc2a"
+"actions/attest" = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 "swatinem/rust-cache" = "6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
 "taiki-e/install-action" = "94c31af3204a9f15ab40b35ad084410b905bbc73"
 # Native arm64 runners, free on public repositories, so nothing is
