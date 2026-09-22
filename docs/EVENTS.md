@@ -39,7 +39,7 @@ Sent once per connection, before any event.
 | `schema` | integer | always | The version of this line's shape. Currently `1`. |
 | `time` | string | always | When, as RFC 3339 in UTC to the millisecond, for example `2026-09-22T14:03:07.412Z`. |
 | `kind` | string | always | `connected`, `disconnected` or `operation`. |
-| `client` | string | always | Who did it, as a person knows the client: `Claude Code`, `Codex CLI`, `memfork-cli` for the command line. A client the registry does not know keeps the name it gave. |
+| `client` | string | always | Who did it, as a person knows the client: `Claude Code`, `Codex CLI`, `memfork-cli` for the command line, `memfork-autopilot` for what autopilot did on its own. A client the registry does not know keeps the name it gave. |
 | `client_id` | string | when it differs from `client` | The name the client gave in MCP `initialize`. |
 | `namespace` | string | when known | The project the session works in. |
 | `operation` | string | `kind` is `operation` | What was done; see below. |
@@ -78,6 +78,16 @@ Some operations produce a second line of their own:
 | `flag` | a write looked like a duplicate or a contradiction | the key written | `same value as <key>` or `decided differently on <branch>` |
 | `ready` | finishing a task made another ready | the task now ready | |
 | `maintain` | MemFork added a maintenance task | the task's key | the trigger: `size`, `handoffs`, `stale_facts` or `flags` |
+
+Autopilot reports what it did with `client` set to `memfork-autopilot`:
+
+| `operation` | When | `key` / `branch` | `detail` |
+|---|---|---|---|
+| `follow` | memory followed a git switch | the branch memory is now on | `switched`, or `forked from <branch>` |
+| `merge` | memory merged because git did, or an autopilot fork was merged after its action worked | `<source> -> <target>` | `git merge <branch>`, `exit 0`, or `` `<check>` passed `` |
+| `fork` | memory was forked before a risky action | the fork | `<rule>: <command>`, or `edits: ...` |
+| `discard` | an autopilot fork was discarded after its action failed; a `lesson` line follows | the fork | `<rule>: <command>` |
+| `autopilot` | anything else it has to say | the branch or fork involved | `detached HEAD`, `kept: no check configured`, `conflict: <source> into <target>` (with `ok` false), `<n> sessions share a fork` |
 
 ### `detail`
 

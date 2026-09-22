@@ -169,7 +169,29 @@ only in the running daemon's memory.
   read memory anyway. `memfork demo` runs the same page on a temporary
   store of its own and removes it on exit.
 - **Git.** MemFork never runs `git`. It finds a repository by looking for
-  `.git` and reads nothing inside it.
+  `.git`. With autopilot switched on for a repository, `memfork mcp` also
+  reads three things inside it, and nothing else: `HEAD`, the last 64 KiB of
+  `logs/HEAD`, and the branch names under `refs/heads` and in `packed-refs`,
+  following a worktree's `gitdir` and `commondir` pointers the way git does.
+  It writes nothing there and installs no git hook, so husky, lefthook,
+  pre-commit and `core.hooksPath` are never touched.
+- **Autopilot.** Off until a repository holds `memfork-autopilot.toml`, and
+  off machine-wide under the policy. Memory following the git branch touches
+  only memory and the files above. The automatic fork runs through a client's
+  own hook system, installed only by `memfork init --project --autopilot`
+  into that client's personal per-project settings file (for Claude Code,
+  `.claude/settings.local.json`), as entries whose arguments name `autopilot
+  hook`; removal takes out only those entries. The hook command reads the
+  event JSON on stdin, asks the daemon that is already running to fork or
+  settle, and runs the one command the repository's own file names as
+  `check`, in the repository, with a time limit, exactly as a plan's
+  acceptance command runs: a command in shared memory is never run. With no
+  daemon, no file, no policy, or an event it does not know, the hook exits 0
+  with nothing on either stream and starts nothing. What it cannot contain:
+  the check command has the permissions of the client that ran the hook,
+  like the agent's own commands; and a hook acts on every session of its
+  client in the project, since a client tells its hooks a session id it does
+  not tell its MCP servers.
 - **Credentials.** Every write is checked against rules for private keys,
   well-known token shapes and passwords, and a match is refused. The refusal,
   the watch feed and every log name the rule and the place, never the matched
@@ -192,10 +214,10 @@ which file said so.
 
 ### Not in this version
 
-Autopilot and `memfork race` are not in this
-release. The policy already knows their names so that a policy written today
-holds when they arrive, and this document gains a section for each as it
-lands, saying exactly what it touches and what it cannot contain.
+`memfork race`, which would run agents unattended, is not in this release.
+The policy already knows its name so that a policy written today holds if it
+arrives, and this document gains a section for it then, saying exactly what
+it touches and what it cannot contain.
 
 ## Two things stated plainly
 

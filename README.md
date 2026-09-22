@@ -563,6 +563,90 @@ with one tool alone.
 An administrator can switch the Brain and the demo off for a machine with
 `brain = false` in the [machine policy](#for-administrators).
 
+## Autopilot
+
+Memory that protects itself, per repository, off until you switch it on:
+
+```sh
+memfork init --project --autopilot     # in the repository
+```
+
+That writes `memfork-autopilot.toml` at the top of the repository and, for
+Claude Code, installs MemFork's hooks in `.claude/settings.local.json`, the
+personal settings file Claude Code keeps out of git. Commit the TOML file, as
+you would a plan file: a branch carries autopilot only if the file is on it.
+`memfork autopilot status` says what is in force; `memfork autopilot off`
+switches it off with one command; `memfork init --project --autopilot
+--remove` takes the file and MemFork's hook entries out again, leaving every
+other byte of the hooks file as it was. `--dry-run` shows the exact changes
+first.
+
+**Memory follows the git branch.** Before every tool call it forwards,
+`memfork mcp` reads the repository's `HEAD`. When git is on a branch memory
+does not have yet, memory forks a branch of the same name from the branch git
+came from; when git switches to a branch memory has, memory switches too; when
+git merges a branch (`git merge`, fast-forward or not), memory merges the
+branch of the same name into the target. A memory conflict is reported with
+the keys and never forced: the tool result says so, and `memfork_merge` with a
+policy resolves it. A detached `HEAD` leaves memory where it was and says so
+once. Each worktree follows its own branch, over the one shared store.
+Nothing runs git: MemFork reads `HEAD`, the reflog and the refs, and a test
+proves no `git` was ever started. A merge made while no session was connected
+is applied by the next one, from where the reflog was last read.
+
+What git does not record as a merge, MemFork does not treat as one: a rebase,
+a squash merge or a cherry-pick leaves the branch's memory unmerged. When git
+then deletes the branch, its memory looks abandoned. It is never discarded for
+you: `memfork autopilot status`, `memfork doctor` and the Brain list every
+memory branch whose git branch is gone, say why it might be ("git branch
+deleted, or squash-merged: memory was not merged"), and print both ways out,
+merge then discard, or discard with a lesson.
+
+**Memory is forked before a risky step, and settled by the outcome.** Through
+a client's own hooks, MemFork forks memory before a shell command that matches
+a rule, or before an edit sweep touches more than `max_files` distinct files,
+and then merges or discards the fork:
+
+- with a `check` command in the TOML file (a test suite, say), the check
+  decides: it runs in the repository, in the background so the agent is never
+  held, and a pass merges while a failure discards;
+- with no check, a shell command is judged by its own exit status, and an
+  edit sweep is kept as a fork for you to merge or discard, and said so;
+- a failure leaves a lesson composed from data alone, for example
+  ``autopilot: `npx prisma migrate dev` (rule: migration) failed cargo test,
+  exit 101: test payments::refund ... FAILED``, so the next agent does not try
+  it again;
+- a conflict on merge keeps the fork and names the keys.
+
+"Risky" is decided by rules, never by a model: migrations, destructive file
+operations, history rewriting, dependency changes and database commands.
+`memfork autopilot rules` lists them with an example each, `memfork autopilot
+check "<command>"` says which rule a command matches, and the TOML file's
+`extra_rules` and `ignore_rules` adjust them for a project. At most one
+autopilot fork is open per session; a second risky action runs on it. Only
+that action's outcome settles it, and at the end of the agent's turn whatever
+is still open is settled by the check or kept.
+
+Hooks are installed only where a client's hook system has been verified
+against its documentation, which today is Claude Code (`PreToolUse`,
+`PostToolUse`, `PostToolUseFailure` and `Stop`, in exec form with no shell,
+and the ones after an action marked `async` so they never hold the agent).
+Every other client is off and says so; memory still follows the git branch
+for all of them. A hook that finds no daemon running, or a policy that
+forbids it, does nothing, prints nothing and starts nothing. A client gives
+its hooks a session id it never gives its MCP servers, so a hook acts on
+every session of that client in the project: with one session, the intended
+use, that is exact; with two, both are forked and settle together, and each
+is told so in its next tool result. **One Claude Code session per project is
+the intended use.**
+
+Everything autopilot does is recorded as `memfork-autopilot`: in `memfork
+watch`, in the Brain's Autopilot panel and attention list, in `memfork
+autopilot status`, and as an `autopilot` note in the next tool result the
+session receives, so the agent learns what happened without being
+interrupted. `autopilot = false` in the [machine policy](#for-administrators)
+switches both halves off for a machine.
+
 ## Why not Redis, or a vector database?
 
 | | MemFork | Redis | Vector DBs |
@@ -739,6 +823,7 @@ to the server.
 | `maintain on\|off\|status` | whether MemFork adds maintenance tasks to this project |
 | `stats` | briefings, bytes, lessons, facts, claims and handoffs picked up, per project and tool |
 | `brain` | open the Brain: the memory graph and what the engine did, read only, on this machine only; `--no-open` prints the address |
+| `autopilot status\|on\|off\|rules\|check <command>` | what autopilot does in this repository; switch it off or on; the risky rules; which rule a command matches |
 | `demo` | play a scripted session on a throwaway store with the Brain open on it; `--fast`, `--exit`, `--agents A,B` |
 | `put --source <path>`, `discard --lesson <text>` | store a fact; keep a lesson |
 | `run <file\|->` | a script of the above against one in-memory database |
@@ -747,6 +832,7 @@ to the server.
 | `stop` | shut it down |
 | `init`, `doctor` | register with clients; report what is going on (`doctor --verbose` for the whole report) |
 | `init --project` | write MemFork's instruction block into this repository's client instruction files |
+| `init --project --autopilot` | switch autopilot on for this repository: the TOML file, and the hooks of the clients whose hook system is verified; `--remove` takes them out |
 | `tools --format openai\|anthropic\|gemini` | the tool schemas in a vendor's format |
 
 The operations work on the same store your MCP clients use, through the local

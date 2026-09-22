@@ -45,10 +45,17 @@ instruction files and can take it out again.
 fact names, inside the project, to tell whether the fact is still fresh. A
 plan's acceptance command runs on the machine when an agent marks a task done,
 and only if the repository's own plan file holds the same command — an agent
-cannot write a command into shared memory and have another tool run it.
+cannot write a command into shared memory and have another tool run it. A
+repository that opts into autopilot with `memfork-autopilot.toml` is also
+read for its current branch (`HEAD`, the reflog, the branch names) so memory
+can follow it; the file's `check` command runs the same way a plan's does.
 
-**Nothing else.** No hooks, no services, no scheduled tasks, no changes to
-`PATH` beyond the directory the installer puts the binary in (and says so).
+**Nothing else, unless a repository asks.** No services, no scheduled tasks,
+no changes to `PATH` beyond the directory the installer puts the binary in
+(and says so). The one hook MemFork ever installs is a client's own tool hook
+for autopilot, written only by `memfork init --project --autopilot` into that
+client's personal per-project settings file, removable with `--remove`, and
+never a git hook.
 
 **The Brain**, `memfork brain`, is a page the daemon serves on the same
 loopback listener, read only: every route it can reach answers `GET`, and the
@@ -70,8 +77,14 @@ switches it and `memfork demo` off.
    instruction files, so every tool used on that repository is told the same
    routine.
 4. **Check**: `memfork doctor` on a user's machine shows the version, where
-   memory is kept, whether the daemon is running, the policy in force and one
-   line per client. `--verbose` has the whole report.
+   memory is kept, whether the daemon is running, the policy in force, what
+   autopilot does in the repository it runs in, and one line per client.
+   `--verbose` has the whole report.
+5. **Autopilot, if wanted, per repository**: a maintainer runs `memfork init
+   --project --autopilot` and commits `memfork-autopilot.toml`, naming the
+   `check` command that decides whether a risky step worked. The hooks half
+   is personal to each machine and each user installs it the same way. The
+   policy's `autopilot = false` keeps both halves off everywhere.
 
 ### Installing from a mirror, or with no internet at all
 

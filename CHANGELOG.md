@@ -15,6 +15,31 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
 
 ### Added
 
+- **Autopilot.** Per repository, off until `memfork init --project
+  --autopilot` writes `memfork-autopilot.toml`. Memory then follows the git
+  branch: `memfork mcp` reads `HEAD` before every tool call, a switch in git
+  switches memory to the branch of the same name (forked from the branch git
+  came from the first time), a merge in git merges memory the same way and
+  reports a conflict rather than forcing one, a detached `HEAD` leaves memory
+  where it was, and each worktree follows its own branch. MemFork runs no git
+  for any of it. Memory branches whose git branch is gone are never discarded
+  for you: `memfork autopilot status`, `memfork doctor` and the Brain list
+  them, say why (deleted, or squash-merged so memory was not merged), and
+  print the way out. Through Claude Code's hooks, the one hook system verified
+  against its documentation, memory is forked before a shell command that
+  matches a rule (migrations, destructive file operations, history rewriting,
+  dependency changes, database commands) or an edit sweep past a limit, and
+  merged or discarded by a check command the file names, else by the action's
+  own exit status, else kept and said so; a failure leaves a lesson composed
+  from data alone. The rules are data: `memfork autopilot rules` and `memfork
+  autopilot check "<command>"`. The hook is fail-open: no daemon, no policy,
+  no file means nothing runs, nothing is printed and nothing is started.
+  Everything is recorded as `memfork-autopilot` in the feed, the Brain's new
+  Autopilot panel and attention list, and an `autopilot` note in the next
+  tool result. `memfork autopilot off` switches it off with one command;
+  `--remove` takes the file and MemFork's hook entries out, leaving every
+  other byte of the hooks file as it was. The machine policy's `autopilot =
+  false` switches it off machine-wide.
 - **The Brain.** `memfork brain` opens a read-only page, served by the local
   daemon on `127.0.0.1` only, that shows the memory graph — entries, agents,
   files and briefings, with the relations the engine knows and nothing

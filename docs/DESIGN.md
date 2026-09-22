@@ -290,7 +290,13 @@ Subcommands:
   Idempotent. Prints exactly what it changed. `--dry-run` and `--client <name>` supported.
   **[v0.9]** `--client` may be repeated. `memfork init --project` is a separate
   job entirely — the instruction files of §6.4 — and plain `init` never edits a
-  file in the project.
+  file in the project. **[v0.16]** `memfork init --project --autopilot` adds
+  the repository's autopilot file and the hooks of the clients whose hook
+  system is verified (§5.6); `--remove` with it takes those out.
+- **[v0.16]** `memfork autopilot status|on|off|rules|check <command>` — what
+  autopilot does in this repository, the one-command switch, the risky rules,
+  and which rule a command matches (§5.6). `memfork autopilot hook`, hidden,
+  is what a client's hook runs.
 - **[v0.9]** `memfork mcp --namespace <name>` names the project a session works
   in (§6.3); otherwise `MEMFORK_NAMESPACE`, otherwise the repository.
 - `memfork doctor` — print version, data dir, lock status, detected tools, and whether
@@ -650,6 +656,111 @@ so they catch a regression rather than a slow machine. What only a
 browser can show — pixels, the policy enforced, fetch streaming, the narrow
 layout, first paint and frame rate as perceived — is measured by the page
 itself and checked by hand (README, *The Brain*).
+
+### 5.6 Autopilot
+
+**[v0.16]** Memory that acts without being told to, in two halves, each
+opt-in per repository through `memfork-autopilot.toml` at its top level, off
+by default, and never in the way: nothing here blocks or delays a git
+operation or an agent, and anything that goes wrong is forgotten rather than
+reported on the agent's channels. The file is the only place the settings
+are kept — the master switch, each half, the `check` command, its time limit,
+the sweep limit, a project's own rules — because the check runs on the
+machine and so must come from the repository, like a plan's acceptance
+command, never from shared memory. `memfork init --project --autopilot`
+writes it (and never overwrites a usable one), `memfork autopilot on|off`
+flips its first key with `toml_edit` so comments survive, and every reader
+treats an absent or broken file as off and says so. The machine policy's
+`autopilot` key is consulted by the proxy, the hook, the daemon's route and
+the commands that switch it on, so it wins everywhere.
+
+*Memory follows the git branch.* `memfork mcp` is the one process that can
+see both the repository and the session, so the check runs there, in
+`call_tool` before every tool call it forwards, and nowhere else: not on
+`initialize` or `tools/list`, which start nothing. `autopilot::git` reads
+git's plain files without running git — `HEAD`, the last 64 KiB of
+`logs/HEAD` from a cursor, and the branch names under `refs/heads` and in
+`packed-refs` — following a worktree's `.git` file to its `gitdir` and its
+`commondir` for the shared refs, the way git does. `autopilot::follow` turns
+that into an observation only when something changed: the branch moved, a
+merge line appeared (`merge <name>: Fast-forward` or `merge <name>: Merge
+made by ...`, with the target tracked through the checkouts in the same
+batch), or it is the session's first call. A pull, a rebase, a squash merge
+and a cherry-pick are not merges of a local branch and are left alone, and
+the README says so. The daemon's side, `autopilot::engine`, acts on the
+session the proxy named: a branch memory has is switched to; one it lacks is
+forked from the memory branch of the branch git came from, when that exists,
+else from where the session was; a git merge becomes a memory merge with the
+`fail` policy, and a conflict is reported with the keys and changes nothing.
+A detached `HEAD` leaves memory where it was and is noted once. The reflog
+cursor is kept beside the store per worktree, so a merge made with no
+session connected is applied by the next one, and a repository followed for
+the first time starts at the end of its reflog: nothing is replayed. The
+branches memory followed in a repository are remembered too, so a memory
+branch whose git branch is gone can be named exactly: an orphan is a branch
+that followed git, still exists in memory, and is not in git. Orphans are
+never discarded; `memfork autopilot status` and `doctor` compute them
+against git as it is now, the Brain shows them as of the last switch or
+merge, and each comes with why it might be one and both ways out.
+
+*Automatic forks.* A client's own hook system runs `memfork autopilot hook
+--client <id>` before a tool call, after it, after it fails, and when the
+agent stops, with the event as JSON on stdin. Which client, which file and
+which shape is registry data (`[client.hooks]`), verified against the
+client's documentation on a recorded date; a client without that table
+never has anything run through it, and `init` says so. The hook decides
+risk by `autopilot::rules`: regular expressions in `autopilot/rules.toml`,
+five families, each rule with a name and an example the tests hold it to,
+plus a project's `extra_rules` and `ignore_rules`. A risky command forks the
+session's branch to `autopilot/<parent>/<n>` and moves the session onto it,
+remembering the tool use id so only that action's outcome settles it; an
+edit sweep forks when the file about to be edited is the one past
+`max_files` distinct files since the last settle, and settles at the stop.
+Settling: with a `check`, the hook runs it in the repository under the
+file's time limit (`plans::run`, the acceptance runner) and the exit status
+decides; without one, a command's own outcome decides (a tool that finished
+passed, one that failed carries `Exit code N`); with neither, the fork is
+kept, the session stays on it, and the note says how to merge or discard
+it. A pass merges into the parent with `fail`, then discards the fork; a
+conflict keeps it and names the keys; a failure writes a lesson composed
+from data alone — the action clipped, the rule, the check, the exit code or
+the timeout, the last line printed — on the parent through the lesson
+writer, then discards. At most one autopilot fork is open per session; a
+second risky action is noted as already protected. The hooks after an
+action are `async` in the client's terms, so a test suite never holds the
+agent, and the one before it has a five-second limit and answers in
+milliseconds. Fail open is structural: no daemon (never started), no
+endpoint, another version, the policy off, no file, a broken file, an event
+it does not know, unreadable stdin — the command exits 0 with nothing on
+either stream, because a client's hook error, even non-blocking, would put a
+notice in front of the agent.
+
+*Which session.* A client tells its hooks a session id it does not tell its
+MCP servers, so a hook can only name the client and the project, and the
+daemon acts on every connected session of that client in that namespace, found
+through a directory of weak references the shared side keeps. With one
+session, the intended use, that is exact; with more, every one is forked and
+settled together and every one is told, in a note, that they share.
+
+*Attribution and visibility.* Everything is `memfork-autopilot`: the feed
+(`follow`, `merge`, `fork`, `discard` and `lesson`, and `autopilot` for
+detached, kept, conflict and shared), a bounded journal per project beside
+the store, the Brain's Autopilot panel and two attention kinds, `memfork
+autopilot status` and `doctor`, and a note queued on the session that rides
+out in its next tool result under `autopilot`, so the agent learns what
+happened from the tool it was calling anyway.
+
+*The hooks file.* `clients::hooks` splices MemFork's entries into a client's
+settings by byte position with the same scanner `init` uses for MCP
+configs: one matcher group per event, recognised by arguments that carry
+`autopilot hook`, added after the last of the event's groups or with the
+event's list or with the `hooks` object itself; removal takes out only those
+entries and any list or object that held nothing else. Indentation, key
+order, comments and trailing commas outside the spliced span are untouched,
+so adding and removing gives back the original bytes; the one stated edge
+is a file that had an empty `"hooks": {}`, which comes back without the key.
+Exec form — `command` plus `args`, no shell — so nothing needs quoting on
+any OS.
 
 ## 6. MCP tools
 All tools take an optional `branch` (default: the session's current branch).
@@ -1462,6 +1573,42 @@ registry, `memfork init`, `memfork doctor`, the README. Vendor neutrality
 - **I8** the proxy offers five prompts without starting a daemon, filled in for
   the project.
 
+**Autopilot.** **[v0.16]** Real repositories made with the machine's git in a
+temporary sandbox; MemFork's own `git` is a trap on its confined PATH.
+
+- **J1** a session lands on the memory branch git is on; a switch to a new
+  branch forks memory from the branch git came from; a switch back is a
+  plain switch and the branch's writes are not there; a git merge merges
+  memory, and the feed says `memfork-autopilot` did it; a deleted branch is
+  listed as an orphan with why and both ways out, and never discarded; no
+  `git` was run.
+- **J2** a git merge whose memory conflicts is reported with the keys and
+  memory is not forced.
+- **J3** a detached `HEAD` leaves memory where it was and is said once; two
+  worktrees each follow their own branch and one switch moves one session; a
+  merge made with no session connected is applied by the next one.
+- **J4** off with no file, off after `memfork autopilot off`, on again after
+  `on`, and off under a policy that forbids it, which also refuses `on`.
+- **J5** the hook forks before a risky command and not before a plain one; a
+  second risky action does not nest; the action's own outcome merges or
+  discards, and a discard leaves the exact lesson from data; a configured
+  check decides instead of the action either way; an edit sweep forks on the
+  file past the limit and a stop keeps it with no check, and says so; two
+  sessions of one client are both forked and both told.
+- **J6** with no daemon, with the daemon stopped mid-session, on an event it
+  does not know and on garbage, the hook exits 0 with nothing on either
+  stream, quickly, starts no daemon and writes no file.
+- **J7** `init --project --autopilot` writes the file and Claude Code's hooks
+  beside other hooks, comments and trailing commas; a re-run is up to date
+  and keeps a hand-written check; `--dry-run` writes nothing; `--remove`
+  gives back the hooks file byte for byte and leaves `.git/hooks` and a hook
+  manager's directory untouched; every rule matches its example and ordinary
+  commands match none.
+- **J8** the daemon's engine, in memory: fork, merge, discard with a lesson,
+  keep, conflict, the sweep limit, follow, orphans, and a refused request
+  naming the field it lacks. The page's Autopilot panel renders every value
+  as text, under Node.
+
 Everything above runs on Windows, macOS and Linux in CI, and a change is not
 finished until it passes on all three.
 
@@ -1481,6 +1628,27 @@ Not promises, and not in any order:
 - Published benchmarks against the alternatives, measured rather than claimed.
 
 ## 11. Revisions
+
+### v0.16 — autopilot
+1. **Memory follows the git branch** (§5.6): the proxy reads `HEAD`, the
+   reflog and the refs before every tool call, never runs git, and the
+   daemon switches, forks and merges sessions accordingly; conflicts are
+   reported, detached `HEAD` is left alone, worktrees follow their own
+   branch, and a merge made between sessions is caught by a cursor kept
+   beside the store.
+2. **Automatic forks through a client's hooks** (§5.6): rules as data, a
+   check command from the repository's own file, the action's exit status
+   otherwise, a kept fork with neither, a lesson composed from data, and a
+   hook that fails open. Claude Code's hook system verified; every other
+   client off and said so.
+3. **A session directory** in the shared side of a process, so a request
+   that names a client or a session can reach its current branch, and
+   **notes** on a session that ride out with its next tool result.
+4. **Orphans** listed, never discarded: `memfork autopilot status`, `doctor`
+   and the Brain, with why and both ways out.
+5. **`memfork init --project --autopilot`**, a managed splice into a
+   client's hooks file that gives back every other byte on removal.
+6. **Race withdrawn** from this version; the policy keeps its name.
 
 ### v0.15 — the brain
 1. **A read token** (§5.5) beside the daemon's own, accepted only by the
