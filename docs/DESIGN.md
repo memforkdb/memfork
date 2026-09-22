@@ -640,11 +640,13 @@ Node's own test runner on all three CI runners, with no packages
 parsing, the hash against the daemon's vectors, loading and spacing, lenses
 and the timeline, every event's effect, and the time one event takes. The
 budgets are a release-mode test on a hundred thousand entries
-(`brain_budget.rs`) that prints every figure and fails on any over budget:
-on a laptop, the summary the first paint waits for takes about 110 ms
-(budget 200), attention 150 ms (400), the graph built, laid out and encoded
-650 ms (1,000), layout 4 ms (50), the engine's ranked search 360 ms (800) at
-a hundred thousand entries and 32 ms (50) at ten thousand. What only a
+(`brain_budget.rs`) that prints every figure and fails on any over its
+ceiling: on a laptop, the summary the first paint waits for takes about
+110 ms, attention 150 ms, the graph built, laid out and encoded 650 ms,
+layout 4 ms, the engine's ranked search 360 ms at a hundred thousand
+entries and 32 ms at ten thousand; a Windows CI runner measured 180, 270,
+810, 6, 630 and 55 ms. The ceilings are about twice the runner's figures,
+so they catch a regression rather than a slow machine. What only a
 browser can show — pixels, the policy enforced, fetch streaming, the narrow
 layout, first paint and frame rate as perceived — is measured by the page
 itself and checked by hand (README, *The Brain*).
