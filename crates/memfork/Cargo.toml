@@ -11,6 +11,10 @@ include = [
     "src/secret_rules.toml",
     "src/prompts.toml",
     "src/plan_templates/*.toml",
+    "src/brain/page/*.html",
+    "src/brain/page/*.css",
+    "src/brain/page/*.js",
+    "src/brain/page/*.svg",
     "README.md",
     "../../LICENSE",
 ]
@@ -33,6 +37,13 @@ path = "src/lib.rs"
 [[bin]]
 name = "memfork"
 path = "src/main.rs"
+
+[features]
+default = ["brain"]
+# The Brain: the read-only page the daemon serves on its loopback listener,
+# `memfork brain` and `memfork demo`. Off, the binary carries no page and
+# the two commands say so.
+brain = []
 
 [dependencies]
 memfork-core.workspace = true

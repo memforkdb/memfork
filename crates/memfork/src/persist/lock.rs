@@ -74,6 +74,11 @@ pub struct Endpoint {
     /// The bearer token a client must present, alongside the port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// A second token the daemon accepts only on what reads: the Brain's
+    /// routes and the event stream. The page holds this one and never the
+    /// other, so nothing it could do reaches a route that writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_token: Option<String>,
     /// When the owner started, in seconds since the epoch. Informational.
     pub started_unix: u64,
     /// Which build of MemFork is running.
@@ -97,6 +102,7 @@ impl Endpoint {
             pid: std::process::id(),
             port: None,
             token: None,
+            read_token: None,
             started_unix: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -435,6 +441,7 @@ mod tests {
                 pid: 999_999,
                 port: Some(1234),
                 token: Some("stale".to_owned()),
+                read_token: None,
                 started_unix: 0,
                 memfork_version: Some(crate::VERSION.to_owned()),
             })

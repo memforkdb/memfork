@@ -61,6 +61,8 @@
 #![warn(missing_docs)]
 
 pub mod board;
+#[cfg(feature = "brain")]
+pub mod brain;
 pub mod cli;
 pub mod client;
 pub mod clients;

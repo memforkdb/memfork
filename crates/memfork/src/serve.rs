@@ -5,9 +5,13 @@
 //! memory, which is the normal case rather than the exotic one.
 //!
 //! Loopback only, always. The daemon binds `127.0.0.1` and nothing else, and
-//! every request must carry the bearer token from the endpoint file, so a
-//! process that cannot read that file cannot reach the memory. rmcp's own
-//! `Host` validation stays on as a second line against DNS rebinding.
+//! every request must carry a bearer token from the endpoint file, so a
+//! process that cannot read that file cannot reach the memory. There are two
+//! tokens: the daemon's, which every route accepts, and a read token, which
+//! only the routes that read accept — the event stream and the Brain's. The
+//! page holds the read token and nothing else. A `Host` header that is not
+//! this listener is refused on every route, as a second line against DNS
+//! rebinding; rmcp checks the same on the MCP path.
 //!
 //! The daemon exits on its own after an idle period. Nobody wants a background
 //! process they did not start living forever, and an autostarted daemon that
@@ -122,6 +126,7 @@ pub async fn run(
     options: ServeOptions,
 ) -> Result<Stopped, String> {
     let token = crate::persist::lock::new_token().map_err(|e| e.to_string())?;
+    let read_token = crate::persist::lock::new_token().map_err(|e| e.to_string())?;
 
     let listener =
         tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, options.port)))
@@ -137,6 +142,7 @@ pub async fn run(
     let mut endpoint = Endpoint::for_this_process();
     endpoint.port = Some(port);
     endpoint.token = Some(token.clone());
+    endpoint.read_token = Some(read_token.clone());
     store.publish(&endpoint).map_err(|e| e.to_string())?;
 
     let shutdown = CancellationToken::new();
@@ -226,6 +232,7 @@ pub async fn run(
         let shutdown = shutdown.clone();
         let clock = Arc::clone(&clock);
         let token = token.clone();
+        let read_token = read_token.clone();
         async move {
             loop {
                 let stream = tokio::select! {
@@ -241,6 +248,7 @@ pub async fn run(
                 let shutdown = shutdown.clone();
                 let clock = Arc::clone(&clock);
                 let token = token.clone();
+                let read_token = read_token.clone();
                 let events = Arc::clone(&events);
                 let db = db.clone();
                 let side = Arc::clone(&side);
@@ -248,6 +256,7 @@ pub async fn run(
                     let guard = Guard {
                         inner: service,
                         token,
+                        read_token,
                         clock,
                         shutdown,
                         events,
@@ -281,11 +290,13 @@ pub async fn run(
     Ok(stopped)
 }
 
-/// Checks the token, notices activity, and answers the shutdown path itself.
+/// Checks the host and the token, notices activity, and answers the paths
+/// that are not MCP itself.
 #[derive(Clone)]
 struct Guard {
     inner: StreamableHttpService<MemforkServer, LocalSessionManager>,
     token: String,
+    read_token: String,
     clock: Arc<Clock>,
     shutdown: CancellationToken,
     events: Arc<Events>,
@@ -294,9 +305,11 @@ struct Guard {
     side: Arc<crate::shared::Shared>,
 }
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
+/// The body type every route answers with.
+pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
 
-fn text(status: StatusCode, message: &str) -> Response<BoxBody> {
+/// A plain-text answer.
+pub fn text(status: StatusCode, message: &str) -> Response<BoxBody> {
     let body = Full::new(Bytes::from(message.to_owned()))
         .map_err(|never| match never {})
         .boxed();
@@ -322,9 +335,31 @@ impl tower_service::Service<Request<Incoming>> for Guard {
     }
 
     fn call(&mut self, request: Request<Incoming>) -> Self::Future {
-        // Watching is not using: a `memfork watch` left open must not keep
-        // an otherwise idle daemon alive.
-        if request.uri().path() != EVENTS_PATH {
+        // A request for some other host has come through a browser that was
+        // told a name which resolved here. Nothing is answered to it, not
+        // even a refusal that says what this is.
+        if !host_is_this_listener(&request, self.port) {
+            return Box::pin(async {
+                Ok(text(
+                    StatusCode::FORBIDDEN,
+                    "this MemFork daemon answers only to 127.0.0.1\n",
+                ))
+            });
+        }
+
+        let path = request.uri().path().to_owned();
+        let reads = path == EVENTS_PATH || is_brain_path(&path);
+
+        // The page itself, its script and its style carry no data and need
+        // no token: a browser's first navigation cannot send one.
+        #[cfg(feature = "brain")]
+        if let Some(asset) = crate::brain::static_asset(&path, request.method()) {
+            return Box::pin(async { Ok(asset) });
+        }
+
+        // Watching is not using: a `memfork watch` left open, or a Brain tab
+        // left open, must not keep an otherwise idle daemon alive.
+        if !reads {
             self.clock.touch();
         }
 
@@ -333,25 +368,36 @@ impl tower_service::Service<Request<Incoming>> for Guard {
             .get(hyper::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or_default()
-            .to_owned();
-        // Compared in full rather than short-circuiting on the first differing
-        // byte. The daemon is loopback-only and the token is 32 random bytes,
-        // so this is belt and braces, but it costs nothing.
-        let authorized = presented.len() == self.token.len()
-            && presented
-                .bytes()
-                .zip(self.token.bytes())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                == 0;
+            .unwrap_or_default();
+        let full = same_token(presented, &self.token);
+        let read = same_token(presented, &self.read_token);
 
-        if !authorized {
+        if !full && !read {
             return Box::pin(async {
                 Ok(text(
                     StatusCode::UNAUTHORIZED,
                     "this MemFork daemon needs the token from its endpoint file\n",
                 ))
             });
+        }
+        if !full && !reads {
+            return Box::pin(async {
+                Ok(text(
+                    StatusCode::UNAUTHORIZED,
+                    "this token only reads; the daemon's own token is needed here\n",
+                ))
+            });
+        }
+
+        #[cfg(feature = "brain")]
+        if is_brain_path(&path) {
+            let context = crate::brain::Context {
+                db: self.db.clone(),
+                events: Arc::clone(&self.events),
+                side: Arc::clone(&self.side),
+                port: self.port,
+            };
+            return Box::pin(async move { Ok(crate::brain::handle(request, context).await) });
         }
 
         if request.uri().path() == SHUTDOWN_PATH {
@@ -390,7 +436,49 @@ impl tower_service::Service<Request<Incoming>> for Guard {
     }
 }
 
-fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxBody> {
+/// Whether the request's `Host` is this listener, by address or as
+/// `localhost`, with this port. A browser sends the name it was given, so a
+/// name that resolved here from elsewhere is caught by this and nothing else.
+fn host_is_this_listener(request: &Request<Incoming>, port: u16) -> bool {
+    let Some(host) = request
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let host = host.trim().to_ascii_lowercase();
+    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+}
+
+/// The path the Brain's page is served at.
+pub const BRAIN_PATH: &str = "/brain";
+
+/// The prefix of every other Brain route.
+pub const BRAIN_PREFIX: &str = "/brain/";
+
+/// Whether a path is the Brain's. Answered whether or not the Brain is built
+/// in, so a token that only reads is refused elsewhere the same way in both
+/// builds.
+fn is_brain_path(path: &str) -> bool {
+    path == BRAIN_PATH || path.starts_with(BRAIN_PREFIX)
+}
+
+/// Whether a presented token is the expected one. Compared in full rather
+/// than short-circuiting on the first differing byte. The daemon is
+/// loopback-only and a token is 32 random bytes, so this is belt and braces,
+/// but it costs nothing.
+fn same_token(presented: &str, expected: &str) -> bool {
+    presented.len() == expected.len()
+        && presented
+            .bytes()
+            .zip(expected.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+}
+
+/// A JSON answer.
+pub fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<BoxBody> {
     let body = Full::new(Bytes::from(value.to_string()))
         .map_err(|never| match never {})
         .boxed();
