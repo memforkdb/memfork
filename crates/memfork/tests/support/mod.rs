@@ -19,6 +19,9 @@ use memfork::persist::datadir::{DATA_DIR_ENV, FORBID_PER_USER_ENV};
 pub struct Sandbox {
     dir: tempfile::TempDir,
     children: Vec<Child>,
+    /// Kept apart from `dir`, so "nothing else was written" checks never see
+    /// a process's error output.
+    logs: tempfile::TempDir,
 }
 
 impl Sandbox {
@@ -30,6 +33,7 @@ impl Sandbox {
         Sandbox {
             dir,
             children: Vec::new(),
+            logs: tempfile::tempdir().expect("logs dir"),
         }
     }
 
@@ -75,6 +79,32 @@ impl Sandbox {
             .expect("spawned");
         self.children.push(child);
         self.children.len() - 1
+    }
+
+    /// Start a process like [`Sandbox::spawn`], keeping what it writes to
+    /// stderr for [`Sandbox::stderr_of`], so a test that waits for it can say
+    /// why it never came.
+    pub fn spawn_keeping_stderr(&mut self, args: &[&str]) -> usize {
+        let index = self.children.len();
+        let log = std::fs::File::create(self.logs.path().join(format!("{index}.stderr")))
+            .expect("stderr log");
+        let child = self
+            .command()
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log))
+            .spawn()
+            .expect("spawned");
+        self.children.push(child);
+        index
+    }
+
+    /// What a process started with [`Sandbox::spawn_keeping_stderr`] has
+    /// written to stderr so far.
+    pub fn stderr_of(&self, index: usize) -> String {
+        std::fs::read_to_string(self.logs.path().join(format!("{index}.stderr")))
+            .unwrap_or_default()
     }
 
     /// Kill one of the processes this sandbox started.

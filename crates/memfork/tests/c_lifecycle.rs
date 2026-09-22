@@ -187,13 +187,16 @@ async fn c11_a_proxy_lists_exactly_what_a_daemon_would() {
         "listing tools through the proxy started a daemon"
     );
 
-    sandbox.spawn(&["serve", "--port", "0", "--idle-timeout", "60"]);
-    // Longer than the other waits here on purpose: this one starts a daemon
-    // by hand from a cold debug binary, and a loaded CI runner has taken more
-    // than twenty seconds to get it listening.
-    let endpoint = sandbox
-        .wait_for_daemon(Duration::from_secs(90))
-        .expect("the daemon did not start");
+    // Started by hand, and waited for as long as a person's client would wait
+    // (60 seconds). If it never comes, its own words say why.
+    let daemon = sandbox.spawn_keeping_stderr(&["serve", "--port", "0", "--idle-timeout", "60"]);
+    let Some(endpoint) = sandbox.wait_for_daemon(Duration::from_secs(60)) else {
+        let running = sandbox.is_running(daemon);
+        panic!(
+            "the daemon did not start within 60 seconds (still running: {running}); it said:\n{}",
+            sandbox.stderr_of(daemon)
+        );
+    };
     let upstream = memfork::proxy::Upstream::connect(&endpoint, &Default::default())
         .await
         .expect("connected to the daemon");
