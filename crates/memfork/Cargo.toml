@@ -5,7 +5,15 @@ keywords = ["agent", "memory", "mcp", "branching", "database"]
 categories = ["command-line-utilities", "database-implementations"]
 readme = "README.md"
 documentation = "https://docs.rs/memfork"
-include = ["src/**/*.rs", "src/clients/clients.toml", "README.md", "../../LICENSE"]
+include = [
+    "src/**/*.rs",
+    "src/clients/clients.toml",
+    "src/secret_rules.toml",
+    "src/prompts.toml",
+    "src/plan_templates/*.toml",
+    "README.md",
+    "../../LICENSE",
+]
 version.workspace = true
 edition.workspace = true
 # Higher than the workspace minimum: `rmcp`, the official MCP SDK, needs 1.88,
