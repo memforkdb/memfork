@@ -1,0 +1,139 @@
+# MemFork itself sends nothing anywhere (SECURITY.md). This proves it the hard
+# way: the whole command surface — the daemon, `memfork mcp`, the command line,
+# `memfork watch`, and the installers pointed at a release served from disk —
+# runs with outbound traffic blocked at the operating system, and a control
+# connection to the outside must fail, or the run proves nothing.
+#
+# The block is per process or per namespace, never host-wide: the runner
+# itself needs GitHub to stream logs and upload artifacts, and blocking that
+# would fail the job for the wrong reason. Each OS has its own way:
+#
+#   Linux    a network namespace with only loopback (`unshare --net`)
+#   macOS    a pf rule blocking outbound traffic for a group the script runs as
+#   Windows  outbound block rules on the executables the script runs
+#
+# Features added later — the dashboard, race — extend scripts/no-network.sh
+# when they land, so this job keeps proving the promise as it grows.
+
+name: No network
+
+on:
+  push:
+    branches: [main, MemFork-OG]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MEMFORK_FORBID_PER_USER_DATA_DIR: "1"
+
+jobs:
+  linux:
+    name: no network (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Build the binary
+        run: cargo build --release -p memfork
+      - name: Run everything inside a namespace that has only loopback
+        # `unshare --net` makes a namespace with no interfaces; loopback is
+        # brought up, and the script runs as the ordinary user inside it. The
+        # stand-in release server the installer harness starts lives in the
+        # same namespace, so the installers reach it and nothing else.
+        run: |
+          sudo unshare --net bash -c '
+            set -e
+            ip link set lo up
+            exec sudo -u "$SUDO_USER" --preserve-env=MEMFORK_FORBID_PER_USER_DATA_DIR,HOME,PATH \
+              bash scripts/no-network.sh
+          '
+
+  macos:
+    name: no network (macos-latest)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Build the binary
+        run: cargo build --release -p memfork
+      - name: Block outbound traffic for one group
+        # pf's `group` matches the group that opened the socket, and `set skip
+        # on lo0` leaves loopback alone. The script and everything it starts
+        # run as that group, so only they are cut off.
+        run: |
+          sudo dseditgroup -o create memfork-nonet
+          printf 'set skip on lo0\nblock out quick proto { tcp udp } group memfork-nonet\n' \
+            | sudo pfctl -a memfork-nonet -f -
+          sudo pfctl -E || true
+      - name: Run everything as the blocked group
+        run: sudo -g memfork-nonet --preserve-env=MEMFORK_FORBID_PER_USER_DATA_DIR,HOME,PATH bash scripts/no-network.sh
+      - name: Lift the block
+        if: always()
+        run: |
+          sudo pfctl -a memfork-nonet -F all || true
+          sudo dseditgroup -o delete memfork-nonet || true
+
+  windows:
+    name: no network (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Build the binary
+        run: cargo build --release -p memfork
+      - name: Block outbound traffic for the executables under test
+        # Windows Firewall rules are per program. The built binary, the copy
+        # the installer harness installs, python (the stand-in server) and
+        # curl (the control) are each blocked outbound. Loopback is not
+        # filtered by Windows Firewall, which is exactly what MemFork needs.
+        shell: pwsh
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'nonet'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          "MEMFORK_TEST_WORK=$work" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $programs = @(
+            (Resolve-Path 'target\release\memfork.exe').Path,
+            (Join-Path $work 'installer\install\memfork.exe'),
+            (Get-Command python).Source,
+            (Get-Command curl.exe).Source
+          )
+          $i = 0
+          foreach ($p in $programs) {
+            $i++
+            New-NetFirewallRule -DisplayName "memfork-nonet-$i" -Direction Outbound -Action Block -Program $p | Out-Null
+          }
+          Get-NetFirewallRule -DisplayName 'memfork-nonet-*' | Format-Table DisplayName, Enabled, Action
+      - name: Run everything with the block in place
+        shell: bash
+        run: |
+          # The harness installs into MEMFORK_TEST_WORK/installer/install, the
+          # path the rule above names, so the installed copy is blocked too.
+          export MEMFORK_TEST_WORK="$(cygpath -u "$MEMFORK_TEST_WORK")"
+          bash scripts/no-network.sh
+      - name: Lift the block
+        if: always()
+        shell: pwsh
+        run: Get-NetFirewallRule -DisplayName 'memfork-nonet-*' | Remove-NetFirewallRule

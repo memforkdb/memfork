@@ -38,6 +38,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck --shell=sh installers/install.sh
           shellcheck --shell=sh scripts/benchmark/run.sh
+          shellcheck installers/test-installer.sh
+          shellcheck scripts/no-network.sh
 
   powershell-lint:
     name: PSScriptAnalyzer

@@ -89,6 +89,18 @@ python -m pytest crates/memfork-py/tests     # needs the wheel installed
 bash installers/test-installer.sh            # runs against a release on disk
 ```
 
+And when you have touched anything that could open a socket, or the
+installers, run the command surface with no network:
+
+```sh
+cargo build --release -p memfork
+bash scripts/no-network.sh                   # the last check fails on a networked machine; CI blocks the network first
+```
+
+`crates/memfork/tests/no_network.rs` runs with the rest and holds the
+allow-list of modules that may open a socket; SECURITY.md names the same
+list, and the test checks that it does.
+
 CI runs the same things on all three operating systems. A change is not
 finished until it passes on all of them, not just on yours.
 
@@ -124,6 +136,13 @@ twice wrote into a developer's own store. Being careful was not a control.
 here were invisible on the machine they were written on: a daemon inheriting a
 pipe on Windows, a shell function with no local variables on Linux, a linker
 that will not leave symbols undefined on macOS.
+
+**A registry entry says what it could not confirm.** Adding an MCP client to
+`clients.toml` means checking its documentation on that day and recording the
+date. Anything the documentation does not say — the name a closed-source client
+sends in `initialize`, a Windows path given only as `~/…` — goes in that
+entry's `unverified` line, which `memfork doctor --verbose` shows. A guess
+that happens to be right today is a wrong answer given quietly later.
 
 ## Commits and pull requests
 
