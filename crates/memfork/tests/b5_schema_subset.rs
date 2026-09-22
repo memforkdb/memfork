@@ -244,7 +244,8 @@ fn b5_the_mcp_server_serves_exactly_these_schemas() {
     // that exists in one place and not the other.
     let names: BTreeSet<String> = tools_of("anthropic").into_iter().map(|(n, _)| n).collect();
     for name in &names {
-        let out = memfork().args(["call", name, "{}"]).assert();
+        // In memory: the dispatcher is the same, and no daemon is left behind.
+        let out = memfork().args(["--ephemeral", "call", name, "{}"]).assert();
         let output = out.get_output();
         let text = String::from_utf8_lossy(&output.stderr);
         assert!(
