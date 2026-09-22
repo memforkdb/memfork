@@ -324,7 +324,7 @@ pub fn event(e: &Event, style: &Style) -> String {
             let painted_op = match op {
                 "fork" | "merge" | "handoff" | "resume" | "claim" | "done" | "lesson" | "ready"
                 | "plan" => style.accent(op),
-                "discard" | "delete" | "del" | "release" | "reopen" => style.warn(op),
+                "discard" | "delete" | "del" | "release" | "reopen" | "flag" => style.warn(op),
                 _ => style.primary(op),
             };
             let mut parts = vec![

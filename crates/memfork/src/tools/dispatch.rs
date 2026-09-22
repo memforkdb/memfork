@@ -443,6 +443,39 @@ impl Session {
                 ..Event::about(&who, Some(&namespace))
             });
         }
+        // A write that looks like a duplicate or a contradiction is worth a
+        // look; the feed says so.
+        if let Some(r) = result {
+            let similar = r
+                .get("similar")
+                .and_then(Json::as_array)
+                .filter(|a| !a.is_empty());
+            let conflicts = r
+                .get("conflicts")
+                .and_then(Json::as_array)
+                .filter(|a| !a.is_empty());
+            let detail = match (similar, conflicts) {
+                (Some(keys), _) => keys
+                    .first()
+                    .and_then(Json::as_str)
+                    .map(|k| format!("same value as {k}")),
+                (None, Some(branches)) => branches
+                    .first()
+                    .and_then(|b| b.get("branch"))
+                    .and_then(Json::as_str)
+                    .map(|b| format!("decided differently on {b}")),
+                (None, None) => None,
+            };
+            if let Some(detail) = detail {
+                events.publish(Event {
+                    operation: Some("flag".to_owned()),
+                    key: r.get("key").and_then(Json::as_str).map(str::to_owned),
+                    branch: r.get("branch").and_then(Json::as_str).map(str::to_owned),
+                    detail: Some(detail),
+                    ..Event::about(&who, Some(&namespace))
+                });
+            }
+        }
         // A task finished may be the last thing others were waiting for.
         for id in result
             .and_then(|r| r.get("now_ready"))
@@ -545,8 +578,9 @@ impl Session {
                     }
                     None => false,
                 };
+                let written = value.value.clone();
                 let commit = self.db.put(&branch, key, value)?;
-                Ok(json!({
+                let mut answer = json!({
                     "branch": branch,
                     "key": key,
                     "stored": true,
@@ -558,7 +592,26 @@ impl Session {
                     "commit": commit.to_hex(),
                     "sources": sources,
                     "sources_recorded": sources.is_some().then_some(recorded),
-                }))
+                });
+                // Worth a look, never fixed: the same value under a near
+                // key, or a decision another client made differently on
+                // another branch.
+                let similar = crate::flags::similar_to(&self.db, &branch, key, &written);
+                if !similar.is_empty() {
+                    answer["similar"] = json!(similar);
+                }
+                if key.starts_with(&namespace::prefix(&self.namespace(), "decision")) {
+                    let conflicts = crate::flags::conflicts_for(
+                        &self.db,
+                        key,
+                        &branch,
+                        self.writer().as_deref(),
+                    );
+                    if !conflicts.is_empty() {
+                        answer["conflicts"] = json!(conflicts);
+                    }
+                }
+                Ok(answer)
             }
 
             "memfork_get" => {

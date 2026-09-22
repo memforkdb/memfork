@@ -157,6 +157,9 @@ pub struct Ask {
     pub me: Option<String>,
 }
 
+/// Most flags a briefing shows; the rest are counted.
+pub const MAX_BRIEF_FLAGS: usize = 5;
+
 /// Most items in each list of what changed since the asker last looked.
 pub const MAX_SINCE_ITEMS: usize = 10;
 
@@ -609,6 +612,13 @@ pub fn briefing_with(
         items.clear();
         omitted.clear();
     }
+    // Things worth a look, for a session asking; never fixed here.
+    let mut flags = match shared {
+        Some(_) => crate::flags::scan(db, branch, ns)?,
+        None => Vec::new(),
+    };
+    let flags_omitted = flags.len().saturating_sub(MAX_BRIEF_FLAGS);
+    flags.truncate(MAX_BRIEF_FLAGS);
     let mut brief = Brief {
         ns: ns.to_owned(),
         branch: branch.to_owned(),
@@ -616,6 +626,8 @@ pub fn briefing_with(
         current_branch: ask.current_branch.clone(),
         since,
         since_only,
+        flags,
+        flags_omitted,
         budget,
         handoff: latest
             .as_ref()
@@ -711,6 +723,9 @@ struct Brief {
     current_branch: Option<String>,
     since: Option<Since>,
     since_only: bool,
+    /// Duplicates and contradictions worth a look, and how many more.
+    flags: Vec<Json>,
+    flags_omitted: usize,
     budget: usize,
     handoff: Option<HandoffView>,
     earlier_handoffs: usize,
@@ -747,6 +762,10 @@ impl Brief {
                 Kind::Task => "tasks",
             };
             *self.omitted.entry(name).or_insert(0) += 1;
+            return true;
+        }
+        if self.flags.pop().is_some() {
+            self.flags_omitted += 1;
             return true;
         }
         if self.since.as_mut().is_some_and(Since::give_up_one) {
@@ -806,6 +825,16 @@ impl Brief {
             );
         } else {
             self.render_whole(&mut map, left_out);
+        }
+        if !self.flags.is_empty() || self.flags_omitted > 0 {
+            map.insert(
+                "flags".to_owned(),
+                json!({
+                    "items": self.flags,
+                    "omitted": self.flags_omitted,
+                    "hint": "Worth a look, and never fixed by MemFork: `memfork flags` lists them all.",
+                }),
+            );
         }
         let since_cut = self
             .since

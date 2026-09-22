@@ -339,6 +339,44 @@ pub fn execute_in(
             Ok(Outcome::new(Vec::new(), json))
         }
 
+        Command::Flags { namespace } => {
+            let ns = namespace.clone().unwrap_or_else(|| ctx.namespace.clone());
+            let flags = crate::flags::scan(db, branch, &ns)?;
+            let mut text: Vec<String> = Vec::new();
+            for f in &flags {
+                let what = match f["kind"].as_str().unwrap_or("") {
+                    "conflicting_decisions" => format!(
+                        "{} is decided differently on {}",
+                        f["key"].as_str().unwrap_or(""),
+                        f["branches"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|b| format!(
+                                "{} (by {})",
+                                b["branch"].as_str().unwrap_or(""),
+                                b["by"].as_str().unwrap_or("?")
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    ),
+                    "duplicate" => format!("the same value is under {}", join_keys(&f["keys"])),
+                    _ => format!(
+                        "{} come from the same files and disagree",
+                        join_keys(&f["keys"])
+                    ),
+                };
+                text.push(what);
+            }
+            if text.is_empty() {
+                text.push(format!("nothing to look at in `{ns}`"));
+            }
+            Ok(Outcome::new(
+                text,
+                json!({"op": "flags", "branch": branch, "namespace": ns, "flags": flags}),
+            ))
+        }
+
         Command::Lessons { namespace } => {
             let ns = namespace.clone().unwrap_or_else(|| ctx.namespace.clone());
             let all = crate::lessons::recent(db, branch, &ns, crate::lessons::MAX_LESSONS)?;
@@ -958,6 +996,21 @@ pub fn history(db: &Db, limit: Option<usize>) -> Json {
 }
 
 /// A task board answer, for a person.
+/// A list of keys for a person: `a and b`, or `a, b and c`.
+fn join_keys(keys: &Json) -> String {
+    let keys: Vec<&str> = keys
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Json::as_str)
+        .collect();
+    match keys.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        Some((last, _)) => (*last).to_owned(),
+        None => String::new(),
+    }
+}
+
 /// `memfork plan show`: the board grouped as a plan.
 fn plan_lines(result: &Json) -> Vec<String> {
     let tasks = result["tasks"].as_array().cloned().unwrap_or_default();

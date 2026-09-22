@@ -139,7 +139,7 @@ pub fn run(cli: Cli) -> ExitCode {
                     scope,
                     ..
                 } => run_init(&mut stdout, *dry_run, client, scope, cli.global.json),
-                Command::Doctor => run_doctor(&mut stdout, cli.global.json),
+                Command::Doctor => run_doctor(&mut stdout, &cli.global),
                 Command::Plan {
                     action: PlanAction::Templates,
                     ..
@@ -1569,12 +1569,52 @@ fn past_tense(verb: &str) -> &'static str {
 }
 
 /// Report what this install is and what it is talking to.
-fn run_doctor(out: &mut impl Write, as_json: bool) -> Result<(), ExecError> {
-    if as_json {
-        writeln!(out, "{}", doctor::json()).map_err(io_err)
+fn run_doctor(out: &mut impl Write, global: &GlobalArgs) -> Result<(), ExecError> {
+    let flags = doctor_flags(global);
+    if global.json {
+        let mut report = doctor::json();
+        if let Some(flags) = flags {
+            report["flags"] = flags;
+        }
+        writeln!(out, "{report}").map_err(io_err)
     } else {
-        write!(out, "{}", doctor::text()).map_err(io_err)
+        write!(out, "{}", doctor::text()).map_err(io_err)?;
+        if let Some(flags) = flags {
+            writeln!(
+                out,
+                "\nFlags\n  {}  {} worth a look; `memfork flags` lists them",
+                flags["namespace"].as_str().unwrap_or(""),
+                flags["count"]
+            )
+            .map_err(io_err)?;
+        }
+        Ok(())
     }
+}
+
+/// Duplicates and contradictions in this directory's project, from a daemon
+/// that is already running. Doctor never starts one to ask.
+fn doctor_flags(global: &GlobalArgs) -> Option<serde_json::Value> {
+    let dir = data_dir(global).ok()?;
+    let endpoint = crate::persist::lock::owner(&dir)?;
+    endpoint.port?;
+    let daemon = client::Daemon::new(&endpoint).ok()?;
+    let ns = session_namespace(None).ok()?.name;
+    let request = json!({
+        "branch": global.branch,
+        "command": Command::Flags { namespace: None },
+        "namespace": ns,
+    });
+    let (status, answer) = runtime()
+        .ok()?
+        .block_on(daemon.post(serve::CLI_PATH, &request))
+        .ok()?;
+    (status == 200).then(|| {
+        json!({
+            "namespace": ns,
+            "count": answer["json"]["flags"].as_array().map_or(0, Vec::len),
+        })
+    })
 }
 
 fn read_script(script: &str) -> Result<String, ExecError> {

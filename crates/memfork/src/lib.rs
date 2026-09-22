@@ -70,6 +70,7 @@ pub mod events;
 pub mod exec;
 pub mod facts;
 pub mod find;
+pub mod flags;
 pub mod history;
 pub mod init;
 pub mod launch;

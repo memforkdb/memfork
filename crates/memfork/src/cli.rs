@@ -290,6 +290,16 @@ pub enum Command {
         namespace: Option<String>,
     },
 
+    /// Duplicates and contradictions in a project worth a look: decisions
+    /// made differently on different branches, the same value under
+    /// near-identical keys, facts from the same files that disagree. MemFork
+    /// never fixes these itself.
+    Flags {
+        /// The project. Defaults to the one this directory belongs to.
+        #[arg(long, value_name = "NAME")]
+        namespace: Option<String>,
+    },
+
     /// The lessons left by discarded attempts in a project, newest first.
     Lessons {
         /// The project. Defaults to the one this directory belongs to.
@@ -631,6 +641,7 @@ impl Command {
             Command::Plan { .. } => "plan",
             Command::Facts { .. } => "facts",
             Command::Lessons { .. } => "lessons",
+            Command::Flags { .. } => "flags",
             Command::Stats { .. } => "stats",
             Command::Run { .. } => "run",
             Command::Mcp { .. } => "mcp",
