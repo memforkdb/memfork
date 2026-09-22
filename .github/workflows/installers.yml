@@ -37,6 +37,7 @@ jobs:
           set -eux
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck --shell=sh installers/install.sh
+          shellcheck --shell=sh scripts/benchmark/run.sh
 
   powershell-lint:
     name: PSScriptAnalyzer
