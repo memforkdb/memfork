@@ -889,7 +889,7 @@ Writes go to a checksummed log before they are visible. A snapshot is taken at
 the far end of the retained history rather than at the present, so restarting
 never shortens how far back you can look.
 
-<!-- Pending assets: the 0.3.0 docs/assets/memfork-architecture-{dark,light}.{png,gif} are added by the maintainer before release; the PNGs are the stills shown when a reader's system asks for reduced motion. -->
+<!-- Pending assets: the new docs/assets/memfork-architecture-{dark,light}.{png,gif} are added by the maintainer before release; the PNGs are the stills shown when a reader's system asks for reduced motion. -->
 <picture>
   <source media="(prefers-reduced-motion: reduce) and (prefers-color-scheme: dark)" srcset="docs/assets/memfork-architecture-dark.png">
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/memfork-architecture-light.png">

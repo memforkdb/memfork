@@ -84,7 +84,7 @@ resolve_latest() {
     _r_tag=${_r_final##*/tag/}
     case "$_r_tag" in
         v[0-9]*) ;;
-        *) die "could not work out the latest release from $_r_final; set MEMFORK_VERSION to a release tag, such as v0.3.0" ;;
+        *) die "could not work out the latest release from $_r_final; set MEMFORK_VERSION to a release tag of the form vX.Y.Z" ;;
     esac
     printf '%s\n' "$_r_tag"
 }

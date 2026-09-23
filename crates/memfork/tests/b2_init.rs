@@ -1087,7 +1087,7 @@ fn b2_doctor_says_when_no_client_was_detected_at_all() {
     assert_eq!(doc["needs_init"], false);
 }
 
-// ---- the clients added in 0.3.0 ------------------------------------------------
+// ---- the eleven clients after the first five ------------------------------------
 
 #[test]
 fn b2_a_new_clients_command_is_called_as_its_documentation_says() {

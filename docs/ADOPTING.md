@@ -104,13 +104,13 @@ or an internal web server and the install never reaches GitHub:
    version pinned, so nothing needs resolving:
 
    ```sh
-   MEMFORK_DOWNLOAD_BASE=https://mirror.example/memfork/v0.3.0 \
-   MEMFORK_VERSION=v0.3.0 sh install.sh
+   MEMFORK_DOWNLOAD_BASE=https://mirror.example/memfork/vX.Y.Z \
+   MEMFORK_VERSION=vX.Y.Z sh install.sh
    ```
 
    ```powershell
-   $env:MEMFORK_DOWNLOAD_BASE = 'https://mirror.example/memfork/v0.3.0'
-   $env:MEMFORK_VERSION = 'v0.3.0'
+   $env:MEMFORK_DOWNLOAD_BASE = 'https://mirror.example/memfork/vX.Y.Z'
+   $env:MEMFORK_VERSION = 'vX.Y.Z'
    .\install.ps1
    ```
 

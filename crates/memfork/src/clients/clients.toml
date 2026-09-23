@@ -250,7 +250,7 @@ reads = ["AGENTS.md", "CLAUDE.md"]
 docs = "https://docs.x.ai/build/features/project-rules"
 verified = "2026-09-21"
 
-# ---- added for 0.3.0 ----------------------------------------------------------
+# ---- the eleven clients after the first five ----------------------------------
 
 [[client]]
 id = "cline"

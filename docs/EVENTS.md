@@ -29,7 +29,7 @@ Sent once per connection, before any event.
 | `clients` | array | Every client session connected right now, in the order they connected. Each has `client` (the name a person knows) and `namespace` (its project). |
 
 ```json
-{"schema":1,"kind":"hello","version":"0.3.0","port":51823,"clients":[{"client":"Claude Code","namespace":"shop"}]}
+{"schema":1,"kind":"hello","version":"X.Y.Z","port":51823,"clients":[{"client":"Claude Code","namespace":"shop"}]}
 ```
 
 ## Every line after it: an event

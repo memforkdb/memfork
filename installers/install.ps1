@@ -104,7 +104,7 @@
         }
         $tag = $location -replace '^.*/tag/', ''
         if (-not ($tag -match '^v[0-9]')) {
-            Stop-WithMessage "could not work out the latest release from '$location'; set MEMFORK_VERSION to a release tag, such as v0.3.0"
+            Stop-WithMessage "could not work out the latest release from '$location'; set MEMFORK_VERSION to a release tag of the form vX.Y.Z"
         }
         return $tag
     }
