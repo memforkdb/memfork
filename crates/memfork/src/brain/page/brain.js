@@ -452,8 +452,6 @@ const Brain = (() => {
   };
 })();
 
-if (typeof module !== "undefined" && module.exports) module.exports = Brain;
-
 // ---- an export: the same page, answered from embedded data --------------------
 // A file made by "Export this view" carries its data in the page. Every
 // request the page would make is answered from that, and none leaves it.
@@ -575,9 +573,9 @@ function boot(document, window) {
     const shownIds = new Set(shown.map((n) => n.id));
     const perColumn = new Map();
     for (const n of shown) perColumn.set(n.col, (perColumn.get(n.col) || 0) + 1);
-    const dimColor = getComputedStyle(document.documentElement).getPropertyValue("--dim").trim() || "#1c7293";
-    const subColor = getComputedStyle(document.documentElement).getPropertyValue("--sub").trim() || "#9eb3c2";
-    const txtColor = getComputedStyle(document.documentElement).getPropertyValue("--txt").trim() || "#e6edf3";
+    const dimColor = window.getComputedStyle(document.documentElement).getPropertyValue("--dim").trim() || "#1c7293";
+    const subColor = window.getComputedStyle(document.documentElement).getPropertyValue("--sub").trim() || "#9eb3c2";
+    const txtColor = window.getComputedStyle(document.documentElement).getPropertyValue("--txt").trim() || "#e6edf3";
     cu.font = "11px system-ui, sans-serif";
     cu.fillStyle = dimColor;
     cu.textAlign = "center";
@@ -832,7 +830,9 @@ function boot(document, window) {
     $("auto").innerHTML = Brain.autopilotRows(s.autopilot) || '<span class="empty">Nothing yet. Autopilot is off until a repository switches it on.</span>';
 
     if (s.attention) renderAttention(s.attention);
-    $("foot-store").textContent = `store ${f.store_bytes >= 1e6 ? (f.store_bytes / 1e6).toFixed(1) + " MB" : f.store_bytes >= 1e3 ? Math.round(f.store_bytes / 1e3) + " kB" : f.store_bytes + " B"} · ${f.commits_retained.toLocaleString()} commits retained · history from seq ${f.history_from_seq}`;
+    const f = s.footer || {};
+    const bytes = f.store_bytes || 0;
+    $("foot-store").textContent = `store ${bytes >= 1e6 ? (bytes / 1e6).toFixed(1) + " MB" : bytes >= 1e3 ? Math.round(bytes / 1e3) + " kB" : bytes + " B"} · ${(f.commits_retained || 0).toLocaleString()} commits retained · history from seq ${f.history_from_seq ?? 0}`;
     $("foot-policy").textContent = `policy: ${s.policy === "none" ? "none in force" : s.policy}`;
     $("port").textContent = String(s.port);
 
@@ -1024,3 +1024,4 @@ function boot(document, window) {
 }
 
 if (typeof document !== "undefined" && document.getElementById("stage")) boot(document, window);
+if (typeof module !== "undefined" && module.exports) module.exports = { ...Brain, boot, exportIo };

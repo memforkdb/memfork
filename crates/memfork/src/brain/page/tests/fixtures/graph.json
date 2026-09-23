@@ -1,0 +1,335 @@
+{
+  "seq": 11,
+  "at": null,
+  "columns": [
+    "agents",
+    "briefings",
+    "decisions · handoffs",
+    "lessons",
+    "plan",
+    "facts",
+    "files"
+  ],
+  "kinds": [
+    "agent",
+    "brief",
+    "decision",
+    "handoff",
+    "lesson",
+    "task",
+    "fact",
+    "entry",
+    "file"
+  ],
+  "agents": [
+    "MemFork",
+    "memfork-cli"
+  ],
+  "few": 12,
+  "height": 65535,
+  "nodes": [
+    [
+      "agent:memfork-cli",
+      0,
+      "memfork-cli",
+      0,
+      16383,
+      1,
+      "away",
+      null
+    ],
+    [
+      "agent:rmcp",
+      0,
+      "rmcp",
+      0,
+      49151,
+      11,
+      "away",
+      null
+    ],
+    [
+      "brief:000000000005",
+      1,
+      "briefing · 1408 B · to rmcp",
+      1,
+      32767,
+      11,
+      null,
+      0
+    ],
+    [
+      "shop:decision:first",
+      2,
+      null,
+      2,
+      4681,
+      1,
+      null,
+      1
+    ],
+    [
+      "shop:decision:payments",
+      2,
+      null,
+      2,
+      14043,
+      3,
+      null,
+      1
+    ],
+    [
+      "shop:handoff:00000001",
+      3,
+      "handoff 1",
+      2,
+      23405,
+      7,
+      null,
+      1
+    ],
+    [
+      "shop:handoff:00000002",
+      3,
+      "handoff 2",
+      2,
+      32767,
+      8,
+      null,
+      1
+    ],
+    [
+      "shop:handoff:00000003",
+      3,
+      "handoff 3",
+      2,
+      42129,
+      9,
+      null,
+      1
+    ],
+    [
+      "shop:handoff:00000004",
+      3,
+      "handoff 4",
+      2,
+      51491,
+      10,
+      null,
+      1
+    ],
+    [
+      "shop:handoff:00000005",
+      3,
+      "handoff 5",
+      2,
+      60853,
+      11,
+      null,
+      1
+    ],
+    [
+      "shop:lesson:00000001",
+      4,
+      "storing cards breaks decision:payments",
+      3,
+      32767,
+      6,
+      null,
+      1
+    ],
+    [
+      "shop:task:checkout",
+      5,
+      "checkout page",
+      4,
+      16383,
+      5,
+      "open",
+      1
+    ],
+    [
+      "shop:task:schema",
+      5,
+      "design the schema",
+      4,
+      49151,
+      4,
+      "open",
+      1
+    ],
+    [
+      "shop:fact:auth-entry",
+      6,
+      null,
+      5,
+      32767,
+      2,
+      null,
+      1
+    ],
+    [
+      "file:src/auth/login.rs",
+      8,
+      "src/auth/login.rs",
+      6,
+      32767,
+      2,
+      null,
+      null
+    ]
+  ],
+  "edges": [
+    [
+      0,
+      3,
+      "wrote"
+    ],
+    [
+      0,
+      4,
+      "wrote"
+    ],
+    [
+      0,
+      5,
+      "wrote"
+    ],
+    [
+      0,
+      6,
+      "wrote"
+    ],
+    [
+      0,
+      7,
+      "wrote"
+    ],
+    [
+      0,
+      8,
+      "wrote"
+    ],
+    [
+      0,
+      9,
+      "wrote"
+    ],
+    [
+      0,
+      10,
+      "wrote"
+    ],
+    [
+      0,
+      11,
+      "wrote"
+    ],
+    [
+      0,
+      12,
+      "wrote"
+    ],
+    [
+      0,
+      13,
+      "wrote"
+    ],
+    [
+      2,
+      1,
+      "served to"
+    ],
+    [
+      3,
+      2,
+      "in"
+    ],
+    [
+      4,
+      2,
+      "in"
+    ],
+    [
+      5,
+      12,
+      "next"
+    ],
+    [
+      6,
+      12,
+      "next"
+    ],
+    [
+      7,
+      12,
+      "next"
+    ],
+    [
+      8,
+      12,
+      "next"
+    ],
+    [
+      9,
+      2,
+      "in"
+    ],
+    [
+      9,
+      12,
+      "next"
+    ],
+    [
+      10,
+      2,
+      "in"
+    ],
+    [
+      10,
+      4,
+      "about"
+    ],
+    [
+      11,
+      2,
+      "in"
+    ],
+    [
+      12,
+      2,
+      "in"
+    ],
+    [
+      12,
+      11,
+      "depends on"
+    ],
+    [
+      13,
+      2,
+      "in"
+    ],
+    [
+      13,
+      4,
+      "cited by"
+    ],
+    [
+      14,
+      13,
+      "source of"
+    ]
+  ],
+  "counts": {
+    "agent": 2,
+    "brief": 1,
+    "decision": 2,
+    "entry": 0,
+    "fact": 1,
+    "file": 1,
+    "handoff": 5,
+    "lesson": 1,
+    "task": 2
+  }
+}

@@ -1378,3 +1378,179 @@ fn an_export_is_one_self_contained_file_with_credentials_withheld_and_no_token()
     assert_eq!(past.json()["at"], 2);
     assert!(past.json()["entries"].as_u64().unwrap() < p["entries"].as_u64().unwrap());
 }
+
+// ---- the recorded store the page is booted against under Node ----------------
+
+/// Where the page tests keep a summary and a graph recorded from a real
+/// store, so the whole page can be booted under Node against them.
+fn fixtures_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("brain")
+        .join("page")
+        .join("tests")
+        .join("fixtures")
+}
+
+fn keys_of(v: &Json) -> Vec<String> {
+    v.as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// The page test under Node boots the real page against a summary and a
+/// graph recorded from a real store: a decision, a fact, two tasks, a
+/// lesson, five handoffs and one briefing served to another client. Set
+/// `MEMFORK_RECORD_PAGE_FIXTURES=1` to record them again; otherwise this
+/// asserts the recording still has the shape a live store answers with, so
+/// the page test cannot pass against answers the daemon no longer gives.
+#[test]
+fn the_page_fixtures_come_from_a_real_store_and_keep_its_shape() {
+    let sandbox = Sandbox::new();
+    started(&sandbox);
+    furnish(&sandbox);
+    let run = |args: &[&str]| {
+        let output = sandbox
+            .command()
+            .env(memfork::namespace::NAMESPACE_ENV, "shop")
+            .args(args)
+            .output()
+            .expect("ran");
+        assert!(
+            output.status.success(),
+            "`memfork {}`: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    let summaries = [
+        "schema next",
+        "schema drafted; checkout page next",
+        "checkout page half done, blocked on the payment provider's sandbox",
+        "sandbox access granted; wiring the callback",
+        "callback wired and tested; release after review",
+    ];
+    for (n, summary) in summaries.iter().enumerate() {
+        run(&[
+            "put",
+            &format!("shop:handoff:{:08}", n + 1),
+            &format!(r#"{{"summary":"{summary}","next":["design the schema"]}}"#),
+        ]);
+    }
+    // One resume by another client: a briefing served, a handoff picked up.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let transport = rmcp::transport::TokioChildProcess::new(
+            rmcp::transport::ConfigureCommandExt::configure(
+                tokio::process::Command::from({
+                    let mut c = sandbox.command();
+                    c.env(memfork::namespace::NAMESPACE_ENV, "shop");
+                    c
+                }),
+                |cmd| {
+                    cmd.arg("mcp");
+                    cmd.stderr(std::process::Stdio::null());
+                },
+            ),
+        )
+        .expect("spawned");
+        let client = rmcp::ServiceExt::serve((), transport)
+            .await
+            .expect("handshake");
+        client
+            .call_tool(rmcp::model::CallToolRequestParams::new(
+                "memfork_resume".to_owned(),
+            ))
+            .await
+            .expect("resumed");
+        client.cancel().await.expect("closed");
+    });
+
+    let (port, _, read) = tokens(&sandbox.wait_for_daemon(Duration::from_secs(20)).unwrap());
+    let live_summary = ask(
+        port,
+        Method::GET,
+        "/brain/summary?ns=shop",
+        None,
+        Some(&read),
+    );
+    assert_eq!(live_summary.status, StatusCode::OK, "{}", live_summary.body);
+    let live_summary = live_summary.json();
+    let live_graph = graph_of(&sandbox, "?ns=shop");
+    assert_eq!(live_summary["handoffs"].as_array().unwrap().len(), 5);
+    assert!(
+        live_graph["nodes"].as_array().unwrap().len() >= 10,
+        "{live_graph}"
+    );
+
+    let dir = fixtures_dir();
+    if std::env::var_os("MEMFORK_RECORD_PAGE_FIXTURES").is_some() {
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, json) in [("summary", &live_summary), ("graph", &live_graph)] {
+            let mut text = serde_json::to_string_pretty(json).unwrap();
+            text.push('\n');
+            std::fs::write(dir.join(format!("{name}.json")), text).unwrap();
+        }
+        return;
+    }
+    let recorded = |name: &str| -> Json {
+        let path = dir.join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e}; record with MEMFORK_RECORD_PAGE_FIXTURES=1",
+                path.display()
+            )
+        });
+        serde_json::from_str(&text).unwrap()
+    };
+    let summary = recorded("summary");
+    let graph = recorded("graph");
+    let same = |what: &str, a: &Json, b: &Json| {
+        assert_eq!(
+            keys_of(a),
+            keys_of(b),
+            "{what}: the recording no longer has the live shape; record again with MEMFORK_RECORD_PAGE_FIXTURES=1"
+        );
+    };
+    same("summary", &summary, &live_summary);
+    same(
+        "summary.headline",
+        &summary["headline"],
+        &live_summary["headline"],
+    );
+    same(
+        "summary.headline.counts",
+        &summary["headline"]["counts"],
+        &live_summary["headline"]["counts"],
+    );
+    same(
+        "summary.footer",
+        &summary["footer"],
+        &live_summary["footer"],
+    );
+    same(
+        "summary.autopilot",
+        &summary["autopilot"],
+        &live_summary["autopilot"],
+    );
+    for list in ["handoffs", "briefings", "facts", "lessons", "tasks"] {
+        same(
+            &format!("summary.{list}[0]"),
+            &summary[list][0],
+            &live_summary[list][0],
+        );
+    }
+    same("graph", &graph, &live_graph);
+    assert_eq!(graph["kinds"], live_graph["kinds"]);
+    assert_eq!(
+        graph["nodes"][0].as_array().unwrap().len(),
+        live_graph["nodes"][0].as_array().unwrap().len(),
+        "a graph node's tuple changed"
+    );
+    assert_eq!(summary["handoffs"].as_array().unwrap().len(), 5);
+    assert_eq!(summary["namespace"], "shop");
+    assert!(!graph["nodes"].as_array().unwrap().is_empty());
+}

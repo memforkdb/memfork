@@ -644,8 +644,15 @@ daemon in the sandbox (`brain.rs`, `demo.rs`). The page's logic runs under
 Node's own test runner on all three CI runners, with no packages
 (`brain/page/tests`): escaping, the token, the session's verdicts, stream
 parsing, the hash against the daemon's vectors, loading and spacing, lenses
-and the timeline, every event's effect, and the time one event takes. The
-budgets are a release-mode test on a hundred thousand entries
+and the timeline, every event's effect, the time one event takes, and the
+whole page booted on a document and a window just wide enough for it,
+against a summary and a graph recorded from a real store
+(`brain/page/tests/fixtures`): the graph drawn disc by disc, the panels
+filled, the selectors naming the project and the branch, nothing thrown.
+The Rust test that recorded those files re-records them with
+`MEMFORK_RECORD_PAGE_FIXTURES=1` and otherwise holds them to the shape a
+live daemon answers with, so the page cannot pass against answers the
+daemon no longer gives. The budgets are a release-mode test on a hundred thousand entries
 (`brain_budget.rs`) that prints every figure and fails on any over its
 ceiling: on a laptop, the summary the first paint waits for takes about
 110 ms, attention 150 ms, the graph built, laid out and encoded 650 ms,

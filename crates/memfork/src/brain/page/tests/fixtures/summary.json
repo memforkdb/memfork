@@ -1,0 +1,189 @@
+{
+  "version": "0.2.1",
+  "port": 59404,
+  "read_only": true,
+  "namespace": "shop",
+  "branch": "main",
+  "seq": 11,
+  "entries": 11,
+  "branches": [
+    "main"
+  ],
+  "namespaces": [
+    "shop"
+  ],
+  "clients": [],
+  "policy": "none",
+  "headline": {
+    "twice": 2,
+    "counts": {
+      "briefings": 1,
+      "handoffs_picked_up": 1,
+      "dead_ends_not_repeated": 1,
+      "stale_facts_caught": 0,
+      "claim_conflicts_avoided": 0,
+      "briefing_bytes": 1408,
+      "memory_bytes": 960
+    }
+  },
+  "handoffs": [
+    {
+      "key": "shop:handoff:00000005",
+      "number": "5",
+      "by": "memfork-cli",
+      "seq": 11,
+      "summary": "callback wired and tested; release after review",
+      "next": [
+        "design the schema"
+      ],
+      "blockers": null,
+      "questions": null,
+      "picked_up": {
+        "to": "rmcp",
+        "bytes": 1408,
+        "approx_tokens": 352,
+        "seq": 11,
+        "next": []
+      }
+    },
+    {
+      "key": "shop:handoff:00000004",
+      "number": "4",
+      "by": "memfork-cli",
+      "seq": 10,
+      "summary": "sandbox access granted; wiring the callback",
+      "next": [
+        "design the schema"
+      ],
+      "blockers": null,
+      "questions": null,
+      "picked_up": null
+    },
+    {
+      "key": "shop:handoff:00000003",
+      "number": "3",
+      "by": "memfork-cli",
+      "seq": 9,
+      "summary": "checkout page half done, blocked on the payment provider's sandbox",
+      "next": [
+        "design the schema"
+      ],
+      "blockers": null,
+      "questions": null,
+      "picked_up": null
+    },
+    {
+      "key": "shop:handoff:00000002",
+      "number": "2",
+      "by": "memfork-cli",
+      "seq": 8,
+      "summary": "schema drafted; checkout page next",
+      "next": [
+        "design the schema"
+      ],
+      "blockers": null,
+      "questions": null,
+      "picked_up": null
+    },
+    {
+      "key": "shop:handoff:00000001",
+      "number": "1",
+      "by": "memfork-cli",
+      "seq": 7,
+      "summary": "schema next",
+      "next": [
+        "design the schema"
+      ],
+      "blockers": null,
+      "questions": null,
+      "picked_up": null
+    }
+  ],
+  "tasks": [
+    {
+      "id": "checkout",
+      "key": "shop:task:checkout",
+      "title": "checkout page",
+      "status": "open",
+      "depends_on": [
+        "schema"
+      ],
+      "by": "memfork-cli",
+      "ready": false,
+      "blocked_by": [
+        "schema"
+      ]
+    },
+    {
+      "id": "schema",
+      "key": "shop:task:schema",
+      "title": "design the schema",
+      "status": "open",
+      "by": "memfork-cli",
+      "ready": true
+    }
+  ],
+  "facts": [
+    {
+      "key": "shop:fact:auth-entry",
+      "value": "auth lives in src/auth",
+      "sources": [
+        "src/auth/login.rs"
+      ],
+      "state": "fresh",
+      "by": "memfork-cli",
+      "seq": 2
+    }
+  ],
+  "lessons": [
+    {
+      "key": "shop:lesson:00000001",
+      "lesson": "storing cards breaks decision:payments",
+      "branch": "try-refunds",
+      "by": "memfork-cli",
+      "served": 1,
+      "seq": 6
+    }
+  ],
+  "briefings": [
+    {
+      "order": 5,
+      "to": "rmcp",
+      "bytes": 1408,
+      "approx_tokens": 352,
+      "seq": 11,
+      "carried": {
+        "decision": 2,
+        "fact": 1,
+        "handoff": 1,
+        "lesson": 1,
+        "task": 2
+      },
+      "keys": [
+        "shop:handoff:00000005",
+        "shop:lesson:00000001",
+        "shop:decision:payments",
+        "shop:decision:first",
+        "shop:fact:auth-entry",
+        "shop:task:checkout",
+        "shop:task:schema"
+      ],
+      "omitted": {},
+      "since_commits": null,
+      "task": null
+    }
+  ],
+  "autopilot": {
+    "namespace": "shop",
+    "open": [],
+    "kept_forks": [],
+    "orphans": [],
+    "journal": []
+  },
+  "footer": {
+    "store_bytes": 960,
+    "commits_retained": 12,
+    "history_from_seq": 0,
+    "branch_entries": 11
+  }
+}

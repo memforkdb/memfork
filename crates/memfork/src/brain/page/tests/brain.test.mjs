@@ -3,9 +3,12 @@
 //
 // What a browser alone can show — pixels, the policy enforced, fetch
 // streaming, the narrow layout, perceived frame rate — is in the manual
-// script in the README. What is here is everything the script decides.
+// script in the README. What is here is everything the script decides, and,
+// at the end, the whole page booted against a store recorded from the
+// daemon, on a document and a window just wide enough for it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -295,4 +298,202 @@ test("the autopilot panel shows forks, orphans with the way out, and the journal
   assert.ok(html.includes("&lt;b&gt;bold&lt;/b&gt;"));
   // Newest journal entry first.
   assert.ok(html.indexOf("fork · autopilot/main/1") < html.indexOf("follow · feature/x"));
+});
+
+
+// ---- the whole page, booted against a recorded store --------------------------
+// `boot` is the half of the script that wires `Brain` to the page. Here it
+// runs against a summary and a graph recorded from a real store
+// (`fixtures/`, kept honest by the Rust test that recorded them), on a
+// document and a window just wide enough for it: elements by id, a canvas
+// that records what is drawn on it, a fetch that answers from the files.
+// What the Brain showed a person as "0 nodes" and "f is not defined" was a
+// throw in this path, which the tests above never took.
+
+function fakeCanvasContext() {
+  const calls = [];
+  const gradient = { addColorStop() {} };
+  const target = { calls };
+  return new Proxy(target, {
+    get(t, prop) {
+      if (prop in t) return t[prop];
+      return (...args) => {
+        calls.push({ method: String(prop), args });
+        return prop === "createRadialGradient" ? gradient : undefined;
+      };
+    },
+    set(t, prop, value) { t[prop] = value; return true; },
+  });
+}
+
+function fakeElement(id, tag) {
+  const attrs = new Map();
+  const classes = new Set();
+  const el = {
+    id, tagName: (tag || "div").toUpperCase(),
+    textContent: "", innerHTML: "", hidden: false, disabled: false, value: "", selected: false,
+    min: "0", max: "0", width: 0, height: 0, dataset: {}, children: [], listeners: {},
+    style: { setProperty() {}, cursor: "" },
+    classList: {
+      add: (c) => classes.add(c), remove: (c) => classes.delete(c),
+      contains: (c) => classes.has(c),
+      toggle: (c, on) => { if (on === undefined ? !classes.has(c) : on) classes.add(c); else classes.delete(c); },
+    },
+    get className() { return [...classes].join(" "); },
+    set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+    get options() { return el.children; },
+    addEventListener(type, fn) { (el.listeners[type] ||= []).push(fn); },
+    setAttribute(k, v) { attrs.set(k, String(v)); },
+    getAttribute(k) { return attrs.has(k) ? attrs.get(k) : null; },
+    replaceChildren(...nodes) {
+      el.children = nodes;
+      const chosen = nodes.find((n) => n.selected) || nodes[0];
+      el.value = chosen ? chosen.value : "";
+    },
+    appendChild(n) { el.children.push(n); return n; },
+    remove() {}, click() {}, focus() {},
+    getBoundingClientRect() { return { width: 1200, height: 600, left: 0, top: 0 }; },
+    getContext() { return (el.context ||= fakeCanvasContext()); },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    closest() { return null; },
+  };
+  return el;
+}
+
+function fakePage(fixtures, options) {
+  const ids = ["stopped", "exported", "notoken", "q", "ns", "branch", "dot", "state", "port", "head", "kpi", "lens", "perf",
+    "stage", "under", "over", "tip", "narrow", "scrub", "past", "hand", "coord", "facts", "less", "briefs", "auto", "attn",
+    "compare", "export", "theme", "foot", "foot-store", "foot-policy", "sheet", "sx", "sc"];
+  const byId = new Map(ids.map((id) => [id, fakeElement(id, id === "ns" || id === "branch" ? "select" : id === "under" || id === "over" ? "canvas" : "div")]));
+  const panels = fakeElement("panels");
+  const documentElement = fakeElement("html");
+  const document = {
+    title: "", documentElement, body: fakeElement("body"), activeElement: null,
+    getElementById: (id) => byId.get(id) || null,
+    createElement: (tag) => fakeElement("", tag),
+    querySelector: (sel) => (sel === ".panels" ? panels : null),
+    querySelectorAll: () => [],
+    addEventListener() {},
+  };
+  const token = "ab".repeat(32);
+  const calls = [];
+  let streaming;
+  const streamOpened = new Promise((resolve) => { streaming = resolve; });
+  const ok = (body) => ({ status: 200, ok: true, json: async () => body });
+  const fetch = async (path, init) => {
+    calls.push({ path, auth: init && init.headers && init.headers.authorization });
+    const name = String(path).split("?")[0];
+    if (name === "/brain/summary") return ok(fixtures.summary);
+    if (name === "/brain/graph") return ok(fixtures.graph);
+    if (name === "/brain/attention") return ok({ attention: [] });
+    if (name === "/events") {
+      streaming();
+      // A stream that stays open: the page is connected for the whole test.
+      return { status: 200, ok: true, body: { getReader: () => ({ read: () => new Promise(() => {}) }) } };
+    }
+    return { status: 404, ok: false, json: async () => ({ error: `no route ${path}` }) };
+  };
+  let clock = 1000;
+  const frames = [];
+  const errors = [];
+  const window = {
+    fetch, TextDecoder,
+    performance: { now: () => clock },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
+    requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+    addEventListener() {},
+    setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (t) => clearTimeout(t),
+    getComputedStyle: () => ({ getPropertyValue: () => "" }),
+    devicePixelRatio: 1,
+    location: { hash: `#t=${token}`, port: String(fixtures.summary.port), search: "", href: `http://127.0.0.1:${fixtures.summary.port}/brain/#t=${token}` },
+    ...(options || {}),
+  };
+  // One animation frame: every callback queued so far, errors kept.
+  const frame = (advance) => {
+    clock += advance || 16;
+    for (const fn of frames.splice(0)) {
+      try { fn(); } catch (e) { errors.push(e); }
+    }
+  };
+  return { document, window, byId, calls, token, streamOpened, frame, errors };
+}
+
+const fixtures = () => {
+  const dir = join(here, "fixtures");
+  return {
+    summary: JSON.parse(readFileSync(join(dir, "summary.json"), "utf8")),
+    graph: JSON.parse(readFileSync(join(dir, "graph.json"), "utf8")),
+  };
+};
+
+test("the page boots against a store recorded from the daemon: the graph is drawn, the panels fill, nothing throws", async () => {
+  const fx = fixtures();
+  const page = fakePage(fx);
+  const $ = (id) => page.byId.get(id);
+  Brain.boot(page.document, page.window);
+  await page.streamOpened;
+
+  // The session connected, on this daemon, with the token as a header.
+  assert.equal($("state").textContent, "connected");
+  assert.ok(page.calls.every((c) => c.auth === `Bearer ${page.token}`), JSON.stringify(page.calls));
+  assert.ok(page.calls.some((c) => c.path.startsWith("/brain/summary")));
+  assert.ok(page.calls.some((c) => c.path.startsWith("/brain/graph")));
+
+  // The footer is the store's numbers, not an error message.
+  const foot = $("foot-store").textContent;
+  assert.match(foot, /^store \d+ B · \d+ commits retained · history from seq \d+$/, foot);
+  assert.ok(!/not defined|undefined|error/i.test(foot), foot);
+  assert.equal($("foot-policy").textContent, `policy: ${fx.summary.policy === "none" ? "none in force" : fx.summary.policy}`);
+  assert.equal($("port").textContent, String(fx.summary.port));
+
+  // The header's selectors name the project and the branch, and list the others.
+  for (const [id, list, chosen] of [["ns", fx.summary.namespaces, fx.summary.namespace], ["branch", fx.summary.branches, fx.summary.branch]]) {
+    const sel = $(id);
+    assert.deepEqual(sel.options.map((o) => o.textContent), list, `${id} options`);
+    assert.deepEqual(sel.options.map((o) => o.value), list, `${id} values`);
+    assert.equal(sel.value, chosen, `${id} chosen`);
+    assert.equal(sel.options.filter((o) => o.selected).length, 1, `${id} selected`);
+    assert.equal(sel.options.find((o) => o.selected).textContent, chosen);
+    assert.equal(sel.disabled, false);
+  }
+
+  // The panels hold what the store holds.
+  const rows = (id) => ($(id).innerHTML.match(/class="row/g) || []).length;
+  assert.equal(rows("hand"), fx.summary.handoffs.length);
+  assert.equal(rows("coord"), fx.summary.tasks.length);
+  assert.equal(rows("facts"), fx.summary.facts.length);
+  assert.equal(rows("less"), fx.summary.lessons.length);
+  assert.equal(rows("briefs"), fx.summary.briefings.length);
+  const c = fx.summary.headline.counts;
+  assert.ok($("kpi").innerHTML.includes(`<b>${c.handoffs_picked_up}</b> handoffs picked up`), $("kpi").innerHTML);
+  assert.ok($("kpi").innerHTML.includes(`<b>${c.briefings}</b> briefings served`));
+  assert.equal($("head").textContent, Brain.headline(fx.summary.headline));
+
+  // The graph is drawn: one disc per node on the static layer, labelled.
+  page.frame();
+  const under = $("under").getContext("2d").calls;
+  const discs = under.filter((c) => c.method === "arc").length;
+  assert.equal(discs, fx.graph.nodes.length, `discs drawn: ${discs}`);
+  const labels = under.filter((c) => c.method === "fillText").map((c) => c.args[0]);
+  assert.ok(labels.includes("payments"), labels.join(" | "));
+  assert.ok(labels.some((l) => l.startsWith("handoff ")), labels.join(" | "));
+  // The counter beside the lenses, after the second it is updated on.
+  page.frame(1001);
+  assert.match($("perf").textContent, new RegExp(`· ${fx.graph.nodes.length} nodes ·`), $("perf").textContent);
+  assert.equal($("scrub").max, fx.graph.seq);
+  assert.deepEqual(page.errors, [], "a frame threw");
+});
+
+test("a page whose panels cannot render still says what went wrong, and stays connected", async () => {
+  // A summary missing a whole panel: the failure is written where the
+  // footer goes, in words, rather than left as an empty graph.
+  const fx = fixtures();
+  delete fx.summary.handoffs;
+  const page = fakePage(fx);
+  Brain.boot(page.document, page.window);
+  await page.streamOpened;
+  const foot = page.byId.get("foot-store").textContent;
+  assert.ok(foot.length > 0 && !foot.startsWith("store "), foot);
+  assert.equal(page.byId.get("state").textContent, "connected");
 });
