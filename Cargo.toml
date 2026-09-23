@@ -3,7 +3,7 @@ members = ["crates/memfork-core", "crates/memfork", "crates/memfork-py"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ homepage = "https://github.com/memforkdb/memfork"
 authors = ["MemFork contributors"]
 
 [workspace.dependencies]
-memfork-core = { path = "crates/memfork-core", version = "0.2.1" }
+memfork-core = { path = "crates/memfork-core", version = "0.2.2" }
 blake3 = "1.8"
 bytes = "1.12"
 clap = { version = "4.6", features = ["derive"] }

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [0.2.2] - 2026-09-23
+
+A patch release with one fix for the daemon's start.
+
+### Fixed
+
+- **Asking whether a data directory is owned can no longer stop a daemon
+  taking it.** Anything that checks for a running daemon takes the directory
+  lock for a moment to answer. A daemon that tried for the lock in that moment
+  exited with "in use", and a check that let go before removing a stale
+  endpoint could remove the endpoint of a daemon that had just started. A
+  daemon now keeps trying for up to a second while no endpoint is published,
+  stops at once when one appears, and a check removes a stale endpoint only
+  while it still holds the lock.
+
 ## [0.2.1] - 2026-09-21
 
 A robustness release: nothing new, and less for a first user to trip over.
@@ -166,7 +181,8 @@ The first release.
 - File permissions on the daemon's endpoint file differ between Unix and
   Windows. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/memforkdb/memfork/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/memforkdb/memfork/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/memforkdb/memfork/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/memforkdb/memfork/compare/v0.1.0...v0.1.1
