@@ -24,7 +24,10 @@ read. There is no telemetry, no update check, no account. The code that can
 open a socket is four named modules, listed in SECURITY.md and held by a test;
 a CI job runs the whole command surface with outbound traffic blocked at the
 firewall. The installers are the exception: they download a release from
-GitHub, or from a mirror you name.
+GitHub, or from a mirror you name. What an agent reads from MemFork becomes
+part of that agent's prompt and goes wherever that agent already sends the
+code it works on, under the agreement you already have with its vendor; with a
+local model the whole loop stays on the machine.
 
 **Disk.** One data directory per user (`%LOCALAPPDATA%\memfork`,
 `~/Library/Application Support/memfork`, `~/.local/share/memfork`), or the

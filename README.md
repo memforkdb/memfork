@@ -76,6 +76,7 @@ script for your shell, to source or install where your shell looks.
 ```sh
 memfork stop                          # end the background server
 memfork init --project --remove       # in each repository you ran init --project in
+memfork init --project --autopilot --remove   # where you switched autopilot on
 rm -rf ~/.memfork/bin                 # the binary the install script put there
 ```
 
@@ -163,6 +164,9 @@ going stale, a decision disputed across branches. Nothing is spent, no AI tool
 is needed, your own memory is not touched, and the store is removed when you
 press Ctrl+C.
 
+<!-- Pending asset: docs/assets/memfork-demo.gif is added by the maintainer before release. -->
+<img alt="memfork demo: two stand-in clients work one project while the Brain shows a fact and a decision stored, a plan worked, a fork discarded with a lesson, a handoff picked up and a fact going stale." src="docs/assets/memfork-demo.gif" width="100%">
+
 ## What your agent gets
 
 Sixteen tools, in four groups.
@@ -189,29 +193,37 @@ thrown away.
 
 Full descriptions are in [the tool reference](#mcp-tools) below.
 
-## Supported clients
+## Supported tools
 
 `memfork init` knows each of these and uses the client's own command where it
-has one. No client is special.
+has one. No client is special. `memfork init --project` writes its instruction
+block into the fewest of the listed instruction files that reach every client
+you choose.
 
-| Client | How MemFork registers |
-|---|---|
-| Claude Code | `claude mcp add` |
-| Cursor | its `mcp.json` |
-| Codex CLI | `codex mcp add` |
-| Gemini CLI | `gemini mcp add` |
-| Grok Build | `grok mcp add` |
-| Cline | `cline mcp add`, or the extension's settings file |
-| OpenCode | `opencode mcp add`, or `opencode.json` |
-| Qwen Code | `qwen mcp add` |
-| Kiro | its `mcp.json` |
-| GitHub Copilot CLI | `copilot mcp add`, or `mcp-config.json` |
-| Devin CLI | `devin mcp add`, or `mcp_config.json` |
-| Windsurf | its `mcp_config.json` |
-| Zed | `settings.json` (`context_servers`) |
-| Visual Studio Code | `mcp.json` (`servers`) |
-| Factory Droid | its `mcp.json` |
-| OpenHands | `openhands mcp add`, or `mcp.json` |
+| Client | How MemFork registers | Reads project instructions from | Autopilot hooks |
+|---|---|---|---|
+| Claude Code | `claude mcp add` | `CLAUDE.md` | verified |
+| Cursor | its `mcp.json` | `AGENTS.md` | off |
+| Codex CLI | `codex mcp add` | `AGENTS.md` | off |
+| Gemini CLI | `gemini mcp add` | `GEMINI.md` | off |
+| Grok Build | `grok mcp add` | `AGENTS.md`, `CLAUDE.md` | off |
+| Cline | `cline mcp add`, or the extension's settings file | `AGENTS.md` | off |
+| OpenCode | `opencode mcp add`, or `opencode.json` | `AGENTS.md` | off |
+| Qwen Code | `qwen mcp add` | `QWEN.md`, `AGENTS.md` | off |
+| Kiro | its `mcp.json` | `AGENTS.md` | off |
+| GitHub Copilot CLI | `copilot mcp add`, or `mcp-config.json` | `.github/copilot-instructions.md`, `AGENTS.md`, `CLAUDE.md` | off |
+| Devin CLI | `devin mcp add`, or `mcp_config.json` | `AGENTS.md`, `CLAUDE.md` | off |
+| Windsurf | its `mcp_config.json` | `AGENTS.md` | off |
+| Zed | `settings.json` (`context_servers`) | `AGENTS.md` | off |
+| Visual Studio Code | `mcp.json` (`servers`) | `.github/copilot-instructions.md`, `AGENTS.md`, `CLAUDE.md` | off |
+| Factory Droid | its `mcp.json` | `AGENTS.md`, `CLAUDE.md` | off |
+| OpenHands | `openhands mcp add`, or `mcp.json` | `AGENTS.md`, `CLAUDE.md` | off |
+
+Every tool in the table gets the whole of memory, handoff, the task board,
+plans, lessons, facts and briefings, and memory following the git branch under
+[Autopilot](#autopilot). The automatic fork before a risky step needs a hook
+system MemFork has verified against the client's documentation; for every
+other client it is off and says so.
 
 Every entry is data in one registry file, checked against the client's own
 documentation on a recorded date. Where something could not be confirmed — a
@@ -505,6 +517,9 @@ are fresh, the dead ends, the briefings it served, and what needs a look. It is
 served by the local daemon, on `127.0.0.1` only, and it is a view of a
 database engine, not a control panel.
 
+<!-- Pending asset: docs/assets/memfork-brain-dark.png is added by the maintainer before release. -->
+<img alt="The Brain: the memory graph with agents, briefings, decisions, lessons, the plan and facts in columns, the headline counting what agents did not have to learn twice, and the panels beside it." src="docs/assets/memfork-brain-dark.png" width="100%">
+
 **Nothing on the page changes memory.** There is no button that forks, merges,
 discards, releases or stops anything; every write stays with your agents and
 the command line. The one control is time travel: drag the timeline and the
@@ -694,7 +709,7 @@ Every key is optional:
 
 ```toml
 brain = false              # memfork brain and memfork demo, the read-only page
-race = false               # memfork race
+race = false               # reserved: memfork race is not in this release
 autopilot = false          # memory following the git branch, automatic forks
 maintenance_tasks = false  # tasks MemFork adds to tidy a project's memory
 sampling = false           # asking a client's model for a summary
@@ -771,7 +786,7 @@ cargo run -p memfork --example memory_loop
 
 ```toml
 [dependencies]
-memfork-core = "0.2"
+memfork-core = "0.3"
 ```
 
 ```rust
@@ -874,7 +889,10 @@ Writes go to a checksummed log before they are visible. A snapshot is taken at
 the far end of the retained history rather than at the present, so restarting
 never shortens how far back you can look.
 
+<!-- Pending assets: the 0.3.0 docs/assets/memfork-architecture-{dark,light}.{png,gif} are added by the maintainer before release; the PNGs are the stills shown when a reader's system asks for reduced motion. -->
 <picture>
+  <source media="(prefers-reduced-motion: reduce) and (prefers-color-scheme: dark)" srcset="docs/assets/memfork-architecture-dark.png">
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/memfork-architecture-light.png">
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memfork-architecture-dark.gif">
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/memfork-architecture-light.gif">
   <img alt="MemFork architecture: AI tools connect over MCP to one local process holding shared, branchable memory with handoff notes, persisted to an append-only log on your own disk." src="docs/assets/memfork-architecture-light.gif" width="100%">

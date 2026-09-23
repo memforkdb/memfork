@@ -39,10 +39,15 @@ memfork init      # register the server with the MCP clients you have
 memfork doctor    # what is installed, and what is talking to it
 ```
 
-Clients then get fifteen tools — store, recall, search, fork, merge, discard,
+Clients then get sixteen tools — store, recall, search, fork, merge, discard,
 time travel, and handing work from one agent to another — over one store they
 share. With a single client that still pays: its next session resumes where the
 last one stopped.
+
+MemFork itself sends nothing anywhere: no cloud, no account, no telemetry.
+What an agent reads from it becomes part of that agent's prompt and goes
+wherever that agent already sends your code; with a local model the whole loop
+stays on your machine.
 
 ## What is in memory and what is on disk
 

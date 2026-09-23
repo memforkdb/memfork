@@ -191,7 +191,7 @@ impl ServerHandler for MemforkServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        // Fifteen tools fit in one page comfortably, and DESIGN §6.1 caps the
+        // Sixteen tools fit in one page comfortably, and DESIGN §6.1 caps the
         // count at sixteen, so there is nothing to paginate.
         Ok(ListToolsResult::with_all_items(tool_list()))
     }

@@ -60,7 +60,10 @@ DNS rebinding.
 ### Network: MemFork itself sends nothing anywhere
 
 **No telemetry, no update check, no account, no cloud.** The only network
-connections MemFork makes are to its own daemon on `127.0.0.1`. The only code
+connections MemFork makes are to its own daemon on `127.0.0.1`. What an agent
+reads from MemFork becomes part of that agent's prompt, and goes wherever that
+agent already sends your code; with a local model the whole loop stays on your
+machine. MemFork cannot limit what an agent does with what it read. The only code
 in the workspace that can open a socket is in four modules of the `memfork`
 crate, each named here because a test (`crates/memfork/tests/no_network.rs`)
 fails if any other file gains that ability or if one of these names a host
