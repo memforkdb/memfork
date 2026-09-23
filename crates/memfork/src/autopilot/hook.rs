@@ -67,6 +67,11 @@ pub struct Input {
     pub file: Option<String>,
     /// The failure text, for a failed tool.
     pub error: Option<String>,
+    /// What the tool printed, for a command tool that finished: stdout
+    /// then stderr, as the client reports them.
+    pub output: Option<String>,
+    /// The exit status the client reports for a command that finished.
+    pub exit_status: Option<i64>,
 }
 
 impl Input {
@@ -86,6 +91,19 @@ impl Input {
                 .or_else(|| tool_input["notebook_path"].as_str())
                 .map(str::to_owned),
             error: json["error"].as_str().map(str::to_owned),
+            output: {
+                let response = &json["tool_response"];
+                let stdout = response["stdout"].as_str().unwrap_or("");
+                let stderr = response["stderr"].as_str().unwrap_or("");
+                response
+                    .is_object()
+                    .then(|| match (stdout.is_empty(), stderr.is_empty()) {
+                        (_, true) => stdout.to_owned(),
+                        (true, false) => stderr.to_owned(),
+                        (false, false) => format!("{stdout}\n{stderr}"),
+                    })
+            },
+            exit_status: json["tool_response"]["exit_code"].as_i64(),
         })
     }
 
@@ -115,11 +133,38 @@ pub fn exit_code_of(error: &str) -> Option<i64> {
         .ok()
 }
 
+/// The exit code a wrapped command printed as its last line: Claude Code
+/// runs every shell command as `<cmd> 2>&1; echo "exit: $?"`, so the
+/// shell's own status is always 0 and the command's is this line.
+pub fn wrapped_exit_of(output: &str) -> Option<i64> {
+    last_line(output)?
+        .strip_prefix("exit:")?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// The last line of some text that is not blank.
 fn last_line(text: &str) -> Option<String> {
     text.lines()
         .rev()
         .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_owned)
+}
+
+/// The last line that is not blank and not the wrapper's `exit: N`.
+fn last_line_before_exit(output: &str) -> Option<String> {
+    let mut lines: Vec<&str> = output.lines().map(str::trim).collect();
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    if lines.last().is_some_and(|l| l.starts_with("exit:")) {
+        lines.pop();
+    }
+    lines
+        .into_iter()
+        .rev()
         .find(|l| !l.is_empty())
         .map(str::to_owned)
 }
@@ -180,27 +225,39 @@ impl Verdict {
         })
     }
 
-    /// The action's own outcome: a tool that finished is a pass, a tool
-    /// that failed carries its exit code.
+    /// The action's own outcome, by the best signal there is, in order: a
+    /// tool the client says failed is a failure; a trailing `exit: N` line
+    /// in what the tool printed is N, since Claude Code wraps every shell
+    /// command as `<cmd> 2>&1; echo "exit: $?"` and the shell's own status
+    /// is then always 0; only then the exit status the client reports; and
+    /// a tool that finished with none of these passed.
     fn by_action(input: &Input) -> Verdict {
-        match &input.error {
-            None => Verdict {
-                outcome: "passed",
-                check: None,
-                exit_code: Some(0),
-                timed_out: false,
-                timeout_seconds: None,
-                last_line: None,
-            },
-            Some(error) => Verdict {
+        let own = |exit_code: i64, last_line: Option<String>| Verdict {
+            outcome: if exit_code == 0 { "passed" } else { "failed" },
+            check: None,
+            exit_code: Some(exit_code),
+            timed_out: false,
+            timeout_seconds: None,
+            last_line: if exit_code == 0 { None } else { last_line },
+        };
+        if let Some(error) = &input.error {
+            return Verdict {
                 outcome: "failed",
                 check: None,
                 exit_code: exit_code_of(error),
                 timed_out: false,
                 timeout_seconds: None,
                 last_line: last_line(error),
-            },
+            };
         }
+        let output = input.output.as_deref().unwrap_or("");
+        if let Some(code) = wrapped_exit_of(output) {
+            return own(code, last_line_before_exit(output));
+        }
+        if let Some(code) = input.exit_status {
+            return own(code, last_line(output));
+        }
+        own(0, None)
     }
 
     fn fields(&self, body: &mut Json) {
@@ -402,6 +459,72 @@ mod tests {
 
         assert!(Input::parse("not json").is_none());
         assert!(Input::parse(r#"{"cwd":"x"}"#).is_none());
+    }
+
+    /// Claude Code runs every shell command as `<cmd> 2>&1; echo "exit: $?"`,
+    /// so the status it reports is the wrapper's, always 0, and the
+    /// command's own is the last line printed. The signals are judged in
+    /// order: the client's failure event, the `exit: N` line, the status.
+    #[test]
+    fn a_wrapped_command_is_judged_by_its_exit_line_not_the_wrappers_status() {
+        let wrapped = "npm install left-pad 2>&1; echo \"exit: $?\"";
+        let post = |response: Json| {
+            let mut event = json!({
+                "hook_event_name": "PostToolUse", "tool_name": "Bash",
+                "tool_input": { "command": wrapped }, "tool_use_id": "t",
+            });
+            event["tool_response"] = response;
+            Input::parse(&event.to_string()).unwrap()
+        };
+        let stdout = "npm ERR! code E404\nnpm ERR! 404 Not Found - GET https://registry.npmjs.org/left-pad\n\nexit: 1\n";
+        let failed =
+            post(json!({ "stdout": stdout, "stderr": "", "exit_code": 0, "interrupted": false }));
+        assert_eq!(failed.exit_status, Some(0));
+        let v = Verdict::by_action(&failed);
+        assert_eq!((v.outcome, v.exit_code), ("failed", Some(1)));
+        assert_eq!(
+            v.last_line.as_deref(),
+            Some("npm ERR! 404 Not Found - GET https://registry.npmjs.org/left-pad")
+        );
+        // An `exit: 0` line passes, with no last line to report.
+        let passed = post(
+            json!({ "stdout": "added 1 package\nexit: 0", "stderr": "", "exit_code": 0, "interrupted": false }),
+        );
+        let v = Verdict::by_action(&passed);
+        assert_eq!(
+            (v.outcome, v.exit_code, v.last_line),
+            ("passed", Some(0), None)
+        );
+        // Without the wrapper's line, the status the client reports decides.
+        let status =
+            post(json!({ "stdout": "boom", "stderr": "", "exit_code": 2, "interrupted": false }));
+        let v = Verdict::by_action(&status);
+        assert_eq!(
+            (v.outcome, v.exit_code, v.last_line.as_deref()),
+            ("failed", Some(2), Some("boom"))
+        );
+        // What went to stderr counts as output too, after stdout.
+        let stderr =
+            post(json!({ "stdout": "", "stderr": "fatal\nexit: 128", "interrupted": false }));
+        let v = Verdict::by_action(&stderr);
+        assert_eq!(
+            (v.outcome, v.exit_code, v.last_line.as_deref()),
+            ("failed", Some(128), Some("fatal"))
+        );
+        // A failure event wins over everything, even an `exit: 0` line.
+        let mut event = json!({
+            "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+            "tool_input": { "command": wrapped }, "tool_use_id": "t",
+            "error": "Command timed out after 2m 0.0s\nexit: 0",
+        });
+        event["tool_response"] = json!({ "stdout": "exit: 0", "exit_code": 0 });
+        let v = Verdict::by_action(&Input::parse(&event.to_string()).unwrap());
+        assert_eq!((v.outcome, v.exit_code), ("failed", None));
+        assert_eq!(wrapped_exit_of("exit: 7"), Some(7));
+        assert_eq!(wrapped_exit_of("  exit:  7  \n\n"), Some(7));
+        assert_eq!(wrapped_exit_of("exit: seven"), None);
+        assert_eq!(wrapped_exit_of("done"), None);
+        assert_eq!(wrapped_exit_of(""), None);
     }
 
     #[test]

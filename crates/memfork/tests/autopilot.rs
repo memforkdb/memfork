@@ -784,6 +784,69 @@ async fn the_hook_forks_before_a_risky_command_and_the_outcome_settles_it() {
     agent.cancel().await.unwrap();
 }
 
+/// Claude Code runs every shell command as `<cmd> 2>&1; echo "exit: $?"`,
+/// so the shell's exit status it reports is the wrapper's, always 0, even
+/// when the command failed. The command's own status is the trailing
+/// `exit: N` line, and that is what settles the fork.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_wrapped_by_claude_code_is_judged_by_its_exit_line() {
+    let _turn = ONE_AT_A_TIME.lock().await;
+    let sandbox = Sandbox::new();
+    let repo = sandbox.root().join("shop");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    switch_on(&repo, None);
+    let agent = connect(&sandbox, "claude-code", &repo).await;
+    let (_, _) = branch_of(&agent).await;
+    let wrapped = "npm install left-pad 2>&1; echo \"exit: $?\"";
+    silent(&hook(&sandbox, &repo, &pre_command(&repo, wrapped, "t1")));
+    let (branch, notes) = branch_of(&agent).await;
+    assert_eq!(branch, "autopilot/main/1");
+    assert_eq!(notes[0]["rule"], "dependency-change");
+    call(
+        &agent,
+        "memfork_put",
+        json!({ "key": "shop:decision:doomed", "value": "left-pad" }),
+    )
+    .await;
+    // The install failed inside the wrapper; the shell's own status is 0.
+    let mut event = post_command(&repo, wrapped, "t1");
+    event["tool_response"] = json!({
+        "stdout": "npm ERR! code E404\nnpm ERR! 404 Not Found - GET https://registry.npmjs.org/left-pad\n\nexit: 1\n",
+        "stderr": "", "exit_code": 0, "interrupted": false, "isImage": false,
+    });
+    silent(&hook(&sandbox, &repo, &event));
+    let (branch, notes) = branch_of(&agent).await;
+    assert_eq!(branch, "main");
+    assert_eq!(kinds(&notes), ["settled"]);
+    assert_eq!(notes[0]["result"], "discarded", "{notes:?}");
+    assert_eq!(
+        notes[0]["lesson"],
+        "autopilot: `npm install left-pad 2>&1; echo \"exit: $?\"` (rule: dependency-change) failed, exit 1: npm ERR! 404 Not Found - GET https://registry.npmjs.org/left-pad"
+    );
+    let gone = call(
+        &agent,
+        "memfork_get",
+        json!({ "key": "shop:decision:doomed" }),
+    )
+    .await;
+    assert_eq!(gone["found"], false);
+
+    // The same wrapper with an inner success merges.
+    silent(&hook(&sandbox, &repo, &pre_command(&repo, wrapped, "t2")));
+    let (branch, _) = branch_of(&agent).await;
+    assert_eq!(branch, "autopilot/main/1");
+    let mut event = post_command(&repo, wrapped, "t2");
+    event["tool_response"] = json!({
+        "stdout": "added 1 package in 1s\nexit: 0\n",
+        "stderr": "", "exit_code": 0, "interrupted": false, "isImage": false,
+    });
+    silent(&hook(&sandbox, &repo, &event));
+    let (branch, notes) = branch_of(&agent).await;
+    assert_eq!(branch, "main");
+    assert_eq!(notes[0]["result"], "merged", "{notes:?}");
+    agent.cancel().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_configured_check_decides_not_the_action() {
     let _turn = ONE_AT_A_TIME.lock().await;

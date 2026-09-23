@@ -610,8 +610,12 @@ and then merges or discards the fork:
 - with a `check` command in the TOML file (a test suite, say), the check
   decides: it runs in the repository, in the background so the agent is never
   held, and a pass merges while a failure discards;
-- with no check, a shell command is judged by its own exit status, and an
-  edit sweep is kept as a fork for you to merge or discard, and said so;
+- with no check, a shell command is judged by its own outcome, from the
+  best signal the client gives, in order: a failure the client reports, a
+  trailing `exit: N` line in what the command printed (Claude Code runs
+  every shell command as `<cmd> 2>&1; echo "exit: $?"`, so the shell's own
+  status is always 0), and only then the exit status; an edit sweep is kept
+  as a fork for you to merge or discard, and said so;
 - a failure leaves a lesson composed from data alone, for example
   ``autopilot: `npx prisma migrate dev` (rule: migration) failed cargo test,
   exit 101: test payments::refund ... FAILED``, so the next agent does not try

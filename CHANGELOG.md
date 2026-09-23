@@ -30,8 +30,9 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   matches a rule (migrations, destructive file operations, history rewriting,
   dependency changes, database commands) or an edit sweep past a limit, and
   merged or discarded by a check command the file names, else by the action's
-  own exit status, else kept and said so; a failure leaves a lesson composed
-  from data alone. The rules are data: `memfork autopilot rules` and `memfork
+  own outcome (the client's failure event, then the trailing `exit: N` line
+  Claude Code's command wrapper prints, then the exit status), else kept and
+  said so; a failure leaves a lesson composed from data alone. The rules are data: `memfork autopilot rules` and `memfork
   autopilot check "<command>"`. The hook is fail-open: no daemon, no policy,
   no file means nothing runs, nothing is printed and nothing is started.
   Everything is recorded as `memfork-autopilot` in the feed, the Brain's new

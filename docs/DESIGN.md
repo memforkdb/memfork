@@ -718,8 +718,13 @@ edit sweep forks when the file about to be edited is the one past
 `max_files` distinct files since the last settle, and settles at the stop.
 Settling: with a `check`, the hook runs it in the repository under the
 file's time limit (`plans::run`, the acceptance runner) and the exit status
-decides; without one, a command's own outcome decides (a tool that finished
-passed, one that failed carries `Exit code N`); with neither, the fork is
+decides; without one, a command's own outcome decides, by the best signal
+in order: a `PostToolUseFailure` is a failure (its text carries `Exit code
+N` when the shell ran), a trailing `exit: N` line in the tool's output is N
+(Claude Code runs every shell command as `<cmd> 2>&1; echo "exit: $?"`, so
+the status it reports is the wrapper's, always 0), and only then the
+`exit_code` the client reports; a tool that finished with none of these
+passed. With neither a check nor a command, the fork is
 kept, the session stays on it, and the note says how to merge or discard
 it. A pass merges into the parent with `fail`, then discards the fork; a
 conflict keeps it and names the keys; a failure writes a lesson composed
@@ -1637,8 +1642,9 @@ Not promises, and not in any order:
    branch, and a merge made between sessions is caught by a cursor kept
    beside the store.
 2. **Automatic forks through a client's hooks** (§5.6): rules as data, a
-   check command from the repository's own file, the action's exit status
-   otherwise, a kept fork with neither, a lesson composed from data, and a
+   check command from the repository's own file, the action's own outcome
+   otherwise (the failure event, then the wrapper's `exit: N` line, then
+   the exit status), a kept fork with neither, a lesson composed from data, and a
    hook that fails open. Claude Code's hook system verified; every other
    client off and said so.
 3. **A session directory** in the shared side of a process, so a request

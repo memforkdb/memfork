@@ -13,7 +13,7 @@
 //!   installed only by `memfork init --project --autopilot`, memory is forked
 //!   before a command that matches the risky [`rules`] or before an edit
 //!   sweep past a limit, and merged or discarded by the outcome: a check
-//!   command the repository names, or the action's own exit status. With
+//!   command the repository names, or the action's own outcome. With
 //!   neither, the fork is kept and said so. [`hook`] is the command a client
 //!   runs; it does nothing and says nothing when MemFork is not running.
 //!

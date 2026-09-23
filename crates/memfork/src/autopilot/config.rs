@@ -200,8 +200,9 @@ git_branch = true
 before_risky = true
 # The command that decides whether a risky action worked. It runs in this
 # repository, and only because this file names it. Without one, a shell
-# command is judged by its own exit status and an edit sweep is kept as a
-# fork for you to merge or discard.
+# command is judged by its own outcome (a failure the client reports, the
+# trailing `exit: N` line Claude Code's wrapper prints, then the exit
+# status) and an edit sweep is kept as a fork for you to merge or discard.
 {check_line}
 # Seconds the check may take before it counts as failed.
 timeout_seconds = {DEFAULT_TIMEOUT_SECONDS}

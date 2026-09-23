@@ -202,7 +202,7 @@ impl Report {
                 "check",
                 &match &c.check {
                     Some(check) => format!("`{check}`, up to {} s", c.timeout_seconds),
-                    None => "none: a command is judged by its own exit status, an edit sweep is kept as a fork".to_owned(),
+                    None => "none: a command is judged by its own outcome, an edit sweep is kept as a fork".to_owned(),
                 },
             ));
             out.push(row(
