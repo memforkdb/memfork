@@ -364,7 +364,7 @@ function fakeElement(id, tag) {
 function fakePage(fixtures, options) {
   const ids = ["stopped", "exported", "notoken", "q", "ns", "branch", "dot", "state", "port", "head", "kpi", "lens", "perf",
     "stage", "under", "over", "tip", "narrow", "scrub", "past", "hand", "coord", "facts", "less", "briefs", "auto", "attn",
-    "compare", "export", "theme", "foot", "foot-store", "foot-policy", "sheet", "sx", "sc"];
+    "compare", "export", "theme", "foot", "foot-store", "foot-policy", "foot-build", "sheet", "sx", "sc"];
   const byId = new Map(ids.map((id) => [id, fakeElement(id, id === "ns" || id === "branch" ? "select" : id === "under" || id === "over" ? "canvas" : "div")]));
   const panels = fakeElement("panels");
   const documentElement = fakeElement("html");
@@ -445,6 +445,10 @@ test("the page boots against a store recorded from the daemon: the graph is draw
   assert.match(foot, /^store \d+ B · \d+ commits retained · history from seq \d+$/, foot);
   assert.ok(!/not defined|undefined|error/i.test(foot), foot);
   assert.equal($("foot-policy").textContent, `policy: ${fx.summary.policy === "none" ? "none in force" : fx.summary.policy}`);
+  // The page names its build, twelve hex digits from the daemon, so a stale
+  // binary or a daemon started before a rebuild can be told from the footer.
+  assert.match(fx.summary.page_build, /^[0-9a-f]{12}$/, fx.summary.page_build);
+  assert.equal($("foot-build").textContent, `page build ${fx.summary.page_build}`);
   assert.equal($("port").textContent, String(fx.summary.port));
 
   // The header's selectors name the project and the branch, and list the others.

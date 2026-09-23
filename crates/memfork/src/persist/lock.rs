@@ -89,6 +89,14 @@ pub struct Endpoint {
     /// and that absence is itself a mismatch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memfork_version: Option<String>,
+    /// Which build of the Brain's page the daemon serves: the page build of
+    /// the binary it was started from (`brain::page_build`). Two binaries of
+    /// one version differ in it whenever their page differs, which a version
+    /// string cannot say; `memfork brain` holds it against its own and
+    /// `memfork doctor` shows both. `None` from a build without the Brain,
+    /// or from an endpoint file written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_build: Option<String>,
 }
 
 /// The version this build writes.
@@ -108,7 +116,20 @@ impl Endpoint {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             memfork_version: Some(crate::VERSION.to_owned()),
+            page_build: this_page_build(),
         }
+    }
+}
+
+/// The page build this binary carries, or `None` when it carries no page.
+fn this_page_build() -> Option<String> {
+    #[cfg(feature = "brain")]
+    {
+        Some(crate::brain::page_build().to_owned())
+    }
+    #[cfg(not(feature = "brain"))]
+    {
+        None
     }
 }
 
@@ -444,6 +465,7 @@ mod tests {
                 read_token: None,
                 started_unix: 0,
                 memfork_version: Some(crate::VERSION.to_owned()),
+                page_build: None,
             })
             .expect("published");
         // Put it back by hand: dropping the lock above removed it.

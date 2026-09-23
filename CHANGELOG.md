@@ -52,7 +52,13 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   carries a read token in its fragment, which the daemon refuses on every
   route that writes; when the daemon stops, the page says so and asks to be
   opened again. `memfork doctor` shows the address; the machine policy's
-  `brain = false` switches it off.
+  `brain = false` switches it off. The page's footer names its build, twelve
+  hex digits of the page's files; `memfork doctor` prints the build this
+  binary carries and the one the daemon serves; `memfork brain` refuses a
+  daemon started from another build of the same version, naming both and
+  `memfork stop`, rather than open a page that is not the one just built;
+  and each page file is served with its SHA-256 as the entity tag, which
+  `sha256sum` on the source file prints too.
 - **`memfork demo`.** A scripted session on a throwaway store, with the
   Brain open on it and two stand-in clients over the real MCP transport:
   nothing spent, nothing of yours touched, removed on exit.

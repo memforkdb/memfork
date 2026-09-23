@@ -285,6 +285,7 @@ pub fn summary(context: &Context, query: &Query) -> Result<Json, Failure> {
 
     Ok(json!({
         "version": crate::VERSION,
+        "page_build": super::page_build(),
         "port": context.port,
         "read_only": true,
         "namespace": ns,

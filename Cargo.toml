@@ -14,6 +14,9 @@ authors = ["MemFork contributors"]
 [workspace.dependencies]
 memfork-core = { path = "crates/memfork-core", version = "0.2.1" }
 blake3 = "1.8"
+# SHA-256 of the Brain's files, so a served file can be held against the
+# source with the `sha256sum` every machine has.
+sha2 = "0.11"
 bytes = "1.12"
 clap = { version = "4.6", features = ["derive"] }
 # Shell completions for `memfork completions <shell>`, generated at run time

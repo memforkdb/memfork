@@ -147,17 +147,27 @@ fn the_port_is_the_systems_choice_and_changes_across_starts() {
 #[test]
 fn the_page_files_need_no_token_and_every_data_route_does() {
     let sandbox = Sandbox::new();
-    let (port, full, read) = tokens(&started(&sandbox));
+    let endpoint = started(&sandbox);
+    let (port, full, read) = tokens(&endpoint);
 
-    for (path, kind) in [
-        ("/brain", "text/html"),
-        ("/brain/app.js", "text/javascript"),
-        ("/brain/app.css", "text/css"),
+    for (path, kind, source) in [
+        ("/brain", "text/html", memfork::brain::PAGE_HTML),
+        ("/brain/app.js", "text/javascript", memfork::brain::PAGE_JS),
+        ("/brain/app.css", "text/css", memfork::brain::PAGE_CSS),
     ] {
         let a = ask(port, Method::GET, path, None, None);
         assert_eq!(a.status, StatusCode::OK, "{path}");
         assert!(
             a.header("content-type").unwrap().starts_with(kind),
+            "{path}"
+        );
+        // What is served is the source, byte for byte, and says so: the
+        // entity tag is the file's SHA-256, which `sha256sum` on the source
+        // file prints too.
+        assert_eq!(a.body, source, "{path} is not the file in the binary");
+        assert_eq!(
+            a.header("etag"),
+            Some(format!("\"{}\"", memfork::brain::digest(source)).as_str()),
             "{path}"
         );
         assert_eq!(
@@ -210,6 +220,13 @@ fn the_page_files_need_no_token_and_every_data_route_does() {
     let json = summary.json();
     assert_eq!(json["port"], port);
     assert_eq!(json["read_only"], true);
+    // The summary and the endpoint file both name the page's build, which
+    // is this binary's: the daemon was started from it.
+    assert_eq!(json["page_build"], memfork::brain::page_build());
+    assert_eq!(
+        endpoint.page_build.as_deref(),
+        Some(memfork::brain::page_build())
+    );
     assert_eq!(json["namespace"], "shop");
     assert_eq!(json["branch"], "main");
     assert_eq!(json["namespaces"], serde_json::json!(["shop"]));

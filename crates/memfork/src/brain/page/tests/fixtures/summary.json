@@ -1,6 +1,7 @@
 {
   "version": "0.2.1",
-  "port": 59404,
+  "page_build": "80ba23cfe973",
+  "port": 55516,
   "read_only": true,
   "namespace": "shop",
   "branch": "main",

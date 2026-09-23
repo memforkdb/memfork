@@ -156,13 +156,16 @@ impl Storage {
                 ),
                 Some(port) => {
                     let version = owner.memfork_version.as_deref().unwrap_or("unknown");
-                    let mine = if version == crate::VERSION {
-                        ""
-                    } else {
+                    let build = owner.page_build.as_deref().unwrap_or("unknown");
+                    let mine = if version != crate::VERSION {
                         "  <- a different version from this one; run `memfork stop`"
+                    } else if !page_build_matches(owner) {
+                        "  <- a different build from this one; run `memfork stop`"
+                    } else {
+                        ""
                     };
                     format!(
-                        "127.0.0.1:{port}, process {}, version {version}{mine}",
+                        "127.0.0.1:{port}, process {}, version {version}, page build {build}{mine}",
                         owner.pid
                     )
                 }
@@ -186,6 +189,17 @@ impl Storage {
         }
     }
 
+    /// The page build this binary carries, or why it carries none.
+    fn describe_page_build(&self) -> String {
+        match this_page_build() {
+            Some(build) => format!(
+                "{build}  (the page's footer shows the daemon's; the two match when the \
+                 daemon was started from this binary)"
+            ),
+            None => "none: not in this build".to_owned(),
+        }
+    }
+
     fn source_name(&self) -> Option<&'static str> {
         self.source.map(|s| match s {
             crate::persist::Source::Policy => "policy",
@@ -194,6 +208,24 @@ impl Storage {
             crate::persist::Source::PerUser => "per-user",
         })
     }
+}
+
+/// The page build this binary carries, or `None` when it carries no page.
+fn this_page_build() -> Option<&'static str> {
+    #[cfg(feature = "brain")]
+    {
+        Some(crate::brain::page_build())
+    }
+    #[cfg(not(feature = "brain"))]
+    {
+        None
+    }
+}
+
+/// Whether a daemon serves the page this binary carries. A daemon without
+/// the Brain and a binary without it agree on having none.
+fn page_build_matches(owner: &crate::persist::Endpoint) -> bool {
+    owner.page_build.as_deref() == this_page_build()
 }
 
 fn storage() -> Storage {
@@ -342,6 +374,10 @@ fn header(
     out.push_str(&format!("  data dir      {}\n", storage.describe_dir()));
     out.push_str(&format!("  daemon        {}\n", storage.describe_daemon()));
     out.push_str(&format!("  brain         {}\n", storage.describe_brain()));
+    out.push_str(&format!(
+        "  page build    {}\n",
+        storage.describe_page_build()
+    ));
     out.push_str(&format!(
         "  autopilot     {}\n",
         autopilot.map_or_else(
@@ -574,9 +610,12 @@ pub fn json() -> Json {
             "pid": o.pid,
             "version": o.memfork_version,
             "version_matches": o.memfork_version.as_deref() == Some(crate::VERSION),
+            "page_build": o.page_build,
+            "page_build_matches": page_build_matches(o),
         }))),
         "brain": {
             "built": cfg!(feature = "brain"),
+            "page_build": this_page_build(),
             "allowed": crate::policy::allows(crate::policy::Feature::Brain),
             "url": storage().owner.as_ref().and_then(|o| o.port.map(|port| format!("http://127.0.0.1:{port}/brain"))),
         },

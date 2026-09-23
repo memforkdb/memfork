@@ -68,6 +68,58 @@ pub const ROUTES: &[&str] = &[
     "export",
 ];
 
+/// The SHA-256 of one of the page's files, in hex: what `sha256sum` prints
+/// for the same file in the source tree, so a file the daemon serves can be
+/// held against the source it was meant to be built from.
+pub fn digest(body: &str) -> String {
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(body.as_bytes());
+    hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The build of the page: the first twelve hex digits of the SHA-256 over
+/// its three files in [`STATIC`] order, markup then style then script. Two
+/// binaries with the same version and a different page, the ordinary state
+/// of a working tree between commits, have different builds; the page's
+/// footer, the summary and `memfork doctor` show it, the daemon writes it
+/// into its endpoint file, and `memfork brain` refuses a daemon whose build
+/// is not its own rather than open a page that is not the one just built.
+pub fn page_build() -> &'static str {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BUILD.get_or_init(|| {
+        let mut all = String::new();
+        for (_, _, body) in STATIC {
+            all.push_str(body);
+        }
+        let mut hex = digest(&all);
+        hex.truncate(12);
+        hex
+    })
+}
+
+/// Why a daemon cannot show this command's page, if it cannot: it was
+/// started from another build of the same version, so the page it serves is
+/// not the one this binary carries. `None` when the builds agree.
+pub fn build_mismatch(endpoint: &crate::persist::Endpoint) -> Option<String> {
+    let ours = page_build();
+    match endpoint.page_build.as_deref() {
+        Some(theirs) if theirs == ours => None,
+        Some(theirs) => Some(format!(
+            "the running daemon (process {}) serves page build {theirs}, and this command \
+             carries page build {ours}: it was started from another build of MemFork \
+             {}, probably before this binary was rebuilt. Run `memfork stop`, then try \
+             again",
+            endpoint.pid,
+            crate::VERSION
+        )),
+        None => Some(format!(
+            "the running daemon (process {}) published no page build, so it is older than \
+             this command; run `memfork stop`, then try again",
+            endpoint.pid
+        )),
+    }
+}
+
 /// The families of key the page knows, as `<project>:<family>:<rest>`.
 pub const FAMILIES: &[&str] = &["decision", "fact", "task", "lesson", "handoff", "note"];
 
@@ -166,10 +218,15 @@ pub fn static_asset(path: &str, method: &Method) -> Option<Response<BoxBody>> {
             "the Brain only answers GET\n",
         ));
     }
+    // The file's own hash, quoted as an entity tag: `curl -i` on the address
+    // shows it, and `sha256sum` on the source file prints the same, or does
+    // not, which is the whole question when a page looks stale.
+    let etag = format!("\"{}\"", digest(body));
     let body = http_body_util::Full::new(hyper::body::Bytes::from_static(body.as_bytes()));
     let response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", *content_type)
+        .header("etag", etag)
         .body(http_body_util::BodyExt::boxed(
             http_body_util::BodyExt::map_err(body, |never| match never {}),
         ))
@@ -413,5 +470,49 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
         let found = namespaces(&db, "main").unwrap_or_default();
         assert_eq!(found, vec!["api".to_owned(), "shop".to_owned()]);
+    }
+
+    #[test]
+    fn a_digest_is_the_sha256_that_sha256sum_prints() {
+        // `printf 'memfork' | sha256sum`, and the empty file.
+        assert_eq!(
+            digest("memfork"),
+            "b2f07274951c8b97cb1223ad66990be5fa795ced78fe5bbce571a3f83a744afc"
+        );
+        assert_eq!(
+            digest(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_ne!(digest("a"), digest("b"));
+    }
+
+    #[test]
+    fn the_page_build_is_twelve_hex_digits_of_the_three_files_together() {
+        let build = page_build();
+        assert_eq!(build.len(), 12);
+        assert!(build.bytes().all(|b| b.is_ascii_hexdigit()));
+        let all = format!("{PAGE_HTML}{PAGE_CSS}{PAGE_JS}");
+        assert_eq!(build, &digest(&all)[..12]);
+    }
+
+    #[test]
+    fn a_daemon_from_another_build_of_this_version_is_refused_by_name() {
+        let mut endpoint = crate::persist::Endpoint::for_this_process();
+        endpoint.pid = 4242;
+        assert_eq!(endpoint.page_build.as_deref(), Some(page_build()));
+        assert_eq!(build_mismatch(&endpoint), None);
+
+        endpoint.page_build = Some("000000000000".to_owned());
+        let why = build_mismatch(&endpoint).expect("refused");
+        assert!(why.contains("process 4242"), "{why}");
+        assert!(why.contains("000000000000"), "{why}");
+        assert!(why.contains(page_build()), "{why}");
+        assert!(why.contains(crate::VERSION), "{why}");
+        assert!(why.contains("`memfork stop`"), "{why}");
+
+        endpoint.page_build = None;
+        let why = build_mismatch(&endpoint).expect("refused");
+        assert!(why.contains("no page build"), "{why}");
+        assert!(why.contains("`memfork stop`"), "{why}");
     }
 }

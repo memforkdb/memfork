@@ -1935,6 +1935,9 @@ fn run_brain(
                 .to_owned(),
         )
     })?;
+    if let Some(why) = crate::brain::build_mismatch(&endpoint) {
+        return Err(ExecError::Usage(why));
+    }
     if global.json {
         writeln!(
             out,

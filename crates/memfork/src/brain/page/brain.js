@@ -834,6 +834,9 @@ function boot(document, window) {
     const bytes = f.store_bytes || 0;
     $("foot-store").textContent = `store ${bytes >= 1e6 ? (bytes / 1e6).toFixed(1) + " MB" : bytes >= 1e3 ? Math.round(bytes / 1e3) + " kB" : bytes + " B"} · ${(f.commits_retained || 0).toLocaleString()} commits retained · history from seq ${f.history_from_seq ?? 0}`;
     $("foot-policy").textContent = `policy: ${s.policy === "none" ? "none in force" : s.policy}`;
+    // Which build of the page this is, so it can be held against what
+    // `memfork doctor` says this binary carries when the page looks stale.
+    $("foot-build").textContent = s.page_build ? `page build ${s.page_build}` : "";
     $("port").textContent = String(s.port);
 
     const pick = (id, list, chosen) => {
