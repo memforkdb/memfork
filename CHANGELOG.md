@@ -7,11 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] - 2026-09-23
+
 Agents working together: a task board with claims, plans agents work in
 order, lessons from abandoned attempts, facts that know when they are stale,
 briefings that fit a budget and say what changed since you last looked,
 duplicates and contradictions flagged, memory that asks to be tidied, and
 credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
+It includes the fix released in 0.2.2. `memfork race` is not in this release.
 
 ### Added
 
@@ -160,8 +165,9 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
 - **A machine-wide policy file.** An administrator places one file
   (`%ProgramData%\memfork\policy.toml`, `/Library/Application
   Support/memfork/policy.toml` or `/etc/memfork/policy.toml`) to switch off the
-  Brain, race, autopilot, maintenance tasks, sampling or secret overrides
-  for every user, and to pin the data directory. No flag, environment variable
+  Brain, autopilot, maintenance tasks, sampling or secret overrides for
+  every user, and to pin the data directory; its `race` key is reserved for
+  `memfork race`, which is not in this release. No flag, environment variable
   or project setting overrides it; a file that cannot be read stops everything
   but `memfork doctor`, which shows the policy in force.
 - **`memfork doctor` is short by default**: the binary, the data directory, the
@@ -180,12 +186,6 @@ credentials kept out. Stores written by 0.1.x and 0.2.x open unchanged.
   start of a metadata-carrying session and refused every plain request after
   it; `memfork mcp` now answers the probe itself with the same discovery
   result, and the SDK sees the ordinary session the client is in.
-- **A daemon could fail to start while something asked whether one was
-  running.** Asking takes the directory lock for a moment, and a daemon trying
-  for it at that moment exited with "in use"; a stale endpoint could also be
-  removed just after a new daemon published it. Taking the lock now waits out
-  a question, and a question removes a stale endpoint only while it holds the
-  lock.
 
 ### Changed
 
@@ -366,7 +366,8 @@ The first release.
 - File permissions on the daemon's endpoint file differ between Unix and
   Windows. See [SECURITY.md](SECURITY.md).
 
-[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/memforkdb/memfork/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/memforkdb/memfork/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/memforkdb/memfork/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/memforkdb/memfork/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/memforkdb/memfork/compare/v0.1.1...v0.2.0
