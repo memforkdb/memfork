@@ -64,6 +64,12 @@ Rust 1.89 or newer for the binary; the `memfork-core` library alone builds on
 1.85. Nothing else is required — no C toolchain beyond what your platform's
 default already provides.
 
+On Windows, a build cannot replace a binary that is running: an AI tool's
+`memfork mcp` holds `target\release\memfork.exe` open after `memfork stop`
+has stopped the daemon, and the build fails with `os error 5`, leaving the old
+binary in place. Close the tool, or move the old file aside and build again;
+the README's [Building](README.md#building) section has the commands.
+
 For the Python package you also need [maturin](https://www.maturin.rs):
 
 ```sh

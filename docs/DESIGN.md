@@ -262,6 +262,20 @@ both versions and `memfork stop`. Two builds sharing one store is how a store
 gets corrupted by formats that were never meant to meet, and an endpoint file
 with no version at all is treated as a mismatch rather than assumed compatible.
 
+**[v0.16] Build skew is named, and the Brain refuses it.** A version string
+does not tell two builds of one version apart, which is the ordinary state of
+a working tree between commits, and a daemon started before a rebuild goes on
+serving the page it was built with. So the endpoint file also carries the
+daemon's *page build*: the first twelve hex digits of the SHA-256 over the
+page's three files. The summary carries it, the page's footer shows it,
+`memfork doctor` prints the binary's and the daemon's, and `memfork brain`
+refuses a daemon whose page build is not its own, naming both and `memfork
+stop`. Each page file is served with its SHA-256 as the entity tag, the same
+digest `sha256sum` prints for the source file, so a served file can be held
+against the source with no tooling. Other commands are not refused on it:
+the store's formats are the version's, and the page is the only thing a
+build changes that a user can see.
+
 **[v0.6] Tests may not fall back to the per-user directory.** Setting
 `MEMFORK_FORBID_PER_USER_DATA_DIR` makes resolving it a hard error. Every test
 sets it, and every process a test starts inherits it, so a test that forgets to

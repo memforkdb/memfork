@@ -553,6 +553,16 @@ The whole page works from the keyboard: the graph takes arrow keys, Enter and
 Escape, and `/` goes to search. On a phone-width window the panels stack and
 the graph shows the current lens.
 
+The footer names the page's build: twelve hex digits of the page's own files.
+`memfork doctor` prints the build this binary carries and the one the running
+daemon serves, and the two differ when the daemon was started before a
+rebuild. `memfork brain` then refuses to open the old page and says to run
+`memfork stop`. Each of the page's files is served with its SHA-256 as the
+entity tag: `curl -si http://127.0.0.1:<port>/brain/app.js` prints it above
+the file (a `HEAD` is refused, like every method but `GET`), and `sha256sum
+crates/memfork/src/brain/page/brain.js` in a source tree prints the same, or
+does not.
+
 What to look for, with your own tools working in one project: a handoff left
 by one and picked up by another as a pulse into a briefing; a fact going amber
 when its file changes; a lesson appearing when a fork is discarded; the
@@ -885,6 +895,21 @@ cargo build --release      # the binary lands in target/release
 ```
 
 Rust 1.89 or newer for the binary; `memfork-core` alone builds on 1.85.
+
+On Windows, a MemFork that is running holds its binary open, and a build then
+fails to replace it with `Access is denied. (os error 5)`, leaving the old
+binary where it was. `memfork stop` stops the daemon, but a `memfork mcp` that
+an AI tool started belongs to that tool and runs until the tool exits. Close
+the tool and build again, or move the old file aside first (a running program
+keeps its renamed file):
+
+```powershell
+Move-Item target\release\memfork.exe target\release\memfork.old.exe
+cargo build --release
+```
+
+`memfork doctor` prints the page build of the binary it runs from, and the
+Brain's footer prints the daemon's, so a build that did not land shows.
 
 Before sending a change, everything in
 **[CONTRIBUTING.md](CONTRIBUTING.md)** has to pass — on all three operating
