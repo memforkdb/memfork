@@ -651,7 +651,7 @@ against a summary and a graph recorded from a real store
 filled, the selectors naming the project and the branch, nothing thrown.
 The Rust test that recorded those files re-records them with
 `MEMFORK_RECORD_PAGE_FIXTURES=1` and otherwise holds them to the shape a
-live daemon answers with, so the page cannot pass against answers the
+running daemon answers with, so the page cannot pass against answers the
 daemon no longer gives. The budgets are a release-mode test on a hundred thousand entries
 (`brain_budget.rs`) that prints every figure and fails on any over its
 ceiling: on a laptop, the summary the first paint waits for takes about
