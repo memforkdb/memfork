@@ -163,8 +163,6 @@ fork discarded with a lesson, a handoff picked up by the other client, a fact
 going stale, a decision disputed across branches. Nothing is spent, no AI tool
 is needed, your own memory is not touched, and the store is removed when you
 press Ctrl+C.
-
-<!-- Pending asset: docs/assets/memfork-demo.gif is added by the maintainer before release. -->
 <img alt="memfork demo: two stand-in clients work one project while the Brain shows a fact and a decision stored, a plan worked, a fork discarded with a lesson, a handoff picked up and a fact going stale." src="docs/assets/memfork-demo.gif" width="100%">
 
 ## What your agent gets
@@ -516,8 +514,6 @@ and what it did with it: the memory graph, the handoffs, the plan, which facts
 are fresh, the dead ends, the briefings it served, and what needs a look. It is
 served by the local daemon, on `127.0.0.1` only, and it is a view of a
 database engine, not a control panel.
-
-<!-- Pending asset: docs/assets/memfork-brain-dark.png is added by the maintainer before release. -->
 <img alt="The Brain: the memory graph with agents, briefings, decisions, lessons, the plan and facts in columns, the headline counting what agents did not have to learn twice, and the panels beside it." src="docs/assets/memfork-brain-dark.png" width="100%">
 
 **Nothing on the page changes memory.** There is no button that forks, merges,
@@ -888,8 +884,6 @@ machine — which is what makes history comparable and recovery verifiable.
 Writes go to a checksummed log before they are visible. A snapshot is taken at
 the far end of the retained history rather than at the present, so restarting
 never shortens how far back you can look.
-
-<!-- Pending assets: the new docs/assets/memfork-architecture-{dark,light}.{png,gif} are added by the maintainer before release; the PNGs are the stills shown when a reader's system asks for reduced motion. -->
 <picture>
   <source media="(prefers-reduced-motion: reduce) and (prefers-color-scheme: dark)" srcset="docs/assets/memfork-architecture-dark.png">
   <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/memfork-architecture-light.png">
