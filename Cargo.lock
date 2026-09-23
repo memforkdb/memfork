@@ -822,7 +822,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memfork"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anstyle-query",
  "assert_cmd",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "memfork-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -875,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "memfork-py"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "memfork",
  "memfork-core",

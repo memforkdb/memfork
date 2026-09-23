@@ -3,7 +3,7 @@ members = ["crates/memfork-core", "crates/memfork", "crates/memfork-py"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ homepage = "https://github.com/memforkdb/memfork"
 authors = ["MemFork contributors"]
 
 [workspace.dependencies]
-memfork-core = { path = "crates/memfork-core", version = "0.2.1" }
+memfork-core = { path = "crates/memfork-core", version = "0.3.0" }
 blake3 = "1.8"
 # SHA-256 of the Brain's files, so a served file can be held against the
 # source with the `sha256sum` every machine has.
